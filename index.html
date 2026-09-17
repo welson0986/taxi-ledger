@@ -572,14 +572,22 @@ function fuelStatsInRange(from,to){
   state.expenses.forEach(function(e){ if(e.category==='fuel' && inRange(e.date,from,to)){ liters+=(+e.liters||0); cost+=(+e.amount||0); } });
   return {liters:liters, cost:cost};
 }
+function breakdownLabel(r){
+  var parts=[];
+  if(r.subtype) parts.push(r.subtype);
+  if(r.subPlatform) parts.push('→'+r.subPlatform);
+  if(r.fareType) parts.push(r.fareType);
+  if(r.discountTier && r.discountTier!=='原價') parts.push(r.discountTier);
+  if(r.payment) parts.push(r.payment);
+  if(r.estimateType) parts.push(r.estimateType);
+  return parts.join(' · ');
+}
 function subBreakdown(recs){
   var map = {};
   recs.forEach(function(r){
     var def = platformDef(r.platform);
-    var label = def.label;
-    if(r.subtype) label += ' · '+r.subtype;
-    else if(r.subPlatform) label += ' · '+r.subPlatform;
-    else if(r.fareType){ label += ' · '+r.fareType; if(r.discountTier && r.discountTier!=='原價') label += ' · '+r.discountTier; }
+    var detail = breakdownLabel(r);
+    var label = detail ? (def.label+' · '+detail) : def.label;
     var val = computeNetRevenue(r)+(+r.tip||0);
     if(!map[label]) map[label]={count:0,total:0};
     map[label].count++; map[label].total+=val;
