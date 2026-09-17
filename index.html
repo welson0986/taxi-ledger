@@ -375,6 +375,7 @@ var currentTab = 'entry';
 var uiMonth = new Date(); uiMonth.setDate(1);
 var selectedDay = todayStr();
 var analyticsPeriod = 'month';
+function currentEntryDate(){ return currentTab==='history' ? selectedDay : todayStr(); }
 
 /* ---------- fee / net revenue ---------- */
 function computeNetRevenue(r){
@@ -440,7 +441,7 @@ function syncToSheet(kind, payload){
 }
 function syncIncomeRecord(r){
   syncToSheet('income', {
-    date:r.date, ts:r.ts, platform:r.platform, platformLabel:platformDef(r.platform).label,
+    id:r.id, date:r.date, ts:r.ts, platform:r.platform, platformLabel:platformDef(r.platform).label,
     revenue:r.revenue, tip:r.tip, net:computeNetRevenue(r),
     subtype:r.subtype, fareType:r.fareType, payment:r.payment, discountTier:r.discountTier,
     estimateType:r.estimateType, markupAmount:r.markupAmount, markupMultiplier:r.markupMultiplier,
@@ -449,7 +450,7 @@ function syncIncomeRecord(r){
 }
 function syncExpenseRecord(e){
   syncToSheet('expense', {
-    date:e.date, ts:e.ts, category:e.category, categoryLabel:catInfo(e.category).label,
+    id:e.id, date:e.date, ts:e.ts, category:e.category, categoryLabel:catInfo(e.category).label,
     amount:e.amount, liters:e.liters, note:e.note
   });
 }
@@ -705,7 +706,7 @@ function renderDayList(dateStr){
     var subLine = parts.join(' · ');
     h += '<div class="list-item">'+
       '<div class="li-icon" style="background:var(--income-soft);color:var(--income)">🚕</div>'+
-      '<div class="li-body"><div class="li-title">'+esc(platformDef(r.platform).label)+'</div><div class="li-sub">'+subLine+'</div></div>'+
+      '<div class="li-body" data-act="edit-income:'+r.id+'" style="cursor:pointer"><div class="li-title">'+esc(platformDef(r.platform).label)+'</div><div class="li-sub">'+subLine+'</div></div>'+
       '<div class="li-amt income num">+'+fmtMoney(amt)+'</div>'+
       '<button class="li-del" data-act="del-income:'+r.id+'">✕</button></div>';
   });
@@ -713,7 +714,7 @@ function renderDayList(dateStr){
     var ci = catInfo(e.category);
     h += '<div class="list-item">'+
       '<div class="li-icon" style="background:var(--expense-soft)">'+ci.icon+'</div>'+
-      '<div class="li-body"><div class="li-title">'+ci.label+'</div><div class="li-sub">'+(e.category==='fuel'&&e.liters?(fmtNum(e.liters,1)+' 公升 · '):'')+(e.note?esc(e.note):'')+'</div></div>'+
+      '<div class="li-body" data-act="edit-expense:'+e.id+'" style="cursor:pointer"><div class="li-title">'+ci.label+'</div><div class="li-sub">'+(e.category==='fuel'&&e.liters?(fmtNum(e.liters,1)+' 公升 · '):'')+(e.note?esc(e.note):'')+'</div></div>'+
       '<div class="li-amt expense num">-'+fmtMoney(e.amount)+'</div>'+
       '<button class="li-del" data-act="del-expense:'+e.id+'">✕</button></div>';
   });
@@ -749,6 +750,17 @@ function renderHistory(){
   h += '</div></div>';
 
   h += '<div class="section" style="margin-top:14px"><div class="section-title">'+selectedDay+' 明細</div><div class="card">'+renderDayList(selectedDay)+'</div></div>';
+
+  h += '<div class="section"><div class="section-title">幫 '+selectedDay+' 補記收入(點明細可修改/刪除)</div><div class="platform-grid">';
+  PLATFORM_DEFS.forEach(function(p){
+    h += '<div class="platform-chip" data-act="open-income:'+p.key+'"><div class="pname">'+esc(p.label)+'</div></div>';
+  });
+  h += '</div></div>';
+  h += '<div class="section"><div class="section-title">幫 '+selectedDay+' 補記支出</div><div class="expense-grid">';
+  CATS.forEach(function(c){
+    h += '<div class="expense-chip" data-act="open-expense:'+c.key+'"><div class="eic">'+c.icon+'</div><div class="ename">'+c.label+'</div></div>';
+  });
+  h += '</div></div>';
   return h;
 }
 
@@ -921,100 +933,116 @@ function chipRowHtml(groupId, options, selectedDefault){
   return h;
 }
 
-function buildIncomeForm(key){
+function buildIncomeForm(key, existing){
   var def = platformDef(key);
   var h = '';
   if(def.subtypeOptions){
-    h += '<div class="form-row"><label>車種/屬性</label>'+chipRowHtml('subtype', def.subtypeOptions, def.subtypeOptions[0])+'</div>';
+    h += '<div class="form-row"><label>車種/屬性</label>'+chipRowHtml('subtype', def.subtypeOptions, (existing&&existing.subtype)||def.subtypeOptions[0])+'</div>';
   }
   if(def.fareTypeOptions){
-    h += '<div class="form-row"><label>計價方式</label>'+chipRowHtml('fareType', def.fareTypeOptions, def.fareTypeOptions[0])+'</div>';
+    h += '<div class="form-row"><label>計價方式</label>'+chipRowHtml('fareType', def.fareTypeOptions, (existing&&existing.fareType)||def.fareTypeOptions[0])+'</div>';
   }
   if(def.discountOptions){
-    h += '<div class="form-row"><label>優惠派別</label>'+chipRowHtml('discountTier', def.discountOptions, def.discountOptions[0])+'</div>';
+    h += '<div class="form-row"><label>優惠派別</label>'+chipRowHtml('discountTier', def.discountOptions, (existing&&existing.discountTier)||def.discountOptions[0])+'</div>';
   }
+  var curFareType = (existing&&existing.fareType) || (def.fareTypeOptions&&def.fareTypeOptions[0]);
+  var meterLike = !def.fareTypeOptions || curFareType==='跳表' || curFareType==='固定價';
   if(def.paymentOptions){
-    h += '<div class="form-row" id="sec-meterExtra"><label>付款方式</label>'+chipRowHtml('payment', def.paymentOptions, def.paymentOptions[0])+'</div>';
+    h += '<div class="form-row" id="sec-meterExtra"'+(meterLike?'':' hidden')+'><label>付款方式</label>'+chipRowHtml('payment', def.paymentOptions, (existing&&existing.payment)||def.paymentOptions[0])+'</div>';
   }
   if(def.estimateTypeOptions || def.estimateHasMarkupAmount || def.estimateHasMarkupMultiplier){
-    h += '<div id="sec-estimateExtra" hidden>';
-    if(def.estimateTypeOptions){ h += '<div class="form-row"><label>多元類型</label>'+chipRowHtml('estimateType', def.estimateTypeOptions, def.estimateTypeOptions[0])+'</div>'; }
+    h += '<div id="sec-estimateExtra"'+(meterLike?' hidden':'')+'>';
+    if(def.estimateTypeOptions){ h += '<div class="form-row"><label>多元類型</label>'+chipRowHtml('estimateType', def.estimateTypeOptions, (existing&&existing.estimateType)||def.estimateTypeOptions[0])+'</div>'; }
     if(def.estimateHasMarkupAmount||def.estimateHasMarkupMultiplier){
       h += '<div class="form-grid2">';
-      if(def.estimateHasMarkupAmount) h += '<div class="form-row"><label>加成金額(選填)</label><input class="num-input" id="f-markup-amount" type="number" min="0" step="1" placeholder="0"></div>';
-      if(def.estimateHasMarkupMultiplier) h += '<div class="form-row"><label>加成倍率(選填)</label><input class="num-input" id="f-markup-multiplier" type="number" min="0" step="0.1" placeholder="1.0"></div>';
+      if(def.estimateHasMarkupAmount) h += '<div class="form-row"><label>加成金額(選填)</label><input class="num-input" id="f-markup-amount" type="number" min="0" step="1" placeholder="0" value="'+((existing&&existing.markupAmount)||'')+'"></div>';
+      if(def.estimateHasMarkupMultiplier) h += '<div class="form-row"><label>加成倍率(選填)</label><input class="num-input" id="f-markup-multiplier" type="number" min="0" step="0.1" placeholder="1.0" value="'+((existing&&existing.markupMultiplier)||'')+'"></div>';
       h += '</div>';
     }
     h += '</div>';
   }
-  if(def.hasMarkupAmount) h += '<div class="form-row"><label>加成金額(選填)</label><input class="num-input" id="f-markup-amount" type="number" min="0" step="1" placeholder="0"></div>';
-  if(def.hasMarkupMultiplier) h += '<div class="form-row"><label>加成倍率(選填,例如 1.2)</label><input class="num-input" id="f-markup-multiplier" type="number" min="0" step="0.1" placeholder="1.0"></div>';
+  if(def.hasMarkupAmount) h += '<div class="form-row"><label>加成金額(選填)</label><input class="num-input" id="f-markup-amount" type="number" min="0" step="1" placeholder="0" value="'+((existing&&existing.markupAmount)||'')+'"></div>';
+  if(def.hasMarkupMultiplier) h += '<div class="form-row"><label>加成倍率(選填,例如 1.2)</label><input class="num-input" id="f-markup-multiplier" type="number" min="0" step="0.1" placeholder="1.0" value="'+((existing&&existing.markupMultiplier)||'')+'"></div>';
   if(def.subPlatformOptions){
-    h += '<div class="form-row"><label>預約單屬於哪個平台</label><select id="f-subplatform">'+def.subPlatformOptions.map(function(o){return '<option value="'+esc(o)+'">'+esc(o)+'</option>';}).join('')+'</select></div>';
+    h += '<div class="form-row"><label>預約單屬於哪個平台</label><select id="f-subplatform">'+def.subPlatformOptions.map(function(o){return '<option value="'+esc(o)+'"'+((existing&&existing.subPlatform===o)?' selected':'')+'>'+esc(o)+'</option>';}).join('')+'</select></div>';
   }
   return h;
 }
 
-function openIncomeModal(key){
+function openIncomeModal(key, editId){
   var def = platformDef(key);
-  var h = '<div class="modal-title">'+esc(def.label)+'<button class="close" data-act="close-modal">✕</button></div>';
+  var existing = editId ? state.records.filter(function(r){return r.id===editId;})[0] : null;
+  var forDate = existing ? existing.date : currentEntryDate();
+  var dateNote = forDate!==todayStr() ? (' · '+forDate) : '';
+  var h = '<div class="modal-title">'+esc(def.label)+esc(dateNote)+'<button class="close" data-act="close-modal">✕</button></div>';
   if(def.tipOnly){
-    h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-tip" type="number" min="0" step="1" placeholder="0" inputmode="numeric"></div>';
+    h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-tip" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.tip)||'')+'"></div>';
   } else {
-    h += '<div class="form-row"><label>車資金額</label><input class="num-input" id="f-revenue" type="number" min="0" step="1" placeholder="0" inputmode="numeric"></div>';
-    h += '<div class="form-row"><label>小費(選填)</label><input class="num-input" id="f-tip" type="number" min="0" step="1" placeholder="0" inputmode="numeric"></div>';
-    h += buildIncomeForm(key);
+    h += '<div class="form-row"><label>車資金額</label><input class="num-input" id="f-revenue" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.revenue)||'')+'"></div>';
+    h += '<div class="form-row"><label>小費(選填)</label><input class="num-input" id="f-tip" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.tip)||'')+'"></div>';
+    h += buildIncomeForm(key, existing);
   }
-  h += '<div class="form-row"><label>備註(選填)</label><input id="f-note" type="text" placeholder=""></div>';
-  h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-income:'+key+'">儲存</button></div>';
+  h += '<div class="form-row"><label>備註(選填)</label><input id="f-note" type="text" placeholder="" value="'+esc((existing&&existing.note)||'')+'"></div>';
+  h += '<div class="btn-row">';
+  if(existing) h += '<button class="btn btn-danger" data-act="del-income-close:'+existing.id+'">刪除這筆</button>';
+  h += '<button class="btn btn-primary" data-act="save-income:'+key+(existing?(':'+existing.id):'')+'">儲存</button></div>';
   openModal(h);
   setTimeout(function(){ var el=document.getElementById('f-revenue')||document.getElementById('f-tip'); if(el) el.focus(); }, 50);
 }
-function saveIncome(key){
+function saveIncome(key, editId){
   var def = platformDef(key);
   function grab(id){ var el=document.getElementById(id); return el? el.value : null; }
   var revenue = +grab('f-revenue') || 0;
   var tip = +grab('f-tip') || 0;
   var note = (grab('f-note')||'').trim();
   if(revenue<=0 && tip<=0){ closeModal(); return; }
-  var rec = {id:uid(), date:todayStr(), ts:Date.now(), platform:key, revenue:revenue, tip:tip, note:note};
+  var existing = editId ? state.records.filter(function(r){return r.id===editId;})[0] : null;
+  var rec = existing || {id:uid(), date:currentEntryDate(), ts:Date.now(), platform:key};
+  rec.revenue = revenue; rec.tip = tip; rec.note = note;
   if(def.subtypeOptions) rec.subtype = grab('chip-subtype');
   if(def.fareTypeOptions) rec.fareType = grab('chip-fareType');
   if(def.discountOptions) rec.discountTier = grab('chip-discountTier');
   var meterLike = !def.fareTypeOptions || rec.fareType==='跳表' || rec.fareType==='固定價';
-  if(def.paymentOptions && meterLike) rec.payment = grab('chip-payment');
-  if(def.estimateTypeOptions && rec.fareType==='預估車資') rec.estimateType = grab('chip-estimateType');
-  var ma = grab('f-markup-amount'); if(ma!=null && ma!=='') rec.markupAmount = +ma;
-  var mm = grab('f-markup-multiplier'); if(mm!=null && mm!=='') rec.markupMultiplier = +mm;
+  if(def.paymentOptions && meterLike) rec.payment = grab('chip-payment'); else if(def.paymentOptions) rec.payment = undefined;
+  if(def.estimateTypeOptions && rec.fareType==='預估車資') rec.estimateType = grab('chip-estimateType'); else if(def.estimateTypeOptions) rec.estimateType = undefined;
+  var ma = grab('f-markup-amount'); rec.markupAmount = (ma!=null && ma!=='') ? +ma : undefined;
+  var mm = grab('f-markup-multiplier'); rec.markupMultiplier = (mm!=null && mm!=='') ? +mm : undefined;
   if(def.subPlatformOptions) rec.subPlatform = grab('f-subplatform');
-  state.records.push(rec);
+  if(!existing) state.records.push(rec);
   save(); syncIncomeRecord(rec); closeModal(); renderAll();
 }
 
-function openExpenseModal(catKey){
+function openExpenseModal(catKey, editId){
   var ci = catInfo(catKey);
-  var h = '<div class="modal-title">'+ci.icon+' '+ci.label+'<button class="close" data-act="close-modal">✕</button></div>';
+  var existing = editId ? state.expenses.filter(function(e){return e.id===editId;})[0] : null;
+  var forDate = existing ? existing.date : currentEntryDate();
+  var dateNote = forDate!==todayStr() ? (' · '+forDate) : '';
+  var h = '<div class="modal-title">'+ci.icon+' '+ci.label+esc(dateNote)+'<button class="close" data-act="close-modal">✕</button></div>';
   if(catKey==='fuel'){
     h += '<div class="form-grid2">';
-    h += '<div class="form-row"><label>公升數</label><input class="num-input" id="f-liters" type="number" min="0" step="0.1" placeholder="0.0" inputmode="decimal"></div>';
-    h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-amount" type="number" min="0" step="1" placeholder="0" inputmode="numeric"></div>';
+    h += '<div class="form-row"><label>公升數</label><input class="num-input" id="f-liters" type="number" min="0" step="0.1" placeholder="0.0" inputmode="decimal" value="'+((existing&&existing.liters)||'')+'"></div>';
+    h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-amount" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.amount)||'')+'"></div>';
     h += '</div>';
   } else {
-    h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-amount" type="number" min="0" step="1" placeholder="0" inputmode="numeric"></div>';
+    h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-amount" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.amount)||'')+'"></div>';
   }
-  h += '<div class="form-row"><label>備註(選填)</label><input id="f-note" type="text" placeholder=""></div>';
-  h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-expense:'+catKey+'">儲存</button></div>';
+  h += '<div class="form-row"><label>備註(選填)</label><input id="f-note" type="text" placeholder="" value="'+esc((existing&&existing.note)||'')+'"></div>';
+  h += '<div class="btn-row">';
+  if(existing) h += '<button class="btn btn-danger" data-act="del-expense-close:'+existing.id+'">刪除這筆</button>';
+  h += '<button class="btn btn-primary" data-act="save-expense:'+catKey+(existing?(':'+existing.id):'')+'">儲存</button></div>';
   openModal(h);
   setTimeout(function(){ var el=document.getElementById('f-liters')||document.getElementById('f-amount'); if(el) el.focus(); }, 50);
 }
-function saveExpense(catKey){
+function saveExpense(catKey, editId){
   var amount = +document.getElementById('f-amount').value || 0;
   var liters = catKey==='fuel' ? (+document.getElementById('f-liters').value || 0) : undefined;
   var note = document.getElementById('f-note').value.trim();
   if(amount<=0){ closeModal(); return; }
-  var rec = {id:uid(), date:todayStr(), category:catKey, amount:amount, note:note, ts:Date.now()};
+  var existing = editId ? state.expenses.filter(function(e){return e.id===editId;})[0] : null;
+  var rec = existing || {id:uid(), date:currentEntryDate(), category:catKey, ts:Date.now()};
+  rec.amount = amount; rec.note = note;
   if(liters!=null) rec.liters = liters;
-  state.expenses.push(rec);
+  if(!existing) state.expenses.push(rec);
   save(); syncExpenseRecord(rec); closeModal(); renderAll();
 }
 
@@ -1124,11 +1152,21 @@ document.addEventListener('click', function(e){
   else if(cmd==='noop'){ /* absorb click inside modal card */ }
   else if(cmd==='close-modal'){ closeModal(); }
   else if(cmd==='open-income'){ openIncomeModal(arg); }
-  else if(cmd==='save-income'){ saveIncome(arg); }
+  else if(cmd==='save-income'){ var si=arg.split(':'); saveIncome(si[0], si[1]); }
   else if(cmd==='open-expense'){ openExpenseModal(arg); }
-  else if(cmd==='save-expense'){ saveExpense(arg); }
+  else if(cmd==='save-expense'){ var se=arg.split(':'); saveExpense(se[0], se[1]); }
   else if(cmd==='del-income'){ state.records=state.records.filter(function(r){return r.id!==arg;}); save(); renderAll(); }
   else if(cmd==='del-expense'){ state.expenses=state.expenses.filter(function(r){return r.id!==arg;}); save(); renderAll(); }
+  else if(cmd==='del-income-close'){ state.records=state.records.filter(function(r){return r.id!==arg;}); save(); closeModal(); renderAll(); }
+  else if(cmd==='del-expense-close'){ state.expenses=state.expenses.filter(function(r){return r.id!==arg;}); save(); closeModal(); renderAll(); }
+  else if(cmd==='edit-income'){
+    var recToEdit = state.records.filter(function(r){return r.id===arg;})[0];
+    if(recToEdit) openIncomeModal(recToEdit.platform, arg);
+  }
+  else if(cmd==='edit-expense'){
+    var expToEdit = state.expenses.filter(function(e){return e.id===arg;})[0];
+    if(expToEdit) openExpenseModal(expToEdit.category, arg);
+  }
   else if(cmd==='clock-in'){
     var m1 = dm(todayStr()); m1.activeShiftStart=Date.now(); m1.segmentStart=Date.now(); m1.onBreak=false; save(); renderAll();
   }
