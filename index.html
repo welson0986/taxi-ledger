@@ -461,11 +461,20 @@ function syncDailyRecord(dateStr){
     breakHours: +((m.breakMs||0)/3600000).toFixed(2)
   });
 }
+function syncFixedCost(fc, ym){
+  ym = ym || (function(){ var d=new Date(); return d.getFullYear()+'-'+pad(d.getMonth()+1); })();
+  syncToSheet('fixedcost', {
+    month: ym, name: fc.name, freq: fc.freq, baseAmount: fc.amount,
+    appliedAmount: fixedCostForMonth(fc, ym)
+  });
+}
 function syncAllData(onProgress, onDone){
   var queue = [];
   state.records.forEach(function(r){ queue.push(function(){ syncIncomeRecord(r); }); });
   state.expenses.forEach(function(e){ queue.push(function(){ syncExpenseRecord(e); }); });
   Object.keys(state.dailyMeta).forEach(function(d){ queue.push(function(){ syncDailyRecord(d); }); });
+  var curYm = (function(){ var d=new Date(); return d.getFullYear()+'-'+pad(d.getMonth()+1); })();
+  state.fixedCosts.forEach(function(fc){ queue.push(function(){ syncFixedCost(fc, curYm); }); });
   var i = 0;
   function step(){
     if(i>=queue.length){ if(onDone) onDone(i); return; }
@@ -1026,8 +1035,9 @@ function saveFixed(){
   var amount = +document.getElementById('f-amount').value || 0;
   var freq = document.getElementById('chip-freq').value;
   if(!name || amount<=0){ closeModal(); return; }
-  state.fixedCosts.push({id:uid(), name:name, amount:amount, freq:freq});
-  save(); closeModal(); renderAll();
+  var fc = {id:uid(), name:name, amount:amount, freq:freq};
+  state.fixedCosts.push(fc);
+  save(); syncFixedCost(fc); closeModal(); renderAll();
 }
 
 function openFixedOverrideModal(fcId){
@@ -1047,7 +1057,7 @@ function saveFixedOverride(fcId){
   var amount = +document.getElementById('f-amount').value || 0;
   if(!state.fixedOverrides[ym]) state.fixedOverrides[ym]={};
   state.fixedOverrides[ym][fcId]=amount;
-  save(); closeModal(); renderAll();
+  save(); syncFixedCost(fc, ym); closeModal(); renderAll();
 }
 function resetFixedOverride(fcId){
   var y=uiMonth.getFullYear(), mo=uiMonth.getMonth();
