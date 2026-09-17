@@ -505,9 +505,10 @@ function sumExpense(exps){
   var t=0; exps.forEach(function(e){ t+=(+e.amount||0); }); return t;
 }
 function monthsBetween(from,to){
-  var months=[]; var a=new Date(from+'-01'); var b=new Date(to+'-01');
+  var months=[]; var a=new Date(from+'T00:00:00'); var b=new Date(to+'T00:00:00');
   var cur=new Date(a.getFullYear(),a.getMonth(),1);
-  while(cur<=b){ months.push(cur.getFullYear()+'-'+pad(cur.getMonth()+1)); cur.setMonth(cur.getMonth()+1); }
+  var end=new Date(b.getFullYear(),b.getMonth(),1);
+  while(cur<=end){ months.push(cur.getFullYear()+'-'+pad(cur.getMonth()+1)); cur.setMonth(cur.getMonth()+1); }
   return months;
 }
 function fixedCostForMonth(fc, ym){
@@ -518,7 +519,21 @@ function fixedCostForMonth(fc, ym){
 function fixedTotalForRange(from,to){
   var months = monthsBetween(from,to);
   var total=0;
-  months.forEach(function(ym){ state.fixedCosts.forEach(function(fc){ total += fixedCostForMonth(fc, ym); }); });
+  var fromD = new Date(from+'T00:00:00');
+  var toD = new Date(to+'T00:00:00');
+  months.forEach(function(ym){
+    var y = +ym.slice(0,4), m = +ym.slice(5,7)-1;
+    var mDays = new Date(y,m+1,0).getDate();
+    var monthStart = new Date(y,m,1);
+    var monthEnd = new Date(y,m,mDays);
+    var rangeStart = fromD > monthStart ? fromD : monthStart;
+    var rangeEnd = toD < monthEnd ? toD : monthEnd;
+    var overlapDays = Math.round((rangeEnd - rangeStart)/86400000) + 1;
+    if(overlapDays < 0) overlapDays = 0;
+    var monthTotal = 0;
+    state.fixedCosts.forEach(function(fc){ monthTotal += fixedCostForMonth(fc, ym); });
+    total += monthTotal * (overlapDays / mDays);
+  });
   return total;
 }
 function totalKmInRange(from,to){
