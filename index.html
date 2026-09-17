@@ -338,7 +338,8 @@ function defaultState(){
     fixedCosts:[],
     fixedOverrides:{},
     targets:{daily:0,weekly:0,monthly:0},
-    feeRules:{tdc:null,yoxiCash:null,yoxiOther:null,linego:null,metroFlat:null,metroCredit:null,metroEnterprise:null}
+    feeRules:{tdc:null,yoxiCash:null,yoxiOther:null,linego:null,metroFlat:null,metroCredit:null,metroEnterprise:null},
+    syncUrl:''
   };
 }
 function load(){
@@ -421,6 +422,58 @@ function describeRecord(r){
   if(r.markupMultiplier) parts.push('加成'+r.markupMultiplier+'倍');
   if(r.markupAmount) parts.push('加成$'+r.markupAmount);
   return parts.join(' · ');
+}
+
+/* ---------- Google Sheet sync (fire-and-forget) ---------- */
+function syncToSheet(kind, payload){
+  if(!state.syncUrl) return;
+  payload = payload || {};
+  payload.kind = kind;
+  try{
+    fetch(state.syncUrl, {
+      method:'POST',
+      mode:'no-cors',
+      headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body: JSON.stringify(payload)
+    }).catch(function(){});
+  }catch(e){}
+}
+function syncIncomeRecord(r){
+  syncToSheet('income', {
+    date:r.date, ts:r.ts, platform:r.platform, platformLabel:platformDef(r.platform).label,
+    revenue:r.revenue, tip:r.tip, net:computeNetRevenue(r),
+    subtype:r.subtype, fareType:r.fareType, payment:r.payment, discountTier:r.discountTier,
+    estimateType:r.estimateType, markupAmount:r.markupAmount, markupMultiplier:r.markupMultiplier,
+    subPlatform:r.subPlatform, note:r.note
+  });
+}
+function syncExpenseRecord(e){
+  syncToSheet('expense', {
+    date:e.date, ts:e.ts, category:e.category, categoryLabel:catInfo(e.category).label,
+    amount:e.amount, liters:e.liters, note:e.note
+  });
+}
+function syncDailyRecord(dateStr){
+  var m = dm(dateStr);
+  syncToSheet('daily', {
+    date:dateStr, km:m.km,
+    hours: +((m.workedMs||0)/3600000).toFixed(2),
+    breakHours: +((m.breakMs||0)/3600000).toFixed(2)
+  });
+}
+function syncAllData(onProgress, onDone){
+  var queue = [];
+  state.records.forEach(function(r){ queue.push(function(){ syncIncomeRecord(r); }); });
+  state.expenses.forEach(function(e){ queue.push(function(){ syncExpenseRecord(e); }); });
+  Object.keys(state.dailyMeta).forEach(function(d){ queue.push(function(){ syncDailyRecord(d); }); });
+  var i = 0;
+  function step(){
+    if(i>=queue.length){ if(onDone) onDone(i); return; }
+    queue[i](); i++;
+    if(onProgress) onProgress(i, queue.length);
+    setTimeout(step, 180);
+  }
+  step();
 }
 
 /* ---------- computations ---------- */
@@ -926,7 +979,7 @@ function saveIncome(key){
   var mm = grab('f-markup-multiplier'); if(mm!=null && mm!=='') rec.markupMultiplier = +mm;
   if(def.subPlatformOptions) rec.subPlatform = grab('f-subplatform');
   state.records.push(rec);
-  save(); closeModal(); renderAll();
+  save(); syncIncomeRecord(rec); closeModal(); renderAll();
 }
 
 function openExpenseModal(catKey){
@@ -953,7 +1006,7 @@ function saveExpense(catKey){
   var rec = {id:uid(), date:todayStr(), category:catKey, amount:amount, note:note, ts:Date.now()};
   if(liters!=null) rec.liters = liters;
   state.expenses.push(rec);
-  save(); closeModal(); renderAll();
+  save(); syncExpenseRecord(rec); closeModal(); renderAll();
 }
 
 function openFixedModal(){
@@ -1022,10 +1075,15 @@ function openSettingsModal(){
        '<div><span style="font-size:11px;color:var(--text-muted)">每週</span><input class="num-input" id="f-target-weekly" type="number" min="0" value="'+(state.targets.weekly||'')+'"></div></div>';
   h += '<div><span style="font-size:11px;color:var(--text-muted)">每月</span><input class="num-input" id="f-target-monthly" type="number" min="0" value="'+(state.targets.monthly||'')+'"></div></div>';
 
+  h += '<div class="form-row" style="margin-top:6px"><label>Google Sheet 同步網址</label><input id="f-sync-url" type="text" placeholder="https://script.google.com/macros/s/.../exec" value="'+esc(state.syncUrl||'')+'"></div>';
+
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-settings">儲存設定</button></div>';
+  h += '<div style="height:10px"></div>';
+  h += '<div class="btn-row"><button class="btn btn-ghost" data-act="sync-all">立即同步全部資料到 Google Sheet</button></div>';
+  h += '<div id="syncStatus" style="font-size:12px;color:var(--text-muted);margin-top:8px;text-align:center"></div>';
   h += '<div style="height:14px"></div>';
   h += '<div class="btn-row"><button class="btn btn-danger" data-act="reset-all">清除所有資料</button></div>';
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.6">資料儲存在這支手機的瀏覽器裡,清除瀏覽器資料或換手機會遺失。之後可以加開 Google Sheet 自動同步備份。</div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.6">資料儲存在這支手機的瀏覽器裡,清除瀏覽器資料或換手機會遺失。設定 Google Sheet 網址後,之後每記一筆都會自動同步過去;刪除記錄不會回頭刪掉表單裡已經同步的那一列。</div>';
   openModal(h);
 }
 function saveSettings(){
@@ -1040,6 +1098,7 @@ function saveSettings(){
   state.feeRules.metroFlat = g('f-fee-metroflat');
   state.feeRules.metroCredit = g('f-fee-metrocredit');
   state.feeRules.metroEnterprise = g('f-fee-metroenterprise');
+  state.syncUrl = document.getElementById('f-sync-url').value.trim();
   save(); closeModal(); renderAll();
 }
 
@@ -1068,7 +1127,7 @@ document.addEventListener('click', function(e){
     if(m2.onBreak && m2.breakStart){ m2.breakMs += (Date.now()-m2.breakStart); m2.breakStart=null; m2.onBreak=false; }
     if(m2.segmentStart){ m2.workedMs += (Date.now()-m2.segmentStart); m2.segmentStart=null; }
     m2.activeShiftStart=null;
-    save(); renderAll();
+    save(); syncDailyRecord(todayStr()); renderAll();
   }
   else if(cmd==='break-start'){
     var m3 = dm(todayStr());
@@ -1081,7 +1140,7 @@ document.addEventListener('click', function(e){
     var m4 = dm(todayStr());
     if(m4.onBreak && m4.breakStart){
       m4.breakMs += (Date.now()-m4.breakStart); m4.breakStart=null; m4.onBreak=false; m4.segmentStart=Date.now();
-      save(); renderAll();
+      save(); syncDailyRecord(todayStr()); renderAll();
     }
   }
   else if(cmd==='month'){ uiMonth.setMonth(uiMonth.getMonth()+(+arg)); renderAll(); }
@@ -1097,6 +1156,14 @@ document.addEventListener('click', function(e){
   else if(cmd==='save-appname'){ saveAppName(); }
   else if(cmd==='open-settings'){ openSettingsModal(); }
   else if(cmd==='save-settings'){ saveSettings(); }
+  else if(cmd==='sync-all'){
+    if(!state.syncUrl){ alert('請先在上面填入 Google Sheet 同步網址,再按儲存設定。'); return; }
+    var statusEl = document.getElementById('syncStatus');
+    syncAllData(
+      function(done,total){ if(statusEl) statusEl.textContent = '同步中… '+done+' / '+total; },
+      function(total){ if(statusEl) statusEl.textContent = '已送出 '+total+' 筆,請到 Google Sheet 確認資料是否進來。'; }
+    );
+  }
   else if(cmd==='reset-all'){
     if(confirm('確定要清除所有記帳資料嗎?此動作無法復原。')){ state=defaultState(); save(); closeModal(); renderAll(); }
   }
@@ -1121,7 +1188,7 @@ document.addEventListener('click', function(e){
 document.addEventListener('change', function(e){
   if(e.target.matches('[data-km-input]')){
     dm(todayStr()).km = e.target.value===''? null : +e.target.value;
-    save();
+    save(); syncDailyRecord(todayStr());
   }
 });
 
