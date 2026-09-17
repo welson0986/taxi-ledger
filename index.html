@@ -375,6 +375,9 @@ var currentTab = 'entry';
 var uiMonth = new Date(); uiMonth.setDate(1);
 var selectedDay = todayStr();
 var analyticsPeriod = 'month';
+var analyticsDay = todayStr();
+var customFrom = todayStr();
+var customTo = todayStr();
 function currentEntryDate(){ return currentTab==='history' ? selectedDay : todayStr(); }
 
 /* ---------- fee / net revenue ---------- */
@@ -841,9 +844,10 @@ function renderExpenseTab(){
 /* ---------- ANALYTICS TAB ---------- */
 function renderAnalytics(){
   var range;
-  if(analyticsPeriod==='today'){ var t=todayStr(); range={from:t,to:t}; }
+  if(analyticsPeriod==='day'){ range={from:analyticsDay,to:analyticsDay}; }
   else if(analyticsPeriod==='week'){ range=weekRange(); }
-  else { range=monthRange(uiMonth); }
+  else if(analyticsPeriod==='month'){ range=monthRange(uiMonth); }
+  else { range = customFrom<=customTo ? {from:customFrom,to:customTo} : {from:customTo,to:customFrom}; }
 
   var recs = recordsInRange(range.from, range.to);
   var exps = expensesInRange(range.from, range.to);
@@ -868,13 +872,21 @@ function renderAnalytics(){
 
   var h='';
   h += '<div class="section"><div class="segmented">'+
-    '<button class="'+(analyticsPeriod==='today'?'active':'')+'" data-act="period:today">本日</button>'+
+    '<button class="'+(analyticsPeriod==='day'?'active':'')+'" data-act="period:day">本日</button>'+
     '<button class="'+(analyticsPeriod==='week'?'active':'')+'" data-act="period:week">本週</button>'+
     '<button class="'+(analyticsPeriod==='month'?'active':'')+'" data-act="period:month">本月</button>'+
+    '<button class="'+(analyticsPeriod==='custom'?'active':'')+'" data-act="period:custom">自訂區間</button>'+
     '</div></div>';
 
-  if(analyticsPeriod==='month'){
+  if(analyticsPeriod==='day'){
+    h += '<div class="month-nav" style="margin-top:-4px"><button data-act="day:-1">‹</button><div class="m-title"><input type="date" id="dayPicker" value="'+analyticsDay+'" style="background:none;border:none;color:inherit;font:inherit;font-weight:700;text-align:center;width:100%"></div><button data-act="day:1">›</button></div>';
+  } else if(analyticsPeriod==='month'){
     h += '<div class="month-nav" style="margin-top:-4px"><button data-act="month:-1">‹</button><div class="m-title">'+uiMonth.getFullYear()+' 年 '+(uiMonth.getMonth()+1)+' 月</div><button data-act="month:1">›</button></div>';
+  } else if(analyticsPeriod==='custom'){
+    h += '<div class="section"><div class="form-grid2">'+
+      '<div class="form-row"><label>起始日期</label><input type="date" id="customFrom" value="'+customFrom+'"></div>'+
+      '<div class="form-row"><label>結束日期</label><input type="date" id="customTo" value="'+customTo+'"></div>'+
+      '</div></div>';
   }
 
   h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr 1fr">';
@@ -919,7 +931,7 @@ function renderAnalytics(){
   }
 
   var tg = state.targets;
-  var targetVal = analyticsPeriod==='today'?tg.daily : analyticsPeriod==='week'?tg.weekly : tg.monthly;
+  var targetVal = analyticsPeriod==='day'?tg.daily : analyticsPeriod==='week'?tg.weekly : analyticsPeriod==='month'?tg.monthly : 0;
   if(targetVal>0){
     var pct = Math.min(100, Math.round(net.total/targetVal*100));
     h += '<div class="section"><div class="section-title">目標進度(依實收計算)</div><div class="card"><div class="progress-wrap">'+
@@ -1207,6 +1219,7 @@ document.addEventListener('click', function(e){
     }
   }
   else if(cmd==='month'){ uiMonth.setMonth(uiMonth.getMonth()+(+arg)); renderAll(); }
+  else if(cmd==='day'){ var dObj=new Date(analyticsDay+'T00:00:00'); dObj.setDate(dObj.getDate()+(+arg)); analyticsDay=toDateStr(dObj); renderAll(); }
   else if(cmd==='select-day'){ selectedDay=arg; renderAll(); }
   else if(cmd==='period'){ analyticsPeriod=arg; renderAll(); }
   else if(cmd==='open-fixed-new'){ openFixedModal(); }
@@ -1253,6 +1266,9 @@ document.addEventListener('change', function(e){
     dm(todayStr()).km = e.target.value===''? null : +e.target.value;
     save(); syncDailyRecord(todayStr());
   }
+  else if(e.target.id==='dayPicker'){ if(e.target.value){ analyticsDay = e.target.value; renderAll(); } }
+  else if(e.target.id==='customFrom'){ if(e.target.value){ customFrom = e.target.value; renderAll(); } }
+  else if(e.target.id==='customTo'){ if(e.target.value){ customTo = e.target.value; renderAll(); } }
 });
 
 renderAll();
