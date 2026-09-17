@@ -1,0 +1,1132 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<title>跑車人生</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&display=swap">
+<style>
+:root{
+  --bg:#F3F0E8;
+  --surface:#FFFFFF;
+  --surface-sunken:#E7E1D2;
+  --text:#231F18;
+  --text-muted:#7A735F;
+  --border:#DED6C2;
+  --accent:#C97E17;
+  --accent-strong:#9C6110;
+  --accent-soft:#F2DFB6;
+  --income:#1E7A4C;
+  --income-soft:#DCEFE2;
+  --expense:#B8402C;
+  --expense-soft:#F8E1DA;
+  --shadow: 0 1px 2px rgba(35,31,24,.06), 0 4px 14px rgba(35,31,24,.06);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#15130F;
+    --surface:#1E1B15;
+    --surface-sunken:#0F0D0A;
+    --text:#F1ECDF;
+    --text-muted:#A79C82;
+    --border:#332C20;
+    --accent:#E5A33D;
+    --accent-strong:#F0B655;
+    --accent-soft:#3A2C14;
+    --income:#4FC98A;
+    --income-soft:#193024;
+    --expense:#E5715A;
+    --expense-soft:#3A1D16;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 18px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#15130F;
+  --surface:#1E1B15;
+  --surface-sunken:#0F0D0A;
+  --text:#F1ECDF;
+  --text-muted:#A79C82;
+  --border:#332C20;
+  --accent:#E5A33D;
+  --accent-strong:#F0B655;
+  --accent-soft:#3A2C14;
+  --income:#4FC98A;
+  --income-soft:#193024;
+  --expense:#E5715A;
+  --expense-soft:#3A1D16;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 18px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:'Noto Sans TC', system-ui, sans-serif;
+  font-variant-numeric:tabular-nums;
+}
+.num{font-family:'Space Grotesk','Noto Sans TC',system-ui,sans-serif;}
+.app{display:flex;flex-direction:column;height:100%;max-width:560px;margin:0 auto;position:relative}
+.topbar{
+  position:sticky;top:env(safe-area-inset-top,0px);z-index:20;
+  background:var(--bg);
+  padding:14px 16px 10px;
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  border-bottom:1px solid var(--border);
+}
+.brand{display:flex;align-items:baseline;gap:8px}
+.brand-name{font-weight:900;font-size:19px;letter-spacing:.2px}
+.topbar-right{display:flex;align-items:center;gap:10px}
+.today-net{font-family:'Space Grotesk';font-weight:700;font-size:15px}
+.today-net.pos{color:var(--income)}
+.today-net.neg{color:var(--expense)}
+.icon-btn{
+  width:36px;height:36px;border-radius:10px;border:1px solid var(--border);
+  background:var(--surface);display:flex;align-items:center;justify-content:center;
+  font-size:16px;cursor:pointer;color:var(--text);
+}
+.content{flex:1;overflow-y:auto;padding:14px 16px 24px;-webkit-overflow-scrolling:touch}
+.bottom-nav{
+  position:sticky;bottom:0;z-index:20;
+  display:grid;grid-template-columns:repeat(4,1fr);
+  background:var(--surface);border-top:1px solid var(--border);
+  padding:6px 6px calc(6px + env(safe-area-inset-bottom,0px));
+}
+.nav-btn{
+  display:flex;flex-direction:column;align-items:center;gap:3px;
+  background:none;border:none;color:var(--text-muted);font-size:11px;
+  padding:6px 2px;border-radius:10px;cursor:pointer;font-family:inherit;
+}
+.nav-btn .ic{font-size:19px}
+.nav-btn.active{color:var(--accent-strong)}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:14px;box-shadow:var(--shadow)}
+.section{margin-bottom:16px}
+.section-title{font-size:13px;font-weight:700;color:var(--text-muted);margin:0 0 8px 2px;display:flex;align-items:center;justify-content:space-between}
+
+.summary-row{display:grid;gap:8px}
+.stat-tile{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:10px 12px}
+.stat-tile .lbl{font-size:10.5px;color:var(--text-muted);margin-bottom:4px}
+.stat-tile .val{font-family:'Space Grotesk';font-weight:700;font-size:16px}
+.stat-tile .val.income{color:var(--income)}
+.stat-tile .val.expense{color:var(--expense)}
+
+.platform-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+.platform-chip{
+  background:var(--surface);border:1px solid var(--border);border-radius:14px;
+  padding:12px 6px;text-align:center;cursor:pointer;min-height:62px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+}
+.platform-chip:active{background:var(--accent-soft)}
+.platform-chip .pname{font-size:12px;font-weight:700;line-height:1.25}
+.platform-chip .ptotal{font-size:10.5px;color:var(--text-muted);font-family:'Space Grotesk'}
+.platform-chip .ptotal.has{color:var(--income)}
+
+.expense-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+.expense-chip{
+  background:var(--expense-soft);border:1px solid var(--border);border-radius:14px;
+  padding:10px 8px;text-align:center;cursor:pointer;min-height:56px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+}
+.expense-chip .eic{font-size:17px}
+.expense-chip .ename{font-size:12px;font-weight:700;color:var(--expense)}
+
+.daily-card{display:flex;flex-direction:column;gap:10px}
+.daily-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.daily-row .l{font-size:13px;font-weight:700;color:var(--text-muted)}
+.km-input{
+  width:100px;text-align:right;font-family:'Space Grotesk';font-weight:700;font-size:15px;
+  background:var(--surface-sunken);border:1px solid var(--border);border-radius:10px;padding:7px 9px;color:var(--text)
+}
+.shift-btn{
+  border:none;border-radius:10px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;
+}
+.shift-btn.start{background:var(--income-soft);color:var(--income)}
+.shift-btn.stop{background:var(--expense-soft);color:var(--expense)}
+.hours-badge{font-family:'Space Grotesk';font-weight:700;font-size:13px}
+
+.list-item{
+  display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--border);
+}
+.list-item:last-child{border-bottom:none}
+.li-icon{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:15px;flex:none}
+.li-body{flex:1;min-width:0}
+.li-title{font-size:13.5px;font-weight:700}
+.li-sub{font-size:11px;color:var(--text-muted)}
+.li-amt{font-family:'Space Grotesk';font-weight:700;font-size:14.5px;white-space:nowrap}
+.li-amt.income{color:var(--income)}
+.li-amt.expense{color:var(--expense)}
+.li-del{background:none;border:none;color:var(--text-muted);font-size:16px;cursor:pointer;padding:4px 2px}
+
+.month-nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.month-nav .m-title{font-weight:700;font-size:15px}
+.month-nav button{background:var(--surface);border:1px solid var(--border);width:32px;height:32px;border-radius:9px;font-size:15px;cursor:pointer;color:var(--text)}
+
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-bottom:6px}
+.cal-dow{text-align:center;font-size:10.5px;color:var(--text-muted);font-weight:700;padding-bottom:2px}
+.cal-cell{
+  aspect-ratio:1;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:var(--surface-sunken);cursor:pointer;font-size:10.5px;gap:1px;border:2px solid transparent;
+}
+.cal-cell.empty{visibility:hidden;cursor:default}
+.cal-cell .d{font-family:'Space Grotesk';font-weight:700;font-size:12px}
+.cal-cell .n{font-size:9px;font-family:'Space Grotesk';font-weight:700}
+.cal-cell.pos{background:var(--income-soft)}
+.cal-cell.pos .n{color:var(--income)}
+.cal-cell.neg{background:var(--expense-soft)}
+.cal-cell.neg .n{color:var(--expense)}
+.cal-cell.today{border-color:var(--accent)}
+.cal-cell.selected{outline:2px solid var(--accent-strong);outline-offset:1px}
+
+.segmented{display:flex;background:var(--surface-sunken);border-radius:12px;padding:3px;gap:3px;overflow-x:auto}
+.segmented button{
+  flex:1;border:none;background:none;padding:8px 6px;border-radius:9px;font-size:12px;font-weight:700;
+  color:var(--text-muted);cursor:pointer;font-family:inherit;white-space:nowrap;
+}
+.segmented button.active{background:var(--surface);color:var(--text);box-shadow:var(--shadow)}
+
+.progress-wrap{margin-top:6px}
+.progress-lbl{display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px}
+.progress-lbl .p{color:var(--text-muted)}
+.progress-lbl .v{font-family:'Space Grotesk';font-weight:700}
+.progress-bar{height:8px;background:var(--surface-sunken);border-radius:5px;overflow:hidden}
+.progress-fill{height:100%;background:var(--accent);border-radius:5px}
+
+.empty-state{text-align:center;padding:36px 14px;color:var(--text-muted)}
+.empty-state .ic{font-size:30px;margin-bottom:8px}
+.empty-state .t{font-size:13px}
+
+.btn-row{display:flex;gap:8px}
+.btn{flex:1;border:none;border-radius:12px;padding:11px;font-weight:700;font-size:14px;cursor:pointer;font-family:inherit}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-ghost{background:var(--surface-sunken);color:var(--text)}
+.btn-danger{background:var(--expense-soft);color:var(--expense)}
+.add-fixed-btn{
+  width:100%;border:1.5px dashed var(--border);background:none;border-radius:14px;padding:12px;
+  color:var(--text-muted);font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;
+}
+
+.modal-overlay{
+  position:fixed;inset:0;background:rgba(20,17,12,.5);z-index:50;
+  display:flex;align-items:flex-end;justify-content:center;
+}
+.modal{
+  background:var(--surface);width:100%;max-width:560px;border-radius:20px 20px 0 0;
+  padding:16px 18px calc(18px + env(safe-area-inset-bottom,0px));max-height:88vh;overflow-y:auto;
+  box-shadow:0 -4px 24px rgba(0,0,0,.2);
+}
+.modal-title{font-size:16px;font-weight:900;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center}
+.modal-title .close{background:var(--surface-sunken);border:none;width:30px;height:30px;border-radius:9px;font-size:15px;cursor:pointer;color:var(--text)}
+.form-row{margin-bottom:12px}
+.form-row label{display:block;font-size:12.5px;font-weight:700;color:var(--text-muted);margin-bottom:6px}
+.form-row input, .form-row select{
+  width:100%;background:var(--surface-sunken);border:1px solid var(--border);border-radius:11px;
+  padding:11px 12px;font-size:15px;color:var(--text);font-family:inherit;
+}
+.form-row input.num-input{font-family:'Space Grotesk';font-weight:700}
+.form-grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+
+.chip-row{display:flex;flex-wrap:wrap;gap:7px}
+.chip-opt{
+  border:1px solid var(--border);background:var(--surface-sunken);color:var(--text-muted);
+  border-radius:20px;padding:7px 13px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;
+}
+.chip-opt.selected{background:var(--accent);border-color:var(--accent);color:#fff}
+
+.tag-list{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.tag{
+  background:var(--surface-sunken);border:1px solid var(--border);border-radius:10px;
+  padding:7px 10px;font-size:13px;display:flex;align-items:center;gap:7px;
+}
+.tag button{background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:13px}
+
+.donut-legend{display:flex;flex-direction:column;gap:7px;margin-top:2px}
+.legend-row{display:flex;align-items:center;gap:8px;font-size:12.5px}
+.legend-dot{width:9px;height:9px;border-radius:50%;flex:none}
+.legend-row .lname{flex:1;color:var(--text-muted)}
+.legend-row .lval{font-family:'Space Grotesk';font-weight:700}
+</style>
+
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div class="brand">
+      <button class="brand-name" data-act="rename-app" style="background:none;border:none;padding:0;font:inherit;font-weight:900;font-size:19px;letter-spacing:.2px;cursor:pointer;color:inherit;display:flex;align-items:center;gap:6px">🚕 <span id="appNameLabel">跑車人生</span></button>
+    </div>
+    <div class="topbar-right">
+      <span id="todayNet" class="today-net"></span>
+      <button class="icon-btn" data-act="open-settings" title="設定">⚙️</button>
+    </div>
+  </div>
+  <main id="content" class="content"></main>
+  <nav class="bottom-nav">
+    <button class="nav-btn" data-act="tab:entry"><span class="ic">✏️</span>記帳</button>
+    <button class="nav-btn" data-act="tab:history"><span class="ic">📅</span>歷史</button>
+    <button class="nav-btn" data-act="tab:expense"><span class="ic">🧾</span>支出</button>
+    <button class="nav-btn" data-act="tab:analytics"><span class="ic">📊</span>分析</button>
+  </nav>
+</div>
+<div id="modalRoot"></div>
+
+<script>
+(function(){
+'use strict';
+
+var STORAGE_KEY = 'taxi_ledger_v2';
+var CATS = [
+  {key:'fuel',label:'加油',icon:'⛽'},
+  {key:'parking',label:'停車費',icon:'🅿️'},
+  {key:'toll',label:'E-Tag',icon:'🛣️'},
+  {key:'wash',label:'洗車打蠟',icon:'🧽'},
+  {key:'ticket',label:'罰單',icon:'🚫'},
+  {key:'other',label:'其他',icon:'📝'}
+];
+var DOW = ['一','二','三','四','五','六','日'];
+
+/* ---------- platform definitions ---------- */
+var PLATFORM_DEFS = [
+  {key:'uber', label:'Uber', subtypeOptions:['菁英X','樂聚XL','毛孩優步','舒適優步','尊榮優步','純電優步','加大樂聚XXL'], hasMarkupAmount:true},
+  {key:'tdc', label:'台灣大車隊', fareTypeOptions:['跳表','預估車資'], paymentOptions:['現金','企業簽單','信用卡','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true},
+  {key:'metro', label:'大都會', fareTypeOptions:['跳表','預估車資'], discountOptions:['原價','婦派','海派','鑽派','超派'], paymentOptions:['現金','企業簽單','信用卡','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true},
+  {key:'bolt', label:'BOLT', subtypeOptions:['經典博特','舒適博特','揪團博特','寵物博特','尊榮博特'], hasMarkupMultiplier:true},
+  {key:'yoxi', label:'YOXI', fareTypeOptions:['跳表','預估車資'], paymentOptions:['現金','企業簽單','信用卡'], estimateTypeOptions:['一般多元','樂聚多元','減碳多元'], estimateHasMarkupMultiplier:true},
+  {key:'linego', label:'Line Go', subtypeOptions:['一般','六人座'], hasMarkupMultiplier:true},
+  {key:'private', label:'私客'},
+  {key:'hailyellow', label:'呼叫小黃', fareTypeOptions:['跳表','固定價']},
+  {key:'street', label:'路招'},
+  {key:'reservation', label:'預約單', subPlatformOptions:['Uber','台灣大車隊','大都會','BOLT','YOXI','Line Go','呼叫小黃']},
+  {key:'phonecall', label:'接電', subtypeOptions:['台灣大車隊','大都會','路招客']},
+  {key:'tipbox', label:'小費/小費箱', tipOnly:true}
+];
+function platformDef(key){
+  for(var i=0;i<PLATFORM_DEFS.length;i++){ if(PLATFORM_DEFS[i].key===key) return PLATFORM_DEFS[i]; }
+  return {key:key, label:key};
+}
+
+function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function pad(n){ return n<10?'0'+n:''+n; }
+function toDateStr(d){ return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
+function todayStr(){ return toDateStr(new Date()); }
+function monthKeyOf(dateStr){ return dateStr.slice(0,7); }
+function fmtMoney(n){
+  n = Math.round(n||0);
+  var neg = n<0; n=Math.abs(n);
+  var s = n.toLocaleString('zh-Hant-TW');
+  return (neg?'-':'')+'$'+s;
+}
+function fmtNum(n,d){
+  if(n==null||isNaN(n)) return '-';
+  return (+n).toLocaleString('zh-Hant-TW',{minimumFractionDigits:d||0,maximumFractionDigits:d||0});
+}
+function esc(s){
+  return (s==null?'':String(s)).replace(/[&<>"']/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+function catInfo(key){ for(var i=0;i<CATS.length;i++){ if(CATS[i].key===key) return CATS[i]; } return CATS[5]; }
+
+function defaultState(){
+  return {
+    appName:'跑車人生',
+    records:[],
+    expenses:[],
+    dailyMeta:{},
+    fixedCosts:[],
+    fixedOverrides:{},
+    targets:{daily:0,weekly:0,monthly:0},
+    feeRules:{tdc:null,yoxiCash:null,yoxiOther:null,linego:null,metroFlat:null,metroCredit:null,metroEnterprise:null}
+  };
+}
+function load(){
+  try{
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if(!raw) return defaultState();
+    var s = JSON.parse(raw);
+    var d = defaultState();
+    for(var k in d){ if(!(k in s)) s[k]=d[k]; }
+    return s;
+  }catch(e){ return defaultState(); }
+}
+var state = load();
+function save(){
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+}
+function dm(dateStr){
+  var m = state.dailyMeta[dateStr];
+  if(!m){
+    m = {km:null, activeShiftStart:null, segmentStart:null, onBreak:false, breakStart:null, workedMs:0, breakMs:0};
+    state.dailyMeta[dateStr]=m;
+  } else {
+    if(m.workedMs==null) m.workedMs = m.hours ? m.hours*3600000 : 0;
+    if(m.breakMs==null) m.breakMs = 0;
+    if(m.onBreak==null) m.onBreak = false;
+    if(m.segmentStart===undefined) m.segmentStart = m.activeShiftStart||null;
+    if(m.breakStart===undefined) m.breakStart = null;
+  }
+  return m;
+}
+
+var currentTab = 'entry';
+var uiMonth = new Date(); uiMonth.setDate(1);
+var selectedDay = todayStr();
+var analyticsPeriod = 'month';
+
+/* ---------- fee / net revenue ---------- */
+function computeNetRevenue(r){
+  var gross = +r.revenue||0;
+  if(gross<=0) return 0;
+  var fees = state.feeRules||{};
+  if(r.platform==='tdc'){
+    var pct = fees.tdc!=null?fees.tdc:15;
+    return gross*(1-pct/100);
+  }
+  if(r.platform==='yoxi'){
+    var pct2 = (r.payment==='現金') ? (fees.yoxiCash!=null?fees.yoxiCash:10) : (fees.yoxiOther!=null?fees.yoxiOther:12);
+    return gross*(1-pct2/100);
+  }
+  if(r.platform==='linego'){
+    var pct3 = fees.linego!=null?fees.linego:0;
+    return gross*(1-pct3/100);
+  }
+  if(r.platform==='metro'){
+    var discounted = gross;
+    var tier = r.discountTier||'原價';
+    if(gross>=100){
+      if(tier==='婦派') discounted = gross*0.9;
+      else if(tier==='海派') discounted = gross*0.85;
+      else if(tier==='鑽派') discounted = gross*0.8;
+      else if(tier==='超派') discounted = gross - Math.min(gross*0.3,300);
+    }
+    var afterSurcharge = discounted;
+    if(r.payment==='信用卡') afterSurcharge = discounted*(1-(fees.metroCredit!=null?fees.metroCredit:3)/100);
+    else if(r.payment==='企業簽單') afterSurcharge = discounted*(1-(fees.metroEnterprise!=null?fees.metroEnterprise:6)/100);
+    var flat = fees.metroFlat!=null?fees.metroFlat:25;
+    var net = afterSurcharge-flat;
+    return net>0?net:0;
+  }
+  return gross;
+}
+function describeRecord(r){
+  var parts=[];
+  if(r.subtype) parts.push(r.subtype);
+  if(r.subPlatform) parts.push('→'+r.subPlatform);
+  if(r.fareType) parts.push(r.fareType);
+  if(r.discountTier && r.discountTier!=='原價') parts.push(r.discountTier);
+  if(r.payment) parts.push(r.payment);
+  if(r.estimateType) parts.push(r.estimateType);
+  if(r.markupMultiplier) parts.push('加成'+r.markupMultiplier+'倍');
+  if(r.markupAmount) parts.push('加成$'+r.markupAmount);
+  return parts.join(' · ');
+}
+
+/* ---------- computations ---------- */
+function inRange(dateStr, from, to){ return dateStr>=from && dateStr<=to; }
+function recordsInRange(from,to){ return state.records.filter(function(r){return inRange(r.date,from,to);}); }
+function expensesInRange(from,to){ return state.expenses.filter(function(e){return inRange(e.date,from,to);}); }
+
+function sumIncome(recs){
+  var rev=0, tip=0;
+  recs.forEach(function(r){ rev+=(+r.revenue||0); tip+=(+r.tip||0); });
+  return {rev:rev, tip:tip, total:rev+tip};
+}
+function sumNetIncome(recs){
+  var net=0, tip=0;
+  recs.forEach(function(r){ net+=computeNetRevenue(r); tip+=(+r.tip||0); });
+  return {net:net, tip:tip, total:net+tip};
+}
+function sumExpense(exps){
+  var t=0; exps.forEach(function(e){ t+=(+e.amount||0); }); return t;
+}
+function monthsBetween(from,to){
+  var months=[]; var a=new Date(from+'-01'); var b=new Date(to+'-01');
+  var cur=new Date(a.getFullYear(),a.getMonth(),1);
+  while(cur<=b){ months.push(cur.getFullYear()+'-'+pad(cur.getMonth()+1)); cur.setMonth(cur.getMonth()+1); }
+  return months;
+}
+function fixedCostForMonth(fc, ym){
+  var ov = state.fixedOverrides[ym] && state.fixedOverrides[ym][fc.id];
+  if(ov!=null) return +ov;
+  return fc.freq==='yearly' ? (+fc.amount||0)/12 : (+fc.amount||0);
+}
+function fixedTotalForRange(from,to){
+  var months = monthsBetween(from,to);
+  var total=0;
+  months.forEach(function(ym){ state.fixedCosts.forEach(function(fc){ total += fixedCostForMonth(fc, ym); }); });
+  return total;
+}
+function totalKmInRange(from,to){
+  var t=0;
+  Object.keys(state.dailyMeta).forEach(function(d){ if(inRange(d,from,to)) t += (+state.dailyMeta[d].km||0); });
+  return t;
+}
+function totalHoursInRange(from,to){
+  var t=0; var today=todayStr();
+  Object.keys(state.dailyMeta).forEach(function(d){
+    if(inRange(d,from,to)){
+      var m = state.dailyMeta[d];
+      var wm = m.workedMs!=null? m.workedMs : (m.hours? m.hours*3600000:0);
+      if(d===today && m.segmentStart) wm += (Date.now()-m.segmentStart);
+      t += wm/3600000;
+    }
+  });
+  return t;
+}
+function workingDaysInRange(from,to){
+  var days = {};
+  state.records.forEach(function(r){ if(inRange(r.date,from,to)) days[r.date]=true; });
+  Object.keys(state.dailyMeta).forEach(function(d){
+    if(inRange(d,from,to)){
+      var m = state.dailyMeta[d];
+      if((m.workedMs && m.workedMs>0) || m.activeShiftStart) days[d]=true;
+    }
+  });
+  return Object.keys(days).length;
+}
+function fuelStatsInRange(from,to){
+  var liters=0, cost=0;
+  state.expenses.forEach(function(e){ if(e.category==='fuel' && inRange(e.date,from,to)){ liters+=(+e.liters||0); cost+=(+e.amount||0); } });
+  return {liters:liters, cost:cost};
+}
+function subBreakdown(recs){
+  var map = {};
+  recs.forEach(function(r){
+    var def = platformDef(r.platform);
+    var label = def.label;
+    if(r.subtype) label += ' · '+r.subtype;
+    else if(r.subPlatform) label += ' · '+r.subPlatform;
+    else if(r.fareType){ label += ' · '+r.fareType; if(r.discountTier && r.discountTier!=='原價') label += ' · '+r.discountTier; }
+    var val = computeNetRevenue(r)+(+r.tip||0);
+    if(!map[label]) map[label]={count:0,total:0};
+    map[label].count++; map[label].total+=val;
+  });
+  return Object.keys(map).map(function(k){return {label:k,count:map[k].count,total:map[k].total};}).sort(function(a,b){return b.total-a.total;});
+}
+function weekRange(){
+  var t = new Date();
+  var day = (t.getDay()+6)%7;
+  var mon = new Date(t); mon.setDate(t.getDate()-day);
+  var sun = new Date(mon); sun.setDate(mon.getDate()+6);
+  return {from:toDateStr(mon), to:toDateStr(sun)};
+}
+function monthRange(m){
+  var y=m.getFullYear(), mo=m.getMonth();
+  var from = y+'-'+pad(mo+1)+'-01';
+  var last = new Date(y,mo+1,0).getDate();
+  var to = y+'-'+pad(mo+1)+'-'+pad(last);
+  return {from:from, to:to};
+}
+
+/* ---------- rendering shell ---------- */
+function renderAll(){
+  document.querySelectorAll('.nav-btn').forEach(function(b){ b.classList.toggle('active', b.dataset.act==='tab:'+currentTab); });
+  renderTopbar();
+  var c = document.getElementById('content');
+  if(currentTab==='entry') c.innerHTML = renderEntry();
+  else if(currentTab==='history') c.innerHTML = renderHistory();
+  else if(currentTab==='expense') c.innerHTML = renderExpenseTab();
+  else if(currentTab==='analytics') c.innerHTML = renderAnalytics();
+}
+function renderTopbar(){
+  var t = todayStr();
+  var net = sumNetIncome(recordsInRange(t,t));
+  var exp = sumExpense(expensesInRange(t,t));
+  var val = net.total-exp;
+  var el = document.getElementById('todayNet');
+  el.textContent = (val>=0?'今日 +':'今日 ')+fmtMoney(val);
+  el.className = 'today-net '+(val>=0?'pos':'neg');
+  var nameEl = document.getElementById('appNameLabel');
+  if(nameEl) nameEl.textContent = state.appName||'跑車人生';
+  document.title = state.appName||'跑車人生';
+}
+function openRenameModal(){
+  var h = '<div class="modal-title">修改名稱<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div class="form-row"><label>App 名稱</label><input id="f-appname" type="text" maxlength="20" value="'+esc(state.appName||'跑車人生')+'"></div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-appname">儲存</button></div>';
+  openModal(h);
+  setTimeout(function(){ var el=document.getElementById('f-appname'); if(el){ el.focus(); el.select(); } }, 50);
+}
+function saveAppName(){
+  var v = document.getElementById('f-appname').value.trim();
+  state.appName = v || '跑車人生';
+  save(); closeModal(); renderAll();
+}
+
+/* ---------- ENTRY TAB ---------- */
+function renderEntry(){
+  var t = todayStr();
+  var meta = dm(t);
+  var todayRecs = recordsInRange(t,t);
+  var todayExps = expensesInRange(t,t);
+  var gross = sumIncome(todayRecs);
+  var net = sumNetIncome(todayRecs);
+  var exp = sumExpense(todayExps);
+
+  var platformTotals = {};
+  todayRecs.forEach(function(r){ platformTotals[r.platform]=(platformTotals[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
+
+  var h = '';
+  h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
+  h += '<div class="stat-tile"><div class="lbl">今日車資(未扣手續費)</div><div class="val num">'+fmtMoney(gross.total)+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">今日實收(含小費)</div><div class="val income num">'+fmtMoney(net.total)+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">今日支出</div><div class="val expense num">'+fmtMoney(exp)+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">今日淨額</div><div class="val num">'+fmtMoney(net.total-exp)+'</div></div>';
+  h += '</div></div>';
+
+  h += '<div class="section"><div class="section-title">收入平台</div><div class="platform-grid">';
+  PLATFORM_DEFS.forEach(function(p){
+    var pt = platformTotals[p.key]||0;
+    h += '<div class="platform-chip" data-act="open-income:'+p.key+'">'+
+         '<div class="pname">'+esc(p.label)+'</div>'+
+         '<div class="ptotal '+(pt>0?'has':'')+' num">'+(pt>0?fmtMoney(pt):'—')+'</div></div>';
+  });
+  h += '</div></div>';
+
+  h += '<div class="section"><div class="section-title">支出</div><div class="expense-grid">';
+  CATS.forEach(function(c){
+    h += '<div class="expense-chip" data-act="open-expense:'+c.key+'">'+
+         '<div class="eic">'+c.icon+'</div><div class="ename">'+c.label+'</div></div>';
+  });
+  h += '</div></div>';
+
+  var liveWorked = meta.workedMs + (meta.segmentStart? (Date.now()-meta.segmentStart):0);
+  var liveBreak = meta.breakMs + (meta.onBreak && meta.breakStart? (Date.now()-meta.breakStart):0);
+  var workedH = liveWorked/3600000;
+  var breakH = liveBreak/3600000;
+
+  var shiftBtn, breakRow='';
+  if(!meta.activeShiftStart){
+    shiftBtn = '<button class="shift-btn start" data-act="clock-in">上班打卡</button>';
+  } else {
+    shiftBtn = '<button class="shift-btn stop" data-act="clock-out">下班打卡</button>';
+    if(meta.onBreak){
+      breakRow = '<div class="daily-row"><span class="l">休息中</span><div style="display:flex;align-items:center;gap:10px"><span class="hours-badge">'+fmtNum(breakH,1)+' 小時</span><button class="shift-btn stop" data-act="break-end">休息結束</button></div></div>';
+    } else {
+      breakRow = '<div class="daily-row"><span class="l">休息</span><div style="display:flex;align-items:center;gap:10px"><span class="hours-badge">'+fmtNum(breakH,1)+' 小時</span><button class="shift-btn start" data-act="break-start">休息開始</button></div></div>';
+    }
+  }
+  var hoursLabel = (meta.activeShiftStart? (meta.onBreak?'休息中 · ':'營運中 · '):'')+fmtNum(workedH,1)+' 小時';
+
+  h += '<div class="section"><div class="section-title">今日行車</div><div class="card daily-card">';
+  h += '<div class="daily-row"><span class="l">今日里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(meta.km!=null?meta.km:'')+'" placeholder="0.0" data-km-input></div>';
+  h += '<div class="daily-row"><span class="l">工時(已扣休息)</span><div style="display:flex;align-items:center;gap:10px"><span class="hours-badge">'+esc(hoursLabel)+'</span>'+shiftBtn+'</div></div>';
+  h += breakRow;
+  h += '</div></div>';
+
+  if(todayRecs.length || todayExps.length){
+    h += '<div class="section"><div class="section-title">今日明細</div><div class="card">';
+    h += renderDayList(t);
+    h += '</div></div>';
+  }
+  return h;
+}
+
+function renderDayList(dateStr){
+  var recs = state.records.filter(function(r){return r.date===dateStr;}).sort(function(a,b){return b.ts-a.ts;});
+  var exps = state.expenses.filter(function(e){return e.date===dateStr;}).sort(function(a,b){return b.ts-a.ts;});
+  if(!recs.length && !exps.length) return '<div class="empty-state"><div class="ic">🗒️</div><div class="t">這天還沒有記錄</div></div>';
+  var h='';
+  recs.forEach(function(r){
+    var net = computeNetRevenue(r);
+    var fee = (+r.revenue||0)-net;
+    var amt = net+(+r.tip||0);
+    var desc = describeRecord(r);
+    var parts = [];
+    if(desc) parts.push(esc(desc));
+    if(r.revenue) parts.push('車資 '+fmtMoney(r.revenue));
+    if(fee>0.5) parts.push('抽成 '+fmtMoney(fee));
+    if(r.tip) parts.push('小費 '+fmtMoney(r.tip));
+    if(r.note) parts.push(esc(r.note));
+    var subLine = parts.join(' · ');
+    h += '<div class="list-item">'+
+      '<div class="li-icon" style="background:var(--income-soft);color:var(--income)">🚕</div>'+
+      '<div class="li-body"><div class="li-title">'+esc(platformDef(r.platform).label)+'</div><div class="li-sub">'+subLine+'</div></div>'+
+      '<div class="li-amt income num">+'+fmtMoney(amt)+'</div>'+
+      '<button class="li-del" data-act="del-income:'+r.id+'">✕</button></div>';
+  });
+  exps.forEach(function(e){
+    var ci = catInfo(e.category);
+    h += '<div class="list-item">'+
+      '<div class="li-icon" style="background:var(--expense-soft)">'+ci.icon+'</div>'+
+      '<div class="li-body"><div class="li-title">'+ci.label+'</div><div class="li-sub">'+(e.category==='fuel'&&e.liters?(fmtNum(e.liters,1)+' 公升 · '):'')+(e.note?esc(e.note):'')+'</div></div>'+
+      '<div class="li-amt expense num">-'+fmtMoney(e.amount)+'</div>'+
+      '<button class="li-del" data-act="del-expense:'+e.id+'">✕</button></div>';
+  });
+  return h;
+}
+
+/* ---------- HISTORY TAB ---------- */
+function renderHistory(){
+  var y=uiMonth.getFullYear(), mo=uiMonth.getMonth();
+  var first = new Date(y,mo,1);
+  var startOffset = (first.getDay()+6)%7;
+  var daysInMonth = new Date(y,mo+1,0).getDate();
+  var t = todayStr();
+
+  var netByDay = {};
+  state.records.forEach(function(r){ if(monthKeyOf(r.date)===y+'-'+pad(mo+1)) netByDay[r.date]=(netByDay[r.date]||0)+computeNetRevenue(r)+(+r.tip||0); });
+  state.expenses.forEach(function(e){ if(monthKeyOf(e.date)===y+'-'+pad(mo+1)) netByDay[e.date]=(netByDay[e.date]||0)-(+e.amount||0); });
+
+  var h='';
+  h += '<div class="month-nav"><button data-act="month:-1">‹</button><div class="m-title">'+y+' 年 '+(mo+1)+' 月</div><button data-act="month:1">›</button></div>';
+  h += '<div class="card"><div class="cal-grid">';
+  DOW.forEach(function(d){ h+='<div class="cal-dow">'+d+'</div>'; });
+  for(var i=0;i<startOffset;i++) h += '<div class="cal-cell empty"></div>';
+  for(var d=1; d<=daysInMonth; d++){
+    var ds = y+'-'+pad(mo+1)+'-'+pad(d);
+    var net = netByDay[ds];
+    var cls = 'cal-cell';
+    if(net>0) cls+=' pos'; else if(net<0) cls+=' neg';
+    if(ds===t) cls+=' today';
+    if(ds===selectedDay) cls+=' selected';
+    h += '<div class="'+cls+'" data-act="select-day:'+ds+'"><span class="d">'+d+'</span>'+(net?('<span class="n">'+(net>0?'+':'')+fmtNum(net)+'</span>'):'')+'</div>';
+  }
+  h += '</div></div>';
+
+  h += '<div class="section" style="margin-top:14px"><div class="section-title">'+selectedDay+' 明細</div><div class="card">'+renderDayList(selectedDay)+'</div></div>';
+  return h;
+}
+
+/* ---------- EXPENSE TAB ---------- */
+function renderExpenseTab(){
+  var y=uiMonth.getFullYear(), mo=uiMonth.getMonth();
+  var ym = y+'-'+pad(mo+1);
+  var range = monthRange(uiMonth);
+  var exps = expensesInRange(range.from, range.to).sort(function(a,b){return b.ts-a.ts;});
+  var totalVar = sumExpense(exps);
+
+  var byCat = {};
+  exps.forEach(function(e){ byCat[e.category]=(byCat[e.category]||0)+(+e.amount||0); });
+
+  var h='';
+  h += '<div class="month-nav"><button data-act="month:-1">‹</button><div class="m-title">'+y+' 年 '+(mo+1)+' 月 支出</div><button data-act="month:1">›</button></div>';
+
+  h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
+  h += '<div class="stat-tile"><div class="lbl">變動支出</div><div class="val expense num">'+fmtMoney(totalVar)+'</div></div>';
+  var fixedTotal = 0; state.fixedCosts.forEach(function(fc){ fixedTotal += fixedCostForMonth(fc, ym); });
+  h += '<div class="stat-tile"><div class="lbl">固定支出(本月)</div><div class="val expense num">'+fmtMoney(fixedTotal)+'</div></div>';
+  h += '</div></div>';
+
+  if(Object.keys(byCat).length){
+    h += '<div class="section"><div class="section-title">分類佔比</div><div class="card"><div class="donut-legend">';
+    CATS.forEach(function(c){
+      if(!byCat[c.key]) return;
+      h += '<div class="legend-row"><span class="legend-dot" style="background:var(--expense)"></span><span class="lname">'+c.icon+' '+c.label+'</span><span class="lval num">'+fmtMoney(byCat[c.key])+'</span></div>';
+    });
+    h += '</div></div></div>';
+  }
+
+  h += '<div class="section"><div class="section-title">明細</div><div class="card">';
+  h += exps.length ? exps.map(function(e){
+    var ci = catInfo(e.category);
+    return '<div class="list-item">'+
+      '<div class="li-icon" style="background:var(--expense-soft)">'+ci.icon+'</div>'+
+      '<div class="li-body"><div class="li-title">'+ci.label+'</div><div class="li-sub">'+e.date+(e.category==='fuel'&&e.liters?(' · '+fmtNum(e.liters,1)+'公升'):'')+(e.note?(' · '+esc(e.note)):'')+'</div></div>'+
+      '<div class="li-amt expense num">-'+fmtMoney(e.amount)+'</div>'+
+      '<button class="li-del" data-act="del-expense:'+e.id+'">✕</button></div>';
+  }).join('') : '<div class="empty-state"><div class="ic">🧾</div><div class="t">本月還沒有變動支出</div></div>';
+  h += '</div></div>';
+
+  h += '<div class="section"><div class="section-title">固定成本清單</div><div class="card">';
+  if(state.fixedCosts.length){
+    h += state.fixedCosts.map(function(fc){
+      var applied = fixedCostForMonth(fc, ym);
+      var overridden = state.fixedOverrides[ym] && state.fixedOverrides[ym][fc.id]!=null;
+      return '<div class="list-item">'+
+        '<div class="li-icon" style="background:var(--surface-sunken)">📌</div>'+
+        '<div class="li-body"><div class="li-title">'+esc(fc.name)+'</div><div class="li-sub">'+(fc.freq==='yearly'?('每年 '+fmtMoney(fc.amount)+' · 攤提'):'每月')+(overridden?' · 本月已調整':'')+'</div></div>'+
+        '<div class="li-amt expense num" data-act="edit-fixed-override:'+fc.id+'" style="cursor:pointer;text-decoration:underline dotted">-'+fmtMoney(applied)+'</div>'+
+        '<button class="li-del" data-act="del-fixed:'+fc.id+'">✕</button></div>';
+    }).join('');
+  } else {
+    h += '<div class="empty-state"><div class="ic">📌</div><div class="t">還沒有設定固定成本,例如靠行費、保險、勞健保</div></div>';
+  }
+  h += '</div><div style="height:10px"></div><button class="add-fixed-btn" data-act="open-fixed-new">+ 新增固定成本項目</button></div>';
+
+  return h;
+}
+
+/* ---------- ANALYTICS TAB ---------- */
+function renderAnalytics(){
+  var range;
+  if(analyticsPeriod==='today'){ var t=todayStr(); range={from:t,to:t}; }
+  else if(analyticsPeriod==='week'){ range=weekRange(); }
+  else { range=monthRange(uiMonth); }
+
+  var recs = recordsInRange(range.from, range.to);
+  var exps = expensesInRange(range.from, range.to);
+  var gross = sumIncome(recs);
+  var net = sumNetIncome(recs);
+  var feeTotal = gross.total-net.total;
+  var varExp = sumExpense(exps);
+  var fixExp = fixedTotalForRange(range.from, range.to);
+  var totalExp = varExp+fixExp;
+  var profit = net.total-totalExp;
+  var km = totalKmInRange(range.from, range.to);
+  var hours = totalHoursInRange(range.from, range.to);
+  var fuel = fuelStatsInRange(range.from, range.to);
+  var workDays = workingDaysInRange(range.from, range.to);
+
+  var byPlatform = {};
+  recs.forEach(function(r){ byPlatform[r.platform]=(byPlatform[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
+  var platformList = Object.keys(byPlatform).map(function(k){return {name:platformDef(k).label, val:byPlatform[k]};}).sort(function(a,b){return b.val-a.val;});
+  var palette=['#C97E17','#1E7A4C','#4472C4','#B8402C','#7A5FBF','#2FA0A0','#B8860B','#5A8F7B','#9C5FA8','#4E6E8E','#B08D57','#6E9F3E'];
+
+  var sub = subBreakdown(recs);
+
+  var h='';
+  h += '<div class="section"><div class="segmented">'+
+    '<button class="'+(analyticsPeriod==='today'?'active':'')+'" data-act="period:today">本日</button>'+
+    '<button class="'+(analyticsPeriod==='week'?'active':'')+'" data-act="period:week">本週</button>'+
+    '<button class="'+(analyticsPeriod==='month'?'active':'')+'" data-act="period:month">本月</button>'+
+    '</div></div>';
+
+  if(analyticsPeriod==='month'){
+    h += '<div class="month-nav" style="margin-top:-4px"><button data-act="month:-1">‹</button><div class="m-title">'+uiMonth.getFullYear()+' 年 '+(uiMonth.getMonth()+1)+' 月</div><button data-act="month:1">›</button></div>';
+  }
+
+  h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr 1fr">';
+  h += '<div class="stat-tile"><div class="lbl">總車資</div><div class="val num">'+fmtMoney(gross.total)+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">平台手續費</div><div class="val expense num">'+fmtMoney(feeTotal)+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">實收</div><div class="val income num">'+fmtMoney(net.total)+'</div></div>';
+  h += '</div></div>';
+  h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
+  h += '<div class="stat-tile"><div class="lbl">總支出(含固定攤提)</div><div class="val expense num">'+fmtMoney(totalExp)+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">淨利</div><div class="val num">'+fmtMoney(profit)+'</div></div>';
+  h += '</div></div>';
+
+  h += '<div class="section"><div class="section-title">本期概況</div><div class="card"><div class="summary-row" style="grid-template-columns:1fr 1fr 1fr">';
+  h += '<div class="stat-tile"><div class="lbl">營業天數</div><div class="val num">'+workDays+' 天</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">平均日實收</div><div class="val income num">'+(workDays>0?fmtMoney(net.total/workDays):'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">平均每日工時</div><div class="val num">'+(workDays>0?fmtNum(hours/workDays,1)+' 小時':'—')+'</div></div>';
+  h += '</div></div></div>';
+
+  h += '<div class="section"><div class="section-title">效率指標</div><div class="card"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
+  h += '<div class="stat-tile"><div class="lbl">實際時薪(已扣休息)</div><div class="val num">'+(hours>0?fmtMoney(net.total/hours):'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">總工時</div><div class="val num">'+fmtNum(hours,1)+' 小時</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">每公里成本</div><div class="val expense num">'+(km>0?fmtMoney(totalExp/km):'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">每公里實收</div><div class="val income num">'+(km>0?fmtMoney(net.total/km):'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">總里程</div><div class="val num">'+fmtNum(km,1)+' km</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">每公升可跑</div><div class="val num">'+(fuel.liters>0?fmtNum(km/fuel.liters,1)+' km':'—')+'</div></div>';
+  h += '</div></div></div>';
+
+  if(platformList.length){
+    h += '<div class="section"><div class="section-title">平台佔比(實收)</div><div class="card"><div class="donut-legend">';
+    platformList.forEach(function(p,i){
+      h += '<div class="legend-row"><span class="legend-dot" style="background:'+palette[i%palette.length]+'"></span><span class="lname">'+esc(p.name)+'</span><span class="lval num">'+fmtMoney(p.val)+'</span></div>';
+    });
+    h += '</div></div></div>';
+  }
+
+  if(sub.length){
+    h += '<div class="section"><div class="section-title">細項分析(趟次 / 實收)</div><div class="card">';
+    h += sub.map(function(s){
+      return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(s.label)+'</div><div class="li-sub">'+s.count+' 趟</div></div><div class="li-amt income num">'+fmtMoney(s.total)+'</div></div>';
+    }).join('');
+    h += '</div></div>';
+  }
+
+  var tg = state.targets;
+  var targetVal = analyticsPeriod==='today'?tg.daily : analyticsPeriod==='week'?tg.weekly : tg.monthly;
+  if(targetVal>0){
+    var pct = Math.min(100, Math.round(net.total/targetVal*100));
+    h += '<div class="section"><div class="section-title">目標進度(依實收計算)</div><div class="card"><div class="progress-wrap">'+
+      '<div class="progress-lbl"><span class="p">'+fmtMoney(net.total)+' / '+fmtMoney(targetVal)+'</span><span class="v num">'+pct+'%</span></div>'+
+      '<div class="progress-bar"><div class="progress-fill" style="width:'+pct+'%"></div></div></div></div></div>';
+  }
+
+  return h;
+}
+
+/* ---------- MODALS ---------- */
+function openModal(html){
+  var root = document.getElementById('modalRoot');
+  root.innerHTML = '<div class="modal-overlay" data-act="close-modal"><div class="modal" id="modalBody" data-act="noop"></div></div>';
+  document.getElementById('modalBody').innerHTML = html;
+}
+function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
+
+function chipRowHtml(groupId, options, selectedDefault){
+  var h = '<div class="chip-row" data-group="'+groupId+'">';
+  options.forEach(function(opt){
+    var sel = opt===selectedDefault ? ' selected' : '';
+    h += '<button type="button" class="chip-opt'+sel+'" data-act="chip:'+groupId+':'+esc(opt)+'" data-group="'+groupId+'">'+esc(opt)+'</button>';
+  });
+  h += '</div><input type="hidden" id="chip-'+groupId+'" value="'+esc(selectedDefault)+'">';
+  return h;
+}
+
+function buildIncomeForm(key){
+  var def = platformDef(key);
+  var h = '';
+  if(def.subtypeOptions){
+    h += '<div class="form-row"><label>車種/屬性</label>'+chipRowHtml('subtype', def.subtypeOptions, def.subtypeOptions[0])+'</div>';
+  }
+  if(def.fareTypeOptions){
+    h += '<div class="form-row"><label>計價方式</label>'+chipRowHtml('fareType', def.fareTypeOptions, def.fareTypeOptions[0])+'</div>';
+  }
+  if(def.discountOptions){
+    h += '<div class="form-row"><label>優惠派別</label>'+chipRowHtml('discountTier', def.discountOptions, def.discountOptions[0])+'</div>';
+  }
+  if(def.paymentOptions){
+    h += '<div class="form-row" id="sec-meterExtra"><label>付款方式</label>'+chipRowHtml('payment', def.paymentOptions, def.paymentOptions[0])+'</div>';
+  }
+  if(def.estimateTypeOptions || def.estimateHasMarkupAmount || def.estimateHasMarkupMultiplier){
+    h += '<div id="sec-estimateExtra" hidden>';
+    if(def.estimateTypeOptions){ h += '<div class="form-row"><label>多元類型</label>'+chipRowHtml('estimateType', def.estimateTypeOptions, def.estimateTypeOptions[0])+'</div>'; }
+    if(def.estimateHasMarkupAmount||def.estimateHasMarkupMultiplier){
+      h += '<div class="form-grid2">';
+      if(def.estimateHasMarkupAmount) h += '<div class="form-row"><label>加成金額(選填)</label><input class="num-input" id="f-markup-amount" type="number" min="0" step="1" placeholder="0"></div>';
+      if(def.estimateHasMarkupMultiplier) h += '<div class="form-row"><label>加成倍率(選填)</label><input class="num-input" id="f-markup-multiplier" type="number" min="0" step="0.1" placeholder="1.0"></div>';
+      h += '</div>';
+    }
+    h += '</div>';
+  }
+  if(def.hasMarkupAmount) h += '<div class="form-row"><label>加成金額(選填)</label><input class="num-input" id="f-markup-amount" type="number" min="0" step="1" placeholder="0"></div>';
+  if(def.hasMarkupMultiplier) h += '<div class="form-row"><label>加成倍率(選填,例如 1.2)</label><input class="num-input" id="f-markup-multiplier" type="number" min="0" step="0.1" placeholder="1.0"></div>';
+  if(def.subPlatformOptions){
+    h += '<div class="form-row"><label>預約單屬於哪個平台</label><select id="f-subplatform">'+def.subPlatformOptions.map(function(o){return '<option value="'+esc(o)+'">'+esc(o)+'</option>';}).join('')+'</select></div>';
+  }
+  return h;
+}
+
+function openIncomeModal(key){
+  var def = platformDef(key);
+  var h = '<div class="modal-title">'+esc(def.label)+'<button class="close" data-act="close-modal">✕</button></div>';
+  if(def.tipOnly){
+    h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-tip" type="number" min="0" step="1" placeholder="0" inputmode="numeric"></div>';
+  } else {
+    h += '<div class="form-row"><label>車資金額</label><input class="num-input" id="f-revenue" type="number" min="0" step="1" placeholder="0" inputmode="numeric"></div>';
+    h += '<div class="form-row"><label>小費(選填)</label><input class="num-input" id="f-tip" type="number" min="0" step="1" placeholder="0" inputmode="numeric"></div>';
+    h += buildIncomeForm(key);
+  }
+  h += '<div class="form-row"><label>備註(選填)</label><input id="f-note" type="text" placeholder=""></div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-income:'+key+'">儲存</button></div>';
+  openModal(h);
+  setTimeout(function(){ var el=document.getElementById('f-revenue')||document.getElementById('f-tip'); if(el) el.focus(); }, 50);
+}
+function saveIncome(key){
+  var def = platformDef(key);
+  function grab(id){ var el=document.getElementById(id); return el? el.value : null; }
+  var revenue = +grab('f-revenue') || 0;
+  var tip = +grab('f-tip') || 0;
+  var note = (grab('f-note')||'').trim();
+  if(revenue<=0 && tip<=0){ closeModal(); return; }
+  var rec = {id:uid(), date:todayStr(), ts:Date.now(), platform:key, revenue:revenue, tip:tip, note:note};
+  if(def.subtypeOptions) rec.subtype = grab('chip-subtype');
+  if(def.fareTypeOptions) rec.fareType = grab('chip-fareType');
+  if(def.discountOptions) rec.discountTier = grab('chip-discountTier');
+  var meterLike = !def.fareTypeOptions || rec.fareType==='跳表' || rec.fareType==='固定價';
+  if(def.paymentOptions && meterLike) rec.payment = grab('chip-payment');
+  if(def.estimateTypeOptions && rec.fareType==='預估車資') rec.estimateType = grab('chip-estimateType');
+  var ma = grab('f-markup-amount'); if(ma!=null && ma!=='') rec.markupAmount = +ma;
+  var mm = grab('f-markup-multiplier'); if(mm!=null && mm!=='') rec.markupMultiplier = +mm;
+  if(def.subPlatformOptions) rec.subPlatform = grab('f-subplatform');
+  state.records.push(rec);
+  save(); closeModal(); renderAll();
+}
+
+function openExpenseModal(catKey){
+  var ci = catInfo(catKey);
+  var h = '<div class="modal-title">'+ci.icon+' '+ci.label+'<button class="close" data-act="close-modal">✕</button></div>';
+  if(catKey==='fuel'){
+    h += '<div class="form-grid2">';
+    h += '<div class="form-row"><label>公升數</label><input class="num-input" id="f-liters" type="number" min="0" step="0.1" placeholder="0.0" inputmode="decimal"></div>';
+    h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-amount" type="number" min="0" step="1" placeholder="0" inputmode="numeric"></div>';
+    h += '</div>';
+  } else {
+    h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-amount" type="number" min="0" step="1" placeholder="0" inputmode="numeric"></div>';
+  }
+  h += '<div class="form-row"><label>備註(選填)</label><input id="f-note" type="text" placeholder=""></div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-expense:'+catKey+'">儲存</button></div>';
+  openModal(h);
+  setTimeout(function(){ var el=document.getElementById('f-liters')||document.getElementById('f-amount'); if(el) el.focus(); }, 50);
+}
+function saveExpense(catKey){
+  var amount = +document.getElementById('f-amount').value || 0;
+  var liters = catKey==='fuel' ? (+document.getElementById('f-liters').value || 0) : undefined;
+  var note = document.getElementById('f-note').value.trim();
+  if(amount<=0){ closeModal(); return; }
+  var rec = {id:uid(), date:todayStr(), category:catKey, amount:amount, note:note, ts:Date.now()};
+  if(liters!=null) rec.liters = liters;
+  state.expenses.push(rec);
+  save(); closeModal(); renderAll();
+}
+
+function openFixedModal(){
+  var h = '<div class="modal-title">新增固定成本<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div class="form-row"><label>項目名稱(例如:靠行費、勞健保、保險)</label><input id="f-name" type="text" placeholder="靠行費"></div>';
+  h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-amount" type="number" min="0" step="1" placeholder="0" inputmode="numeric"></div>';
+  h += '<div class="form-row"><label>週期</label><div class="chip-row" data-group="freq">'+
+    '<button type="button" class="chip-opt selected" data-act="chip:freq:monthly" data-group="freq">每月固定</button>'+
+    '<button type="button" class="chip-opt" data-act="chip:freq:yearly" data-group="freq">每年一次(自動÷12)</button>'+
+    '</div><input type="hidden" id="chip-freq" value="monthly"></div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-fixed">儲存</button></div>';
+  openModal(h);
+  setTimeout(function(){ document.getElementById('f-name').focus(); }, 50);
+}
+function saveFixed(){
+  var name = document.getElementById('f-name').value.trim();
+  var amount = +document.getElementById('f-amount').value || 0;
+  var freq = document.getElementById('chip-freq').value;
+  if(!name || amount<=0){ closeModal(); return; }
+  state.fixedCosts.push({id:uid(), name:name, amount:amount, freq:freq});
+  save(); closeModal(); renderAll();
+}
+
+function openFixedOverrideModal(fcId){
+  var fc = state.fixedCosts.filter(function(f){return f.id===fcId;})[0];
+  if(!fc) return;
+  var y=uiMonth.getFullYear(), mo=uiMonth.getMonth();
+  var ym = y+'-'+pad(mo+1);
+  var current = fixedCostForMonth(fc, ym);
+  var h = '<div class="modal-title">調整「'+esc(fc.name)+'」('+ym+')<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div class="form-row"><label>本月金額(預設 '+fmtMoney(fc.freq==='yearly'?fc.amount/12:fc.amount)+')</label><input class="num-input" id="f-amount" type="number" min="0" step="1" value="'+Math.round(current)+'"></div>';
+  h += '<div class="btn-row"><button class="btn btn-ghost" data-act="reset-fixed-override:'+fcId+'">還原預設</button><button class="btn btn-primary" data-act="save-fixed-override:'+fcId+'">儲存</button></div>';
+  openModal(h);
+}
+function saveFixedOverride(fcId){
+  var y=uiMonth.getFullYear(), mo=uiMonth.getMonth();
+  var ym = y+'-'+pad(mo+1);
+  var amount = +document.getElementById('f-amount').value || 0;
+  if(!state.fixedOverrides[ym]) state.fixedOverrides[ym]={};
+  state.fixedOverrides[ym][fcId]=amount;
+  save(); closeModal(); renderAll();
+}
+function resetFixedOverride(fcId){
+  var y=uiMonth.getFullYear(), mo=uiMonth.getMonth();
+  var ym = y+'-'+pad(mo+1);
+  if(state.fixedOverrides[ym]) delete state.fixedOverrides[ym][fcId];
+  save(); closeModal(); renderAll();
+}
+
+function openSettingsModal(){
+  var fr = state.feeRules;
+  var h = '<div class="modal-title">設定<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div class="form-row"><label>平台手續費設定</label></div>';
+  h += '<div class="form-grid2">';
+  h += '<div><label style="font-size:11px">台灣大車隊 %</label><input class="num-input" id="f-fee-tdc" type="number" step="0.1" value="'+(fr.tdc!=null?fr.tdc:15)+'"></div>';
+  h += '<div><label style="font-size:11px">大都會 每單扣$</label><input class="num-input" id="f-fee-metroflat" type="number" step="1" value="'+(fr.metroFlat!=null?fr.metroFlat:25)+'"></div>';
+  h += '<div><label style="font-size:11px">YOXI 現金 %</label><input class="num-input" id="f-fee-yoxicash" type="number" step="0.1" value="'+(fr.yoxiCash!=null?fr.yoxiCash:10)+'"></div>';
+  h += '<div><label style="font-size:11px">YOXI 其餘 %</label><input class="num-input" id="f-fee-yoxiother" type="number" step="0.1" value="'+(fr.yoxiOther!=null?fr.yoxiOther:12)+'"></div>';
+  h += '<div><label style="font-size:11px">大都會 信用卡加扣%</label><input class="num-input" id="f-fee-metrocredit" type="number" step="0.1" value="'+(fr.metroCredit!=null?fr.metroCredit:3)+'"></div>';
+  h += '<div><label style="font-size:11px">大都會 企業簽單加扣%</label><input class="num-input" id="f-fee-metroenterprise" type="number" step="0.1" value="'+(fr.metroEnterprise!=null?fr.metroEnterprise:6)+'"></div>';
+  h += '</div>';
+  h += '<div class="form-row"><label>Line Go 手續費 %(尚未確認,選填)</label><input class="num-input" id="f-fee-linego" type="number" step="0.1" value="'+(fr.linego!=null?fr.linego:'')+'"></div>';
+
+  h += '<div class="form-row" style="margin-top:6px"><label>收入目標(依實收計算)</label>';
+  h += '<div class="form-grid2" style="margin-bottom:8px"><div><span style="font-size:11px;color:var(--text-muted)">每日</span><input class="num-input" id="f-target-daily" type="number" min="0" value="'+(state.targets.daily||'')+'"></div>'+
+       '<div><span style="font-size:11px;color:var(--text-muted)">每週</span><input class="num-input" id="f-target-weekly" type="number" min="0" value="'+(state.targets.weekly||'')+'"></div></div>';
+  h += '<div><span style="font-size:11px;color:var(--text-muted)">每月</span><input class="num-input" id="f-target-monthly" type="number" min="0" value="'+(state.targets.monthly||'')+'"></div></div>';
+
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-settings">儲存設定</button></div>';
+  h += '<div style="height:14px"></div>';
+  h += '<div class="btn-row"><button class="btn btn-danger" data-act="reset-all">清除所有資料</button></div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.6">資料儲存在這支手機的瀏覽器裡,清除瀏覽器資料或換手機會遺失。之後可以加開 Google Sheet 自動同步備份。</div>';
+  openModal(h);
+}
+function saveSettings(){
+  state.targets.daily = +document.getElementById('f-target-daily').value || 0;
+  state.targets.weekly = +document.getElementById('f-target-weekly').value || 0;
+  state.targets.monthly = +document.getElementById('f-target-monthly').value || 0;
+  function g(id){ var v=document.getElementById(id).value; return v===''?null:+v; }
+  state.feeRules.tdc = g('f-fee-tdc');
+  state.feeRules.yoxiCash = g('f-fee-yoxicash');
+  state.feeRules.yoxiOther = g('f-fee-yoxiother');
+  state.feeRules.linego = g('f-fee-linego');
+  state.feeRules.metroFlat = g('f-fee-metroflat');
+  state.feeRules.metroCredit = g('f-fee-metrocredit');
+  state.feeRules.metroEnterprise = g('f-fee-metroenterprise');
+  save(); closeModal(); renderAll();
+}
+
+/* ---------- EVENT DELEGATION ---------- */
+document.addEventListener('click', function(e){
+  var t = e.target.closest('[data-act]');
+  if(!t) return;
+  var act = t.getAttribute('data-act');
+  var parts = act.split(':');
+  var cmd = parts[0], arg = parts.slice(1).join(':');
+
+  if(cmd==='tab'){ currentTab=arg; renderAll(); }
+  else if(cmd==='noop'){ /* absorb click inside modal card */ }
+  else if(cmd==='close-modal'){ closeModal(); }
+  else if(cmd==='open-income'){ openIncomeModal(arg); }
+  else if(cmd==='save-income'){ saveIncome(arg); }
+  else if(cmd==='open-expense'){ openExpenseModal(arg); }
+  else if(cmd==='save-expense'){ saveExpense(arg); }
+  else if(cmd==='del-income'){ state.records=state.records.filter(function(r){return r.id!==arg;}); save(); renderAll(); }
+  else if(cmd==='del-expense'){ state.expenses=state.expenses.filter(function(r){return r.id!==arg;}); save(); renderAll(); }
+  else if(cmd==='clock-in'){
+    var m1 = dm(todayStr()); m1.activeShiftStart=Date.now(); m1.segmentStart=Date.now(); m1.onBreak=false; save(); renderAll();
+  }
+  else if(cmd==='clock-out'){
+    var m2 = dm(todayStr());
+    if(m2.onBreak && m2.breakStart){ m2.breakMs += (Date.now()-m2.breakStart); m2.breakStart=null; m2.onBreak=false; }
+    if(m2.segmentStart){ m2.workedMs += (Date.now()-m2.segmentStart); m2.segmentStart=null; }
+    m2.activeShiftStart=null;
+    save(); renderAll();
+  }
+  else if(cmd==='break-start'){
+    var m3 = dm(todayStr());
+    if(m3.activeShiftStart && !m3.onBreak && m3.segmentStart){
+      m3.workedMs += (Date.now()-m3.segmentStart); m3.segmentStart=null; m3.onBreak=true; m3.breakStart=Date.now();
+      save(); renderAll();
+    }
+  }
+  else if(cmd==='break-end'){
+    var m4 = dm(todayStr());
+    if(m4.onBreak && m4.breakStart){
+      m4.breakMs += (Date.now()-m4.breakStart); m4.breakStart=null; m4.onBreak=false; m4.segmentStart=Date.now();
+      save(); renderAll();
+    }
+  }
+  else if(cmd==='month'){ uiMonth.setMonth(uiMonth.getMonth()+(+arg)); renderAll(); }
+  else if(cmd==='select-day'){ selectedDay=arg; renderAll(); }
+  else if(cmd==='period'){ analyticsPeriod=arg; renderAll(); }
+  else if(cmd==='open-fixed-new'){ openFixedModal(); }
+  else if(cmd==='save-fixed'){ saveFixed(); }
+  else if(cmd==='del-fixed'){ state.fixedCosts=state.fixedCosts.filter(function(f){return f.id!==arg;}); save(); renderAll(); }
+  else if(cmd==='edit-fixed-override'){ openFixedOverrideModal(arg); }
+  else if(cmd==='save-fixed-override'){ saveFixedOverride(arg); }
+  else if(cmd==='reset-fixed-override'){ resetFixedOverride(arg); }
+  else if(cmd==='rename-app'){ openRenameModal(); }
+  else if(cmd==='save-appname'){ saveAppName(); }
+  else if(cmd==='open-settings'){ openSettingsModal(); }
+  else if(cmd==='save-settings'){ saveSettings(); }
+  else if(cmd==='reset-all'){
+    if(confirm('確定要清除所有記帳資料嗎?此動作無法復原。')){ state=defaultState(); save(); closeModal(); renderAll(); }
+  }
+  else if(cmd==='chip'){
+    var gv0 = arg.indexOf(':');
+    var groupId = gv0>=0 ? arg.slice(0,gv0) : arg;
+    var value = gv0>=0 ? arg.slice(gv0+1) : '';
+    document.querySelectorAll('[data-group="'+groupId+'"]').forEach(function(b){
+      b.classList.toggle('selected', b.getAttribute('data-act')==='chip:'+groupId+':'+value);
+    });
+    var hi = document.getElementById('chip-'+groupId);
+    if(hi) hi.value = value;
+    if(groupId==='fareType'){
+      var meterEl = document.getElementById('sec-meterExtra');
+      var estEl = document.getElementById('sec-estimateExtra');
+      var meterLike = (value==='跳表' || value==='固定價');
+      if(meterEl) meterEl.hidden = !meterLike;
+      if(estEl) estEl.hidden = meterLike;
+    }
+  }
+});
+document.addEventListener('change', function(e){
+  if(e.target.matches('[data-km-input]')){
+    dm(todayStr()).km = e.target.value===''? null : +e.target.value;
+    save();
+  }
+});
+
+renderAll();
+})();
+</script>
+
+</body>
+</html>
