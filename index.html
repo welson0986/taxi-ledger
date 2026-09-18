@@ -121,6 +121,7 @@ body{
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
 }
 .platform-chip:active{background:var(--accent-soft)}
+.plat-badge{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:15px;margin-bottom:1px;flex:none}
 .platform-chip .pname{font-size:12px;font-weight:700;line-height:1.25}
 .platform-chip .ptotal{font-size:10.5px;color:var(--text-muted);font-family:'Space Grotesk'}
 .platform-chip .ptotal.has{color:var(--income)}
@@ -344,23 +345,25 @@ function holidayBlockDays(b){
 
 /* ---------- platform definitions ---------- */
 var PLATFORM_DEFS = [
-  {key:'uber', label:'Uber', subtypeOptions:['菁英X','樂聚XL','毛孩優步','舒適優步','尊榮優步','純電優步','加大樂聚XXL'], hasMarkupAmount:true},
-  {key:'tdc', label:'台灣大車隊', fareTypeOptions:['跳表','預估車資'], paymentOptions:['現金','企業簽單','信用卡','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true},
-  {key:'metro', label:'大都會', fareTypeOptions:['跳表','預估車資'], discountOptions:['原價','婦派','海派','鑽派','超派'], paymentOptions:['現金','企業簽單','信用卡','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true},
-  {key:'bolt', label:'BOLT', subtypeOptions:['經典博特','舒適博特','揪團博特','寵物博特','尊榮博特'], hasMarkupMultiplier:true},
-  {key:'yoxi', label:'YOXI', fareTypeOptions:['跳表','預估車資'], paymentOptions:['現金','企業簽單','信用卡'], estimateTypeOptions:['一般多元','樂聚多元','減碳多元'], estimateHasMarkupMultiplier:true},
-  {key:'linego', label:'Line Go', subtypeOptions:['一般','六人座'], hasMarkupMultiplier:true},
-  {key:'private', label:'私客'},
-  {key:'hailyellow', label:'呼叫小黃', fareTypeOptions:['跳表','固定價']},
-  {key:'street', label:'路招'},
-  {key:'reservation', label:'預約單', subPlatformOptions:['Uber','台灣大車隊','大都會','BOLT','YOXI','Line Go','呼叫小黃']},
-  {key:'phonecall', label:'接電', subtypeOptions:['台灣大車隊','大都會','路招客']},
-  {key:'tipbox', label:'小費/小費箱', tipOnly:true}
+  {key:'uber', label:'Uber', icon:'🚙', color:'#000000', subtypeOptions:['菁英X','樂聚XL','毛孩優步','舒適優步','尊榮優步','純電優步','加大樂聚XXL'], hasMarkupAmount:true},
+  {key:'tdc', label:'台灣大車隊', icon:'🚕', color:'#1E5FA8', fareTypeOptions:['跳表','預估車資'], paymentOptions:['現金','企業簽單','信用卡','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true},
+  {key:'metro', label:'大都會', icon:'🚗', color:'#FFFFFF', fareTypeOptions:['跳表','預估車資'], discountOptions:['原價','婦派','海派','鑽派','超派'], paymentOptions:['現金','企業簽單','信用卡','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true},
+  {key:'bolt', label:'BOLT', icon:'⚡', color:'#1B5E20', subtypeOptions:['經典博特','舒適博特','揪團博特','寵物博特','尊榮博特'], hasMarkupMultiplier:true},
+  {key:'yoxi', label:'YOXI', icon:'🚐', color:'#90CAF9', fareTypeOptions:['跳表','預估車資','據點叫車'], paymentOptions:['現金','企業簽單','信用卡'], enterpriseDiscountOptions:['原價','95折','92折','85折'], estimateTypeOptions:['一般多元','樂聚多元','減碳多元'], estimateHasMarkupMultiplier:true, hasStationFee:true},
+  {key:'linego', label:'Line Go', icon:'💬', color:'#06C755', subtypeOptions:['一般','六人座'], hasMarkupMultiplier:true},
+  {key:'private', label:'私客', icon:'🙋🏻', color:'#7A5FBF'},
+  {key:'hailyellow', label:'呼叫小黃', icon:'🚖', color:'#F5C518'  , fareTypeOptions:['跳表','固定價']},
+  {key:'street', label:'路招', icon:'👋🏻', color:'#F5A85C'},
+  {key:'reservation', label:'預約單', icon:'📅', color:'#B08D57', subPlatformOptions:['Uber','台灣大車隊','大都會','BOLT','YOXI','Line Go','呼叫小黃']},
+  {key:'phonecall', label:'接電', icon:'🔋', color:'#E53935', subtypeOptions:['台灣大車隊','大都會','路招客']},
+  {key:'tipbox', label:'小費/小費箱', icon:'💰', color:'#2FA0A0', tipOnly:true}
 ];
 function mergePlatformOverride(p, ov){
   var out = {};
   for(var k in p){ out[k]=p[k]; }
   if(ov && ov.label) out.label = ov.label;
+  if(ov && ov.icon) out.icon = ov.icon;
+  if(ov && ov.color) out.color = ov.color;
   out.hidden = !!(ov && ov.hidden);
   return out;
 }
@@ -377,7 +380,7 @@ function allPlatforms(){
     return mergePlatformOverride(p, state.platformOverrides[p.key]);
   });
   (state.customPlatforms||[]).forEach(function(c){
-    var cp = {key:c.key, label:c.label, hidden:!!c.hidden, custom:true};
+    var cp = {key:c.key, label:c.label, hidden:!!c.hidden, custom:true, icon:c.icon||'🚘', color:c.color||'#8A8272'};
     if(c.subtypeOptions && c.subtypeOptions.length) cp.subtypeOptions = c.subtypeOptions;
     list.push(cp);
   });
@@ -422,7 +425,7 @@ function defaultState(){
     fixedCosts:[],
     fixedOverrides:{},
     targets:{daily:0,weekly:0,monthly:0},
-    feeRules:{tdc:null,yoxiCash:null,yoxiOther:null,linego:null,metroFlat:null,metroCredit:null,metroEnterprise:null,uber:null,boltFlat:null,boltPct:null,boltThreshold:null},
+    feeRules:{tdc:null,yoxiCash:null,yoxiOther:null,yoxiCreditExtra:null,linego:null,metroFlat:null,metroCredit:null,metroEnterprise:null,uber:null,boltFlat:null,boltPct:null,boltThreshold:null},
     platformOverrides:{},
     customPlatforms:[],
     platformOrder:PLATFORM_DEFS.map(function(p){return p.key;}),
@@ -482,19 +485,46 @@ function computeNetRevenue(r){
   var gross = +r.revenue||0;
   if(gross<=0) return 0;
   var fees = state.feeRules||{};
-  if(r.platform==='uber' || r.platform==='bolt'){
+  if(r.platform==='uber'){
     return gross;
+  }
+  if(r.platform==='bolt'){
+    var threshold = fees.boltThreshold!=null?fees.boltThreshold:15;
+    var weekCount = boltWeekTripCount(r.date);
+    if(weekCount>=threshold){
+      var pctB = fees.boltPct!=null?fees.boltPct:10;
+      return gross*(1-pctB/100);
+    }
+    var flatB = fees.boltFlat!=null?fees.boltFlat:20;
+    var netB = gross-flatB;
+    return netB>0?netB:0;
   }
   if(r.platform==='tdc'){
     var pct = fees.tdc!=null?fees.tdc:15;
     return gross*(1-pct/100);
   }
   if(r.platform==='yoxi'){
-    var pct2 = (r.payment==='現金') ? (fees.yoxiCash!=null?fees.yoxiCash:10) : (fees.yoxiOther!=null?fees.yoxiOther:12);
-    return gross*(1-pct2/100);
+    var yoxiBase = fees.yoxiCash!=null?fees.yoxiCash:10;
+    var yoxiCreditExtra = fees.yoxiCreditExtra!=null?fees.yoxiCreditExtra:2;
+    if(r.fareType==='據點叫車'){
+      var netStation = gross*(1-yoxiBase/100) - (+r.stationFee||0);
+      return netStation>0?netStation:0;
+    }
+    if(r.fareType==='跳表'){
+      if(r.payment==='企業簽單'){
+        var discMap = {'原價':1,'95折':0.95,'92折':0.92,'85折':0.85};
+        var mult = discMap[r.enterpriseDiscount]!=null ? discMap[r.enterpriseDiscount] : 1;
+        return gross*mult*(1-yoxiBase/100);
+      }
+      if(r.payment==='信用卡'){
+        return gross*(1-(yoxiBase+yoxiCreditExtra)/100);
+      }
+      return gross*(1-yoxiBase/100);
+    }
+    return gross*(1-yoxiBase/100);
   }
   if(r.platform==='linego'){
-    var pct3 = fees.linego!=null?fees.linego:0;
+    var pct3 = fees.linego!=null?fees.linego:19.5;
     return gross*(1-pct3/100);
   }
   if(r.platform==='metro'){
@@ -523,16 +553,6 @@ function computeGrossRevenue(r){
     var pctU = fees.uber!=null?fees.uber:25;
     return v/(1-pctU/100);
   }
-  if(r.platform==='bolt'){
-    var threshold = fees.boltThreshold!=null?fees.boltThreshold:15;
-    var weekCount = boltWeekTripCount(r.date);
-    if(weekCount>=threshold){
-      var pctB = fees.boltPct!=null?fees.boltPct:10;
-      return v/(1-pctB/100);
-    }
-    var flatB = fees.boltFlat!=null?fees.boltFlat:20;
-    return v+flatB;
-  }
   return v;
 }
 function describeRecord(r){
@@ -542,7 +562,9 @@ function describeRecord(r){
   if(r.fareType) parts.push(r.fareType);
   if(r.discountTier && r.discountTier!=='原價') parts.push(r.discountTier);
   if(r.payment) parts.push(r.payment);
+  if(r.enterpriseDiscount && r.enterpriseDiscount!=='原價') parts.push(r.enterpriseDiscount);
   if(r.estimateType) parts.push(r.estimateType);
+  if(r.stationFee) parts.push('據點費$'+r.stationFee);
   if(r.markupMultiplier) parts.push('加成'+r.markupMultiplier+'倍');
   if(r.markupAmount) parts.push('加成$'+r.markupAmount);
   return parts.join(' · ');
@@ -699,6 +721,7 @@ function breakdownLabel(r){
   if(r.fareType) parts.push(r.fareType);
   if(r.discountTier && r.discountTier!=='原價') parts.push(r.discountTier);
   if(r.payment) parts.push(r.payment);
+  if(r.enterpriseDiscount && r.enterpriseDiscount!=='原價') parts.push(r.enterpriseDiscount);
   if(r.estimateType) parts.push(r.estimateType);
   return parts.join(' · ');
 }
@@ -789,6 +812,7 @@ function renderEntry(){
   visiblePlatforms().forEach(function(p){
     var pt = platformTotals[p.key]||0;
     h += '<div class="platform-chip" data-act="open-income:'+p.key+'">'+
+         '<div class="plat-badge" style="background:'+(p.color||'#8A8272')+'">'+(p.icon||'🚘')+'</div>'+
          '<div class="pname">'+esc(p.label)+'</div>'+
          '<div class="ptotal '+(pt>0?'has':'')+' num">'+(pt>0?fmtMoney(pt):'—')+'</div></div>';
   });
@@ -919,7 +943,7 @@ function renderHistory(){
 
   h += '<div class="section"><div class="section-title">幫 '+selectedDay+' 補記收入(點明細可修改/刪除)</div><div class="platform-grid">';
   visiblePlatforms().forEach(function(p){
-    h += '<div class="platform-chip" data-act="open-income:'+p.key+'"><div class="pname">'+esc(p.label)+'</div></div>';
+    h += '<div class="platform-chip" data-act="open-income:'+p.key+'"><div class="plat-badge" style="background:'+(p.color||'#8A8272')+'">'+(p.icon||'🚘')+'</div><div class="pname">'+esc(p.label)+'</div></div>';
   });
   h += '</div></div>';
   h += '<div class="section"><div class="section-title">幫 '+selectedDay+' 補記支出</div><div class="expense-grid">';
@@ -1091,10 +1115,42 @@ function renderAnalytics(){
 }
 
 /* ---------- MODALS ---------- */
+var currentIncomeModalKey = null;
 function openModal(html){
+  currentIncomeModalKey = null;
   var root = document.getElementById('modalRoot');
   root.innerHTML = '<div class="modal-overlay" data-act="close-modal"><div class="modal" id="modalBody" data-act="noop"></div></div>';
   document.getElementById('modalBody').innerHTML = html;
+}
+function computePreviewRecordFromForm(key){
+  var def = platformDef(key);
+  function grab(id){ var el=document.getElementById(id); return el?el.value:null; }
+  var rec = {platform:key};
+  rec.revenue = +grab('f-revenue')||0;
+  rec.tip = +grab('f-tip')||0;
+  if(def.fareTypeOptions){ var fte=document.getElementById('chip-fareType'); rec.fareType = fte?fte.value:def.fareTypeOptions[0]; }
+  if(def.paymentOptions){ var pe=document.getElementById('chip-payment'); rec.payment = pe?pe.value:def.paymentOptions[0]; }
+  if(def.discountOptions){ var de=document.getElementById('chip-discountTier'); rec.discountTier = de?de.value:def.discountOptions[0]; }
+  if(def.enterpriseDiscountOptions){ var ee=document.getElementById('chip-enterpriseDiscount'); rec.enterpriseDiscount = ee?ee.value:def.enterpriseDiscountOptions[0]; }
+  if(def.hasStationFee){ rec.stationFee = +grab('f-station-fee')||0; }
+  return rec;
+}
+function updateIncomePreview(){
+  if(!currentIncomeModalKey) return;
+  var el = document.getElementById('incomePreview');
+  if(!el) return;
+  var def = platformDef(currentIncomeModalKey);
+  if(def.tipOnly){ return; }
+  var rec = computePreviewRecordFromForm(currentIncomeModalKey);
+  var net = computeNetRevenue(rec);
+  var gross = computeGrossRevenue(rec);
+  var fee = gross-net;
+  var total = net+rec.tip;
+  el.innerHTML = '<div class="summary-row" style="grid-template-columns:1fr 1fr 1fr">'+
+    '<div class="stat-tile"><div class="lbl">車資</div><div class="val num">'+fmtMoney(gross)+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">抽成</div><div class="val expense num">'+(fee>0.5?fmtMoney(fee):'—')+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">實收</div><div class="val income num">'+fmtMoney(total)+'</div></div>'+
+    '</div>';
 }
 function closeModal(){ document.getElementById('modalRoot').innerHTML=''; renderAll(); }
 
@@ -1121,12 +1177,21 @@ function buildIncomeForm(key, existing){
     h += '<div class="form-row"><label>優惠派別</label>'+chipRowHtml('discountTier', def.discountOptions, (existing&&existing.discountTier)||def.discountOptions[0])+'</div>';
   }
   var curFareType = (existing&&existing.fareType) || (def.fareTypeOptions&&def.fareTypeOptions[0]);
-  var meterLike = !def.fareTypeOptions || curFareType==='跳表' || curFareType==='固定價';
+  var meterLike = curFareType==='跳表' || curFareType==='固定價' || (!def.fareTypeOptions);
+  var estLike = curFareType==='預估車資';
+  var stationLike = curFareType==='據點叫車';
   if(def.paymentOptions){
-    h += '<div class="form-row" id="sec-meterExtra"'+(meterLike?'':' hidden')+'><label>付款方式</label>'+chipRowHtml('payment', def.paymentOptions, (existing&&existing.payment)||def.paymentOptions[0])+'</div>';
+    var curPayment = (existing&&existing.payment)||def.paymentOptions[0];
+    h += '<div class="form-row" id="sec-meterExtra"'+(meterLike?'':' hidden')+'><label>付款方式</label>'+chipRowHtml('payment', def.paymentOptions, curPayment)+'</div>';
+    if(def.enterpriseDiscountOptions){
+      h += '<div class="form-row" id="sec-yoxi-enterprise-discount"'+(curPayment==='企業簽單'?'':' hidden')+'><label>優惠折數</label>'+chipRowHtml('enterpriseDiscount', def.enterpriseDiscountOptions, (existing&&existing.enterpriseDiscount)||def.enterpriseDiscountOptions[0])+'</div>';
+    }
+  }
+  if(def.hasStationFee){
+    h += '<div class="form-row" id="sec-stationFee"'+(stationLike?'':' hidden')+'><label>據點費用(選填)</label><input class="num-input" id="f-station-fee" type="number" min="0" step="1" placeholder="0" value="'+((existing&&existing.stationFee)||'')+'"></div>';
   }
   if(def.estimateTypeOptions || def.estimateHasMarkupAmount || def.estimateHasMarkupMultiplier){
-    h += '<div id="sec-estimateExtra"'+(meterLike?' hidden':'')+'>';
+    h += '<div id="sec-estimateExtra"'+(estLike?'':' hidden')+'>';
     if(def.estimateTypeOptions){ h += '<div class="form-row"><label>多元類型</label>'+chipRowHtml('estimateType', def.estimateTypeOptions, (existing&&existing.estimateType)||def.estimateTypeOptions[0])+'</div>'; }
     if(def.estimateHasMarkupAmount||def.estimateHasMarkupMultiplier){
       h += '<div class="form-grid2">';
@@ -1153,9 +1218,10 @@ function openIncomeModal(key, editId){
   if(def.tipOnly){
     h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-tip" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.tip)||'')+'"></div>';
   } else {
-    var revLabel = (key==='uber'||key==='bolt') ? 'App 顯示金額(已扣手續費的實收)' : '車資金額';
+    var revLabel = (key==='uber') ? 'App 顯示金額(已扣手續費的實收)' : (key==='bolt' ? '車資金額(未扣手續費)' : '車資金額');
     h += '<div class="form-row"><label>'+revLabel+'</label><input class="num-input" id="f-revenue" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.revenue)||'')+'"></div>';
     h += '<div class="form-row"><label>小費(選填)</label><input class="num-input" id="f-tip" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.tip)||'')+'"></div>';
+    h += '<div id="incomePreview" style="margin-bottom:12px"></div>';
     h += buildIncomeForm(key, existing);
   }
   h += '<div class="form-row"><label>備註(選填)</label><input id="f-note" type="text" placeholder="" value="'+esc((existing&&existing.note)||'')+'"></div>';
@@ -1163,6 +1229,8 @@ function openIncomeModal(key, editId){
   if(existing) h += '<button class="btn btn-danger" data-act="del-income-close:'+existing.id+'">刪除這筆</button>';
   h += '<button class="btn btn-primary" data-act="save-income:'+key+(existing?(':'+existing.id):'')+'">儲存</button></div>';
   openModal(h);
+  currentIncomeModalKey = key;
+  updateIncomePreview();
   setTimeout(function(){ var el=document.getElementById('f-revenue')||document.getElementById('f-tip'); if(el) el.focus(); }, 50);
 }
 function saveIncome(key, editId){
@@ -1180,6 +1248,8 @@ function saveIncome(key, editId){
   if(def.discountOptions) rec.discountTier = grab('chip-discountTier');
   var meterLike = !def.fareTypeOptions || rec.fareType==='跳表' || rec.fareType==='固定價';
   if(def.paymentOptions && meterLike) rec.payment = grab('chip-payment'); else if(def.paymentOptions) rec.payment = undefined;
+  if(def.enterpriseDiscountOptions && rec.payment==='企業簽單') rec.enterpriseDiscount = grab('chip-enterpriseDiscount'); else if(def.enterpriseDiscountOptions) rec.enterpriseDiscount = undefined;
+  if(def.hasStationFee && rec.fareType==='據點叫車'){ var sf=grab('f-station-fee'); rec.stationFee = (sf!=null && sf!=='') ? +sf : undefined; } else if(def.hasStationFee) rec.stationFee = undefined;
   if(def.estimateTypeOptions && rec.fareType==='預估車資') rec.estimateType = grab('chip-estimateType'); else if(def.estimateTypeOptions) rec.estimateType = undefined;
   var ma = grab('f-markup-amount'); rec.markupAmount = (ma!=null && ma!=='') ? +ma : undefined;
   var mm = grab('f-markup-multiplier'); rec.markupMultiplier = (mm!=null && mm!=='') ? +mm : undefined;
@@ -1277,28 +1347,30 @@ function openSettingsModal(){
   h += '<div class="form-grid2">';
   h += '<div><label style="font-size:11px">台灣大車隊 %</label><input class="num-input" id="f-fee-tdc" type="number" step="0.1" value="'+(fr.tdc!=null?fr.tdc:15)+'"></div>';
   h += '<div><label style="font-size:11px">大都會 每單扣$</label><input class="num-input" id="f-fee-metroflat" type="number" step="1" value="'+(fr.metroFlat!=null?fr.metroFlat:25)+'"></div>';
-  h += '<div><label style="font-size:11px">YOXI 現金 %</label><input class="num-input" id="f-fee-yoxicash" type="number" step="0.1" value="'+(fr.yoxiCash!=null?fr.yoxiCash:10)+'"></div>';
-  h += '<div><label style="font-size:11px">YOXI 其餘 %</label><input class="num-input" id="f-fee-yoxiother" type="number" step="0.1" value="'+(fr.yoxiOther!=null?fr.yoxiOther:12)+'"></div>';
+  h += '<div><label style="font-size:11px">YOXI 基本手續費 %(現金/企業簽單)</label><input class="num-input" id="f-fee-yoxicash" type="number" step="0.1" value="'+(fr.yoxiCash!=null?fr.yoxiCash:10)+'"></div>';
+  h += '<div><label style="font-size:11px">YOXI 信用卡加收 %</label><input class="num-input" id="f-fee-yoxicreditextra" type="number" step="0.1" value="'+(fr.yoxiCreditExtra!=null?fr.yoxiCreditExtra:2)+'"></div>';
   h += '<div><label style="font-size:11px">大都會 信用卡加扣%</label><input class="num-input" id="f-fee-metrocredit" type="number" step="0.1" value="'+(fr.metroCredit!=null?fr.metroCredit:3)+'"></div>';
   h += '<div><label style="font-size:11px">大都會 企業簽單加扣%</label><input class="num-input" id="f-fee-metroenterprise" type="number" step="0.1" value="'+(fr.metroEnterprise!=null?fr.metroEnterprise:6)+'"></div>';
   h += '</div>';
-  h += '<div class="form-row"><label>Line Go 手續費 %(尚未確認,選填)</label><input class="num-input" id="f-fee-linego" type="number" step="0.1" value="'+(fr.linego!=null?fr.linego:'')+'"></div>';
+  h += '<div class="form-row"><label>Line Go 手續費 %(基本17%+信用卡2.5%)</label><input class="num-input" id="f-fee-linego" type="number" step="0.1" value="'+(fr.linego!=null?fr.linego:19.5)+'"></div>';
 
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.5">Uber/BOLT 你輸入的金額本來就是 App 顯示的實收(已扣手續費),下面的%只用來回推「未扣手續費前的車資」,不會再從你輸入的金額扣一次。</div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.5">注意:Uber 你輸入的是 App 顯示的實收金額(已扣手續費),下面%只用來回推「未扣手續費前的車資」,不會再從你輸入的金額扣一次;BOLT 則相反,你輸入的是還沒扣手續費的原始車資,系統會自動扣掉。</div>';
   h += '<div class="form-row"><label>Uber 手續費 %(用來回推車資,不會扣你輸入的金額)</label><input class="num-input" id="f-fee-uber" type="number" step="0.1" value="'+(fr.uber!=null?fr.uber:25)+'"></div>';
   h += '<div class="form-grid2">';
-  h += '<div><label style="font-size:11px">BOLT 未達門檻 每趟扣$(用來回推車資)</label><input class="num-input" id="f-fee-boltflat" type="number" step="1" value="'+(fr.boltFlat!=null?fr.boltFlat:20)+'"></div>';
-  h += '<div><label style="font-size:11px">BOLT 達門檻後 %(用來回推車資)</label><input class="num-input" id="f-fee-boltpct" type="number" step="0.1" value="'+(fr.boltPct!=null?fr.boltPct:10)+'"></div>';
+  h += '<div><label style="font-size:11px">BOLT 未達門檻 每趟扣$</label><input class="num-input" id="f-fee-boltflat" type="number" step="1" value="'+(fr.boltFlat!=null?fr.boltFlat:20)+'"></div>';
+  h += '<div><label style="font-size:11px">BOLT 達門檻後 %</label><input class="num-input" id="f-fee-boltpct" type="number" step="0.1" value="'+(fr.boltPct!=null?fr.boltPct:10)+'"></div>';
   h += '</div>';
-  h += '<div class="form-row"><label>BOLT 門檻(每週趟次,達標當週全部趟次改用上面%回推)</label><input class="num-input" id="f-fee-boltthreshold" type="number" step="1" value="'+(fr.boltThreshold!=null?fr.boltThreshold:15)+'"></div>';
+  h += '<div class="form-row"><label>BOLT 門檻(每週趟次,達標當週全部趟次改用上面%計算)</label><input class="num-input" id="f-fee-boltthreshold" type="number" step="1" value="'+(fr.boltThreshold!=null?fr.boltThreshold:15)+'"></div>';
 
   h += '<div class="form-row" style="margin-top:6px"><label>平台管理(拖曳左邊排序,可改名/隱藏/新增)</label></div>';
   h += '<div id="platOrderList">';
   allPlatforms().forEach(function(p){
     h += '<div class="plat-row" data-key="'+p.key+'">'+
       '<span class="plat-drag-handle">☰</span>'+
+      '<input type="text" id="f-plat-icon-'+p.key+'" value="'+esc(p.icon||'🚘')+'" maxlength="4" style="width:32px;flex:none;text-align:center;background:var(--surface-sunken);border:1px solid var(--border);border-radius:8px;padding:6px 2px;font-size:14px;color:var(--text)">'+
+      '<input type="color" id="f-plat-color-'+p.key+'" value="'+(p.color||'#8A8272')+'" style="width:28px;height:28px;flex:none;padding:0;border:1px solid var(--border);border-radius:7px;background:none">'+
       '<input type="text" id="f-plat-name-'+p.key+'" value="'+esc(p.label)+'" style="flex:1;min-width:0;background:var(--surface-sunken);border:1px solid var(--border);border-radius:8px;padding:7px 9px;font-size:13px;color:var(--text)">'+
-      '<label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted);white-space:nowrap"><input type="checkbox" id="f-plat-hidden-'+p.key+'" '+(p.hidden?'checked':'')+'>隱藏</label>'+
+      '<label style="display:flex;align-items:center;gap:3px;font-size:10.5px;color:var(--text-muted);white-space:nowrap"><input type="checkbox" id="f-plat-hidden-'+p.key+'" '+(p.hidden?'checked':'')+'>隱藏</label>'+
       (p.custom ? '<button class="li-del" data-act="del-platform:'+p.key+'">✕</button>' : '')+
       '</div>';
   });
@@ -1367,7 +1439,9 @@ function saveNewPlatform(){
   var name = document.getElementById('f-newplat-name').value.trim();
   var tagsRaw = document.getElementById('f-newplat-tags').value.trim();
   if(!name){ closeModal(); return; }
-  var cp = {key:'custom_'+uid(), label:name, hidden:false};
+  var customPalette = ['#C97E17','#2F80ED','#7FBF3F','#D9704A','#7A5FBF','#2FA0A0'];
+  var cIdx = (state.customPlatforms||[]).length % customPalette.length;
+  var cp = {key:'custom_'+uid(), label:name, hidden:false, icon:'🚘', color:customPalette[cIdx]};
   if(tagsRaw) cp.subtypeOptions = tagsRaw.split(',').map(function(s){return s.trim();}).filter(function(s){return s;});
   state.customPlatforms.push(cp);
   if(!state.platformOrder) state.platformOrder=[];
@@ -1380,14 +1454,18 @@ function savePlatformSettings(){
   allPlatforms().forEach(function(p){
     var nameEl = document.getElementById('f-plat-name-'+p.key);
     var hiddenEl = document.getElementById('f-plat-hidden-'+p.key);
+    var iconEl = document.getElementById('f-plat-icon-'+p.key);
+    var colorEl = document.getElementById('f-plat-color-'+p.key);
     if(!nameEl || !hiddenEl) return;
     var name = nameEl.value.trim() || p.label;
     var hidden = hiddenEl.checked;
+    var icon = iconEl ? (iconEl.value.trim()||p.icon) : p.icon;
+    var color = colorEl ? colorEl.value : p.color;
     if(p.custom){
       var cp = state.customPlatforms.filter(function(c){return c.key===p.key;})[0];
-      if(cp){ cp.label=name; cp.hidden=hidden; }
+      if(cp){ cp.label=name; cp.hidden=hidden; cp.icon=icon; cp.color=color; }
     } else {
-      state.platformOverrides[p.key] = {label:name, hidden:hidden};
+      state.platformOverrides[p.key] = {label:name, hidden:hidden, icon:icon, color:color};
     }
   });
 }
@@ -1399,7 +1477,7 @@ function saveSettings(){
   function g(id){ var v=document.getElementById(id).value; return v===''?null:+v; }
   state.feeRules.tdc = g('f-fee-tdc');
   state.feeRules.yoxiCash = g('f-fee-yoxicash');
-  state.feeRules.yoxiOther = g('f-fee-yoxiother');
+  state.feeRules.yoxiCreditExtra = g('f-fee-yoxicreditextra');
   state.feeRules.linego = g('f-fee-linego');
   state.feeRules.metroFlat = g('f-fee-metroflat');
   state.feeRules.metroCredit = g('f-fee-metrocredit');
@@ -1503,10 +1581,26 @@ document.addEventListener('click', function(e){
     if(groupId==='fareType'){
       var meterEl = document.getElementById('sec-meterExtra');
       var estEl = document.getElementById('sec-estimateExtra');
+      var stationEl = document.getElementById('sec-stationFee');
       var meterLike = (value==='跳表' || value==='固定價');
+      var estLike = (value==='預估車資');
+      var stationLike = (value==='據點叫車');
       if(meterEl) meterEl.hidden = !meterLike;
-      if(estEl) estEl.hidden = meterLike;
+      if(estEl) estEl.hidden = !estLike;
+      if(stationEl) stationEl.hidden = !stationLike;
+      var discEl0 = document.getElementById('sec-yoxi-enterprise-discount');
+      if(discEl0 && !meterLike) discEl0.hidden = true;
     }
+    if(groupId==='payment'){
+      var discEl = document.getElementById('sec-yoxi-enterprise-discount');
+      if(discEl) discEl.hidden = (value!=='企業簽單');
+    }
+    updateIncomePreview();
+  }
+});
+document.addEventListener('input', function(e){
+  if(currentIncomeModalKey && e.target.closest && e.target.closest('#modalBody')){
+    updateIncomePreview();
   }
 });
 document.addEventListener('change', function(e){
