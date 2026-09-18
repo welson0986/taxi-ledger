@@ -237,6 +237,11 @@ body{
 }
 .chip-opt.selected{background:var(--accent);border-color:var(--accent);color:#fff}
 
+.plat-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)}
+.plat-row:last-child{border-bottom:none}
+.plat-row.dragging{opacity:.4}
+.plat-drag-handle{cursor:grab;touch-action:none;color:var(--text-muted);font-size:16px;padding:4px 6px;flex:none;user-select:none}
+
 .tag-list{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
 .tag{
   background:var(--surface-sunken);border:1px solid var(--border);border-radius:10px;
@@ -352,9 +357,38 @@ var PLATFORM_DEFS = [
   {key:'phonecall', label:'接電', subtypeOptions:['台灣大車隊','大都會','路招客']},
   {key:'tipbox', label:'小費/小費箱', tipOnly:true}
 ];
+function mergePlatformOverride(p, ov){
+  var out = {};
+  for(var k in p){ out[k]=p[k]; }
+  if(ov && ov.label) out.label = ov.label;
+  out.hidden = !!(ov && ov.hidden);
+  return out;
+}
+function orderedPlatforms(list){
+  var order = state.platformOrder||[];
+  return list.slice().sort(function(a,b){
+    var ia = order.indexOf(a.key); if(ia<0) ia=9999;
+    var ib = order.indexOf(b.key); if(ib<0) ib=9999;
+    return ia-ib;
+  });
+}
+function allPlatforms(){
+  var list = PLATFORM_DEFS.map(function(p){
+    return mergePlatformOverride(p, state.platformOverrides[p.key]);
+  });
+  (state.customPlatforms||[]).forEach(function(c){
+    var cp = {key:c.key, label:c.label, hidden:!!c.hidden, custom:true};
+    if(c.subtypeOptions && c.subtypeOptions.length) cp.subtypeOptions = c.subtypeOptions;
+    list.push(cp);
+  });
+  return orderedPlatforms(list);
+}
+function visiblePlatforms(){
+  return allPlatforms().filter(function(p){ return !p.hidden; });
+}
 function platformDef(key){
-  for(var i=0;i<PLATFORM_DEFS.length;i++){ if(PLATFORM_DEFS[i].key===key) return PLATFORM_DEFS[i]; }
-  return {key:key, label:key};
+  var found = allPlatforms().filter(function(p){return p.key===key;})[0];
+  return found || {key:key, label:key};
 }
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -389,6 +423,9 @@ function defaultState(){
     fixedOverrides:{},
     targets:{daily:0,weekly:0,monthly:0},
     feeRules:{tdc:null,yoxiCash:null,yoxiOther:null,linego:null,metroFlat:null,metroCredit:null,metroEnterprise:null,uber:null,boltFlat:null,boltPct:null,boltThreshold:null},
+    platformOverrides:{},
+    customPlatforms:[],
+    platformOrder:PLATFORM_DEFS.map(function(p){return p.key;}),
     syncUrl:''
   };
 }
@@ -749,7 +786,7 @@ function renderEntry(){
   h += '</div></div>';
 
   h += '<div class="section"><div class="section-title">收入/平台</div><div class="platform-grid">';
-  PLATFORM_DEFS.forEach(function(p){
+  visiblePlatforms().forEach(function(p){
     var pt = platformTotals[p.key]||0;
     h += '<div class="platform-chip" data-act="open-income:'+p.key+'">'+
          '<div class="pname">'+esc(p.label)+'</div>'+
@@ -881,7 +918,7 @@ function renderHistory(){
   h += '<div class="section"><div class="section-title">'+selectedDay+' 明細</div><div class="card">'+renderDayList(selectedDay)+'</div></div>';
 
   h += '<div class="section"><div class="section-title">幫 '+selectedDay+' 補記收入(點明細可修改/刪除)</div><div class="platform-grid">';
-  PLATFORM_DEFS.forEach(function(p){
+  visiblePlatforms().forEach(function(p){
     h += '<div class="platform-chip" data-act="open-income:'+p.key+'"><div class="pname">'+esc(p.label)+'</div></div>';
   });
   h += '</div></div>';
@@ -1059,7 +1096,7 @@ function openModal(html){
   root.innerHTML = '<div class="modal-overlay" data-act="close-modal"><div class="modal" id="modalBody" data-act="noop"></div></div>';
   document.getElementById('modalBody').innerHTML = html;
 }
-function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
+function closeModal(){ document.getElementById('modalRoot').innerHTML=''; renderAll(); }
 
 function chipRowHtml(groupId, options, selectedDefault){
   var h = '<div class="chip-row" data-group="'+groupId+'">';
@@ -1255,6 +1292,19 @@ function openSettingsModal(){
   h += '</div>';
   h += '<div class="form-row"><label>BOLT 門檻(每週趟次,達標當週全部趟次改用上面%回推)</label><input class="num-input" id="f-fee-boltthreshold" type="number" step="1" value="'+(fr.boltThreshold!=null?fr.boltThreshold:15)+'"></div>';
 
+  h += '<div class="form-row" style="margin-top:6px"><label>平台管理(拖曳左邊排序,可改名/隱藏/新增)</label></div>';
+  h += '<div id="platOrderList">';
+  allPlatforms().forEach(function(p){
+    h += '<div class="plat-row" data-key="'+p.key+'">'+
+      '<span class="plat-drag-handle">☰</span>'+
+      '<input type="text" id="f-plat-name-'+p.key+'" value="'+esc(p.label)+'" style="flex:1;min-width:0;background:var(--surface-sunken);border:1px solid var(--border);border-radius:8px;padding:7px 9px;font-size:13px;color:var(--text)">'+
+      '<label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted);white-space:nowrap"><input type="checkbox" id="f-plat-hidden-'+p.key+'" '+(p.hidden?'checked':'')+'>隱藏</label>'+
+      (p.custom ? '<button class="li-del" data-act="del-platform:'+p.key+'">✕</button>' : '')+
+      '</div>';
+  });
+  h += '</div>';
+  h += '<div style="height:8px"></div><button class="add-fixed-btn" data-act="open-newplatform">+ 新增平台</button><div style="height:14px"></div>';
+
   h += '<div class="form-row" style="margin-top:6px"><label>收入目標(依實收計算)</label>';
   h += '<div class="form-grid2" style="margin-bottom:8px"><div><span style="font-size:11px;color:var(--text-muted)">每日</span><input class="num-input" id="f-target-daily" type="number" min="0" value="'+(state.targets.daily||'')+'"></div>'+
        '<div><span style="font-size:11px;color:var(--text-muted)">每週</span><input class="num-input" id="f-target-weekly" type="number" min="0" value="'+(state.targets.weekly||'')+'"></div></div>';
@@ -1270,8 +1320,79 @@ function openSettingsModal(){
   h += '<div class="btn-row"><button class="btn btn-danger" data-act="reset-all">清除所有資料</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.6">資料儲存在這支手機的瀏覽器裡,清除瀏覽器資料或換手機會遺失。設定 Google Sheet 網址後,之後每記一筆都會自動同步過去;刪除記錄不會回頭刪掉表單裡已經同步的那一列。</div>';
   openModal(h);
+  wirePlatformDrag();
+}
+function wirePlatformDrag(){
+  var list = document.getElementById('platOrderList');
+  if(!list) return;
+  function rows(){ return Array.prototype.slice.call(list.children); }
+  Array.prototype.slice.call(list.querySelectorAll('.plat-drag-handle')).forEach(function(handle){
+    handle.addEventListener('pointerdown', function(e){
+      e.preventDefault();
+      var dragEl = handle.closest('.plat-row');
+      dragEl.classList.add('dragging');
+      try{ dragEl.setPointerCapture(e.pointerId); }catch(err){}
+      function onMove(ev){
+        var others = rows().filter(function(r){ return r!==dragEl; });
+        var placed = false;
+        for(var i=0;i<others.length;i++){
+          var rect = others[i].getBoundingClientRect();
+          var mid = rect.top+rect.height/2;
+          if(ev.clientY < mid){ list.insertBefore(dragEl, others[i]); placed=true; break; }
+        }
+        if(!placed) list.appendChild(dragEl);
+      }
+      function onUp(ev){
+        dragEl.classList.remove('dragging');
+        try{ dragEl.releasePointerCapture(ev.pointerId); }catch(err){}
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        state.platformOrder = rows().map(function(r){ return r.getAttribute('data-key'); });
+        save();
+      }
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+    });
+  });
+}
+function openNewPlatformModal(){
+  var h = '<div class="modal-title">新增平台<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div class="form-row"><label>平台名稱</label><input id="f-newplat-name" type="text" placeholder="例如:企業合作單"></div>';
+  h += '<div class="form-row"><label>屬性選項(選填,用逗號分隔,例如:一般,加大)</label><input id="f-newplat-tags" type="text" placeholder=""></div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-newplatform">新增</button></div>';
+  openModal(h);
+  setTimeout(function(){ var el=document.getElementById('f-newplat-name'); if(el) el.focus(); }, 50);
+}
+function saveNewPlatform(){
+  var name = document.getElementById('f-newplat-name').value.trim();
+  var tagsRaw = document.getElementById('f-newplat-tags').value.trim();
+  if(!name){ closeModal(); return; }
+  var cp = {key:'custom_'+uid(), label:name, hidden:false};
+  if(tagsRaw) cp.subtypeOptions = tagsRaw.split(',').map(function(s){return s.trim();}).filter(function(s){return s;});
+  state.customPlatforms.push(cp);
+  if(!state.platformOrder) state.platformOrder=[];
+  state.platformOrder.push(cp.key);
+  save(); openSettingsModal();
+}
+function savePlatformSettings(){
+  var list = document.getElementById('platOrderList');
+  if(list){ state.platformOrder = Array.prototype.slice.call(list.children).map(function(r){ return r.getAttribute('data-key'); }); }
+  allPlatforms().forEach(function(p){
+    var nameEl = document.getElementById('f-plat-name-'+p.key);
+    var hiddenEl = document.getElementById('f-plat-hidden-'+p.key);
+    if(!nameEl || !hiddenEl) return;
+    var name = nameEl.value.trim() || p.label;
+    var hidden = hiddenEl.checked;
+    if(p.custom){
+      var cp = state.customPlatforms.filter(function(c){return c.key===p.key;})[0];
+      if(cp){ cp.label=name; cp.hidden=hidden; }
+    } else {
+      state.platformOverrides[p.key] = {label:name, hidden:hidden};
+    }
+  });
 }
 function saveSettings(){
+  savePlatformSettings();
   state.targets.daily = +document.getElementById('f-target-daily').value || 0;
   state.targets.weekly = +document.getElementById('f-target-weekly').value || 0;
   state.targets.monthly = +document.getElementById('f-target-monthly').value || 0;
@@ -1355,6 +1476,9 @@ document.addEventListener('click', function(e){
   else if(cmd==='rename-app'){ openRenameModal(); }
   else if(cmd==='save-appname'){ saveAppName(); }
   else if(cmd==='open-settings'){ openSettingsModal(); }
+  else if(cmd==='open-newplatform'){ openNewPlatformModal(); }
+  else if(cmd==='save-newplatform'){ saveNewPlatform(); }
+  else if(cmd==='del-platform'){ state.customPlatforms = state.customPlatforms.filter(function(c){return c.key!==arg;}); save(); openSettingsModal(); }
   else if(cmd==='save-settings'){ saveSettings(); }
   else if(cmd==='sync-all'){
     if(!state.syncUrl){ alert('請先在上面填入 Google Sheet 同步網址,再按儲存設定。'); return; }
