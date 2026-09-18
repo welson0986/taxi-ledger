@@ -178,6 +178,7 @@ body{
 .cal-cell.pos .n{color:var(--income)}
 .cal-cell.neg{background:var(--expense-soft)}
 .cal-cell.neg .n{color:var(--expense)}
+.cal-cell.holiday .d{color:var(--expense)}
 .cal-cell.today{border-color:var(--accent)}
 .cal-cell.selected{outline:2px solid var(--accent-strong);outline-offset:1px}
 
@@ -287,6 +288,55 @@ var CATS = [
 ];
 var DOW = ['一','二','三','四','五','六','日'];
 
+/* ---------- Taiwan 2026 official public holidays (行政院人事行政總處) ---------- */
+var TW_HOLIDAY_BLOCKS_2026 = [
+  {name:'元旦', from:'2026-01-01', to:'2026-01-01'},
+  {name:'農曆春節', from:'2026-02-14', to:'2026-02-22'},
+  {name:'和平紀念日', from:'2026-02-27', to:'2026-03-01'},
+  {name:'兒童節及清明節', from:'2026-04-03', to:'2026-04-06'},
+  {name:'勞動節', from:'2026-05-01', to:'2026-05-03'},
+  {name:'端午節', from:'2026-06-19', to:'2026-06-21'},
+  {name:'中秋節及教師節', from:'2026-09-25', to:'2026-09-28'},
+  {name:'國慶日', from:'2026-10-09', to:'2026-10-11'},
+  {name:'台灣光復節', from:'2026-10-24', to:'2026-10-26'},
+  {name:'行憲紀念日', from:'2026-12-25', to:'2026-12-27'}
+];
+var TW_HOLIDAY_BLOCKS_2027 = [
+  {name:'開國紀念日', from:'2027-01-01', to:'2027-01-03'},
+  {name:'農曆春節', from:'2027-02-04', to:'2027-02-10'},
+  {name:'和平紀念日', from:'2027-02-27', to:'2027-03-01'},
+  {name:'兒童節及清明節', from:'2027-04-03', to:'2027-04-06'},
+  {name:'勞動節', from:'2027-04-30', to:'2027-05-02'},
+  {name:'端午節', from:'2027-06-09', to:'2027-06-09'},
+  {name:'中秋節', from:'2027-09-15', to:'2027-09-15'},
+  {name:'教師節', from:'2027-09-28', to:'2027-09-28'},
+  {name:'國慶日', from:'2027-10-09', to:'2027-10-11'},
+  {name:'台灣光復節', from:'2027-10-23', to:'2027-10-25'},
+  {name:'行憲紀念日', from:'2027-12-24', to:'2027-12-26'},
+  {name:'開國紀念日補假(跨年)', from:'2027-12-31', to:'2027-12-31'}
+];
+var TW_HOLIDAY_BLOCKS_ALL = TW_HOLIDAY_BLOCKS_2026.concat(TW_HOLIDAY_BLOCKS_2027);
+var TW_HOLIDAYS = {};
+TW_HOLIDAY_BLOCKS_ALL.forEach(function(b){
+  var d = new Date(b.from+'T00:00:00'); var end = new Date(b.to+'T00:00:00');
+  while(d<=end){
+    var ds = d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
+    TW_HOLIDAYS[ds] = b.name;
+    d.setDate(d.getDate()+1);
+  }
+});
+function holidayBlocksInMonth(y, mo){
+  return TW_HOLIDAY_BLOCKS_ALL.filter(function(b){
+    var by = +b.from.slice(0,4), bm = +b.from.slice(5,7)-1;
+    var ey = +b.to.slice(0,4), em = +b.to.slice(5,7)-1;
+    var monthNum = y*12+mo;
+    return monthNum >= (by*12+bm) && monthNum <= (ey*12+em);
+  });
+}
+function holidayBlockDays(b){
+  return Math.round((new Date(b.to+'T00:00:00') - new Date(b.from+'T00:00:00'))/86400000)+1;
+}
+
 /* ---------- platform definitions ---------- */
 var PLATFORM_DEFS = [
   {key:'uber', label:'Uber', subtypeOptions:['菁英X','樂聚XL','毛孩優步','舒適優步','尊榮優步','純電優步','加大樂聚XXL'], hasMarkupAmount:true},
@@ -338,7 +388,7 @@ function defaultState(){
     fixedCosts:[],
     fixedOverrides:{},
     targets:{daily:0,weekly:0,monthly:0},
-    feeRules:{tdc:null,yoxiCash:null,yoxiOther:null,linego:null,metroFlat:null,metroCredit:null,metroEnterprise:null},
+    feeRules:{tdc:null,yoxiCash:null,yoxiOther:null,linego:null,metroFlat:null,metroCredit:null,metroEnterprise:null,uber:null,boltFlat:null,boltPct:null,boltThreshold:null},
     syncUrl:''
   };
 }
@@ -381,10 +431,23 @@ var customTo = todayStr();
 function currentEntryDate(){ return currentTab==='history' ? selectedDay : todayStr(); }
 
 /* ---------- fee / net revenue ---------- */
+function boltWeekTripCount(dateStr){
+  var d = new Date(dateStr+'T00:00:00');
+  var day = (d.getDay()+6)%7;
+  var mon = new Date(d); mon.setDate(d.getDate()-day);
+  var sun = new Date(mon); sun.setDate(mon.getDate()+6);
+  var from = toDateStr(mon), to = toDateStr(sun);
+  var count = 0;
+  state.records.forEach(function(r){ if(r.platform==='bolt' && r.date>=from && r.date<=to) count++; });
+  return count;
+}
 function computeNetRevenue(r){
   var gross = +r.revenue||0;
   if(gross<=0) return 0;
   var fees = state.feeRules||{};
+  if(r.platform==='uber' || r.platform==='bolt'){
+    return gross;
+  }
   if(r.platform==='tdc'){
     var pct = fees.tdc!=null?fees.tdc:15;
     return gross*(1-pct/100);
@@ -414,6 +477,26 @@ function computeNetRevenue(r){
     return net>0?net:0;
   }
   return gross;
+}
+function computeGrossRevenue(r){
+  var v = +r.revenue||0;
+  if(v<=0) return 0;
+  var fees = state.feeRules||{};
+  if(r.platform==='uber'){
+    var pctU = fees.uber!=null?fees.uber:25;
+    return v/(1-pctU/100);
+  }
+  if(r.platform==='bolt'){
+    var threshold = fees.boltThreshold!=null?fees.boltThreshold:15;
+    var weekCount = boltWeekTripCount(r.date);
+    if(weekCount>=threshold){
+      var pctB = fees.boltPct!=null?fees.boltPct:10;
+      return v/(1-pctB/100);
+    }
+    var flatB = fees.boltFlat!=null?fees.boltFlat:20;
+    return v+flatB;
+  }
+  return v;
 }
 function describeRecord(r){
   var parts=[];
@@ -445,7 +528,7 @@ function syncToSheet(kind, payload){
 function syncIncomeRecord(r){
   syncToSheet('income', {
     id:r.id, date:r.date, ts:r.ts, platform:r.platform, platformLabel:platformDef(r.platform).label,
-    revenue:r.revenue, tip:r.tip, net:computeNetRevenue(r),
+    revenue:computeGrossRevenue(r), tip:r.tip, net:computeNetRevenue(r),
     subtype:r.subtype, fareType:r.fareType, payment:r.payment, discountTier:r.discountTier,
     estimateType:r.estimateType, markupAmount:r.markupAmount, markupMultiplier:r.markupMultiplier,
     subPlatform:r.subPlatform, note:r.note
@@ -496,7 +579,7 @@ function expensesInRange(from,to){ return state.expenses.filter(function(e){retu
 
 function sumIncome(recs){
   var rev=0, tip=0;
-  recs.forEach(function(r){ rev+=(+r.revenue||0); tip+=(+r.tip||0); });
+  recs.forEach(function(r){ rev+=computeGrossRevenue(r); tip+=(+r.tip||0); });
   return {rev:rev, tip:tip, total:rev+tip};
 }
 function sumNetIncome(recs){
@@ -659,13 +742,13 @@ function renderEntry(){
 
   var h = '';
   h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
-  h += '<div class="stat-tile"><div class="lbl">今日車資(未扣手續費)</div><div class="val num">'+fmtMoney(gross.total)+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">今日實收(含小費)</div><div class="val income num">'+fmtMoney(net.total)+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">今日車資(未扣手續費)</div><div class="val num">'+fmtMoney(gross.total)+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">今日支出</div><div class="val expense num">'+fmtMoney(exp)+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">今日淨額</div><div class="val num">'+fmtMoney(net.total-exp)+'</div></div>';
   h += '</div></div>';
 
-  h += '<div class="section"><div class="section-title">收入平台</div><div class="platform-grid">';
+  h += '<div class="section"><div class="section-title">收入/平台</div><div class="platform-grid">';
   PLATFORM_DEFS.forEach(function(p){
     var pt = platformTotals[p.key]||0;
     h += '<div class="platform-chip" data-act="open-income:'+p.key+'">'+
@@ -720,12 +803,13 @@ function renderDayList(dateStr){
   var h='';
   recs.forEach(function(r){
     var net = computeNetRevenue(r);
-    var fee = (+r.revenue||0)-net;
+    var grossEst = computeGrossRevenue(r);
+    var fee = grossEst-net;
     var amt = net+(+r.tip||0);
     var desc = describeRecord(r);
     var parts = [];
     if(desc) parts.push(esc(desc));
-    if(r.revenue) parts.push('車資 '+fmtMoney(r.revenue));
+    if(grossEst) parts.push('車資 '+fmtMoney(grossEst));
     if(fee>0.5) parts.push('抽成 '+fmtMoney(fee));
     if(r.tip) parts.push('小費 '+fmtMoney(r.tip));
     if(r.note) parts.push(esc(r.note));
@@ -771,11 +855,30 @@ function renderHistory(){
     if(net>0) cls+=' pos'; else if(net<0) cls+=' neg';
     if(ds===t) cls+=' today';
     if(ds===selectedDay) cls+=' selected';
+    if(TW_HOLIDAYS[ds]) cls+=' holiday';
     h += '<div class="'+cls+'" data-act="select-day:'+ds+'"><span class="d">'+d+'</span>'+(net?('<span class="n">'+(net>0?'+':'')+fmtNum(net)+'</span>'):'')+'</div>';
   }
   h += '</div></div>';
 
-  h += '<div class="section" style="margin-top:14px"><div class="section-title">'+selectedDay+' 明細</div><div class="card">'+renderDayList(selectedDay)+'</div></div>';
+  var hBlocks = holidayBlocksInMonth(y, mo);
+  if(hBlocks.length){
+    h += '<div class="card" style="margin-top:8px;padding:10px 14px">';
+    h += hBlocks.map(function(b){
+      var days = holidayBlockDays(b);
+      var fromShort = b.from.slice(5).replace('-','/');
+      var toShort = b.to.slice(5).replace('-','/');
+      var range = b.from===b.to ? fromShort : (fromShort+'–'+toShort);
+      return '<div style="font-size:12px;color:var(--expense);padding:2px 0">🔴 '+range+'　'+esc(b.name)+'('+days+'天)</div>';
+    }).join('');
+    h += '</div>';
+  }
+
+  var histMeta = dm(selectedDay);
+  h += '<div class="section" style="margin-top:14px"><div class="card daily-card">'+
+    '<div class="daily-row"><span class="l">'+selectedDay+' 里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(histMeta.km!=null?histMeta.km:'')+'" placeholder="0.0" data-km-input-date="'+selectedDay+'"></div>'+
+    '</div></div>';
+
+  h += '<div class="section"><div class="section-title">'+selectedDay+' 明細</div><div class="card">'+renderDayList(selectedDay)+'</div></div>';
 
   h += '<div class="section"><div class="section-title">幫 '+selectedDay+' 補記收入(點明細可修改/刪除)</div><div class="platform-grid">';
   PLATFORM_DEFS.forEach(function(p){
@@ -1013,7 +1116,8 @@ function openIncomeModal(key, editId){
   if(def.tipOnly){
     h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-tip" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.tip)||'')+'"></div>';
   } else {
-    h += '<div class="form-row"><label>車資金額</label><input class="num-input" id="f-revenue" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.revenue)||'')+'"></div>';
+    var revLabel = (key==='uber'||key==='bolt') ? 'App 顯示金額(已扣手續費的實收)' : '車資金額';
+    h += '<div class="form-row"><label>'+revLabel+'</label><input class="num-input" id="f-revenue" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.revenue)||'')+'"></div>';
     h += '<div class="form-row"><label>小費(選填)</label><input class="num-input" id="f-tip" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.tip)||'')+'"></div>';
     h += buildIncomeForm(key, existing);
   }
@@ -1143,6 +1247,14 @@ function openSettingsModal(){
   h += '</div>';
   h += '<div class="form-row"><label>Line Go 手續費 %(尚未確認,選填)</label><input class="num-input" id="f-fee-linego" type="number" step="0.1" value="'+(fr.linego!=null?fr.linego:'')+'"></div>';
 
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.5">Uber/BOLT 你輸入的金額本來就是 App 顯示的實收(已扣手續費),下面的%只用來回推「未扣手續費前的車資」,不會再從你輸入的金額扣一次。</div>';
+  h += '<div class="form-row"><label>Uber 手續費 %(用來回推車資,不會扣你輸入的金額)</label><input class="num-input" id="f-fee-uber" type="number" step="0.1" value="'+(fr.uber!=null?fr.uber:25)+'"></div>';
+  h += '<div class="form-grid2">';
+  h += '<div><label style="font-size:11px">BOLT 未達門檻 每趟扣$(用來回推車資)</label><input class="num-input" id="f-fee-boltflat" type="number" step="1" value="'+(fr.boltFlat!=null?fr.boltFlat:20)+'"></div>';
+  h += '<div><label style="font-size:11px">BOLT 達門檻後 %(用來回推車資)</label><input class="num-input" id="f-fee-boltpct" type="number" step="0.1" value="'+(fr.boltPct!=null?fr.boltPct:10)+'"></div>';
+  h += '</div>';
+  h += '<div class="form-row"><label>BOLT 門檻(每週趟次,達標當週全部趟次改用上面%回推)</label><input class="num-input" id="f-fee-boltthreshold" type="number" step="1" value="'+(fr.boltThreshold!=null?fr.boltThreshold:15)+'"></div>';
+
   h += '<div class="form-row" style="margin-top:6px"><label>收入目標(依實收計算)</label>';
   h += '<div class="form-grid2" style="margin-bottom:8px"><div><span style="font-size:11px;color:var(--text-muted)">每日</span><input class="num-input" id="f-target-daily" type="number" min="0" value="'+(state.targets.daily||'')+'"></div>'+
        '<div><span style="font-size:11px;color:var(--text-muted)">每週</span><input class="num-input" id="f-target-weekly" type="number" min="0" value="'+(state.targets.weekly||'')+'"></div></div>';
@@ -1171,6 +1283,10 @@ function saveSettings(){
   state.feeRules.metroFlat = g('f-fee-metroflat');
   state.feeRules.metroCredit = g('f-fee-metrocredit');
   state.feeRules.metroEnterprise = g('f-fee-metroenterprise');
+  state.feeRules.uber = g('f-fee-uber');
+  state.feeRules.boltFlat = g('f-fee-boltflat');
+  state.feeRules.boltPct = g('f-fee-boltpct');
+  state.feeRules.boltThreshold = g('f-fee-boltthreshold');
   state.syncUrl = document.getElementById('f-sync-url').value.trim();
   save(); closeModal(); renderAll();
 }
@@ -1273,6 +1389,11 @@ document.addEventListener('change', function(e){
   if(e.target.matches('[data-km-input]')){
     dm(todayStr()).km = e.target.value===''? null : +e.target.value;
     save(); syncDailyRecord(todayStr());
+  }
+  else if(e.target.matches('[data-km-input-date]')){
+    var kd = e.target.getAttribute('data-km-input-date');
+    dm(kd).km = e.target.value===''? null : +e.target.value;
+    save(); syncDailyRecord(kd);
   }
   else if(e.target.id==='dayPicker'){ if(e.target.value){ analyticsDay = e.target.value; renderAll(); } }
   else if(e.target.id==='customFrom'){ if(e.target.value){ customFrom = e.target.value; renderAll(); } }
