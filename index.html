@@ -1389,6 +1389,11 @@ function openSettingsModal(){
   h += '<div class="btn-row"><button class="btn btn-ghost" data-act="sync-all">立即同步全部資料到 Google Sheet</button></div>';
   h += '<div id="syncStatus" style="font-size:12px;color:var(--text-muted);margin-top:8px;text-align:center"></div>';
   h += '<div style="height:14px"></div>';
+
+  h += '<div class="form-row" style="margin-top:6px"><label>資料備份與還原(兩台裝置或兩個瀏覽器資料對不起來時使用)</label></div>';
+  h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="open-export">匯出備份</button><button class="btn btn-ghost" style="flex:1" data-act="open-import">匯入還原</button></div>';
+  h += '<div style="height:14px"></div>';
+
   h += '<div class="btn-row"><button class="btn btn-danger" data-act="reset-all">清除所有資料</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.6">資料儲存在這支手機的瀏覽器裡,清除瀏覽器資料或換手機會遺失。設定 Google Sheet 網址後,之後每記一筆都會自動同步過去;刪除記錄不會回頭刪掉表單裡已經同步的那一列。</div>';
   openModal(h);
@@ -1426,6 +1431,48 @@ function wirePlatformDrag(){
       document.addEventListener('pointerup', onUp);
     });
   });
+}
+function openExportModal(){
+  var json = JSON.stringify(state);
+  var h = '<div class="modal-title">匯出備份<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">按下面「複製」把下方文字整段複製起來,傳給自己(例如 LINE 傳給自己或用備忘錄),再到另一個瀏覽器/裝置的「匯入還原」貼上即可。</div>';
+  h += '<textarea id="exportText" readonly style="width:100%;height:160px;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface-sunken);color:var(--text);box-sizing:border-box" onclick="this.focus();this.select()">'+esc(json)+'</textarea>';
+  h += '<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary" data-act="copy-export">複製到剪貼簿</button></div>';
+  h += '<div id="exportCopyStatus" style="font-size:12px;color:var(--text-muted);margin-top:8px;text-align:center"></div>';
+  openModal(h);
+}
+function copyExportText(){
+  var ta = document.getElementById('exportText');
+  var statusEl = document.getElementById('exportCopyStatus');
+  if(!ta) return;
+  ta.focus(); ta.select();
+  function ok(){ if(statusEl) statusEl.textContent = '已複製!'; }
+  function fail(){ if(statusEl) statusEl.textContent = '自動複製失敗,請手動長按文字選取後複製。'; }
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(ta.value).then(ok, fail);
+  } else {
+    try{ document.execCommand('copy') ? ok() : fail(); }catch(err){ fail(); }
+  }
+}
+function openImportModal(){
+  var h = '<div class="modal-title">匯入還原<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">把之前「匯出備份」複製的整段文字貼在下面,按還原。<b style="color:var(--expense)">注意:這會覆蓋掉目前這個瀏覽器裡的所有資料</b>,請確認來源沒錯再按。</div>';
+  h += '<textarea id="importText" placeholder="貼上備份文字…" style="width:100%;height:160px;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface-sunken);color:var(--text);box-sizing:border-box"></textarea>';
+  h += '<div class="btn-row" style="margin-top:10px"><button class="btn btn-danger" data-act="do-import">還原這份資料</button></div>';
+  openModal(h);
+}
+function doImportData(){
+  var ta = document.getElementById('importText');
+  if(!ta || !ta.value.trim()){ alert('請先貼上備份文字。'); return; }
+  var parsed;
+  try{ parsed = JSON.parse(ta.value.trim()); }catch(err){ alert('這段文字看起來不是有效的備份資料,請確認有整段複製完整。'); return; }
+  if(!parsed || typeof parsed!=='object' || !Array.isArray(parsed.records)){ alert('這段文字看起來不是有效的備份資料。'); return; }
+  if(!confirm('確定要用這份備份覆蓋掉目前的所有資料嗎?此動作無法復原。')) return;
+  var d = defaultState();
+  for(var k in d){ if(!(k in parsed)) parsed[k]=d[k]; }
+  state = parsed;
+  save(); closeModal(); renderAll();
+  alert('資料已還原。');
 }
 function openNewPlatformModal(){
   var h = '<div class="modal-title">新增平台<button class="close" data-act="close-modal">✕</button></div>';
@@ -1566,6 +1613,10 @@ document.addEventListener('click', function(e){
       function(total){ if(statusEl) statusEl.textContent = '已送出 '+total+' 筆,請到 Google Sheet 確認資料是否進來。'; }
     );
   }
+  else if(cmd==='open-export'){ openExportModal(); }
+  else if(cmd==='copy-export'){ copyExportText(); }
+  else if(cmd==='open-import'){ openImportModal(); }
+  else if(cmd==='do-import'){ doImportData(); }
   else if(cmd==='reset-all'){
     if(confirm('確定要清除所有記帳資料嗎?此動作無法復原。')){ state=defaultState(); save(); closeModal(); renderAll(); }
   }
