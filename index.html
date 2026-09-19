@@ -409,6 +409,12 @@ function fmtNum(n,d){
   if(n==null||isNaN(n)) return '-';
   return (+n).toLocaleString('zh-Hant-TW',{minimumFractionDigits:d||0,maximumFractionDigits:d||0});
 }
+function fmtMoney2(n){
+  n = +n||0;
+  var neg = n<0; n=Math.abs(n);
+  var s = n.toLocaleString('zh-Hant-TW',{minimumFractionDigits:2,maximumFractionDigits:2});
+  return (neg?'-':'')+'$'+s;
+}
 function esc(s){
   return (s==null?'':String(s)).replace(/[&<>"']/g, function(c){
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
@@ -697,6 +703,18 @@ function totalHoursInRange(from,to){
   });
   return t;
 }
+function totalBreakHoursInRange(from,to){
+  var t=0; var today=todayStr();
+  Object.keys(state.dailyMeta).forEach(function(d){
+    if(inRange(d,from,to)){
+      var m = state.dailyMeta[d];
+      var bm = m.breakMs||0;
+      if(d===today && m.onBreak && m.breakStart) bm += (Date.now()-m.breakStart);
+      t += bm/3600000;
+    }
+  });
+  return t;
+}
 function workingDaysInRange(from,to){
   var days = {};
   state.records.forEach(function(r){ if(inRange(r.date,from,to)) days[r.date]=true; });
@@ -835,12 +853,12 @@ function renderEntry(){
   } else {
     shiftBtn = '<button class="shift-btn stop" data-act="clock-out">下班打卡</button>';
     if(meta.onBreak){
-      breakRow = '<div class="daily-row"><span class="l">休息中</span><div style="display:flex;align-items:center;gap:10px"><span class="hours-badge">'+fmtNum(breakH,1)+' 小時</span><button class="shift-btn stop" data-act="break-end">休息結束</button></div></div>';
+      breakRow = '<div class="daily-row"><span class="l">休息中</span><div style="display:flex;align-items:center;gap:10px"><span class="hours-badge">'+fmtNum(breakH,2)+' 小時</span><button class="shift-btn stop" data-act="break-end">休息結束</button></div></div>';
     } else {
-      breakRow = '<div class="daily-row"><span class="l">休息</span><div style="display:flex;align-items:center;gap:10px"><span class="hours-badge">'+fmtNum(breakH,1)+' 小時</span><button class="shift-btn start" data-act="break-start">休息開始</button></div></div>';
+      breakRow = '<div class="daily-row"><span class="l">休息</span><div style="display:flex;align-items:center;gap:10px"><span class="hours-badge">'+fmtNum(breakH,2)+' 小時</span><button class="shift-btn start" data-act="break-start">休息開始</button></div></div>';
     }
   }
-  var hoursLabel = (meta.activeShiftStart? (meta.onBreak?'休息中 · ':'營運中 · '):'')+fmtNum(workedH,1)+' 小時';
+  var hoursLabel = (meta.activeShiftStart? (meta.onBreak?'休息中 · ':'營運中 · '):'')+fmtNum(workedH,2)+' 小時';
 
   h += '<div class="section"><div class="section-title">今日行車</div><div class="card daily-card">';
   h += '<div class="daily-row"><span class="l">今日里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(meta.km!=null?meta.km:'')+'" placeholder="0.0" data-km-input></div>';
@@ -884,7 +902,7 @@ function renderDayList(dateStr){
     var ci = catInfo(e.category);
     h += '<div class="list-item">'+
       '<div class="li-icon" style="background:var(--expense-soft)">'+ci.icon+'</div>'+
-      '<div class="li-body" data-act="edit-expense:'+e.id+'" style="cursor:pointer"><div class="li-title">'+ci.label+'</div><div class="li-sub">'+(e.category==='fuel'&&e.liters?(fmtNum(e.liters,1)+' 公升 · '):'')+(e.note?esc(e.note):'')+'</div></div>'+
+      '<div class="li-body" data-act="edit-expense:'+e.id+'" style="cursor:pointer"><div class="li-title">'+ci.label+'</div><div class="li-sub">'+(e.category==='fuel'&&e.liters?(fmtNum(e.liters,2)+' 公升 · '):'')+(e.note?esc(e.note):'')+'</div></div>'+
       '<div class="li-amt expense num">-'+fmtMoney(e.amount)+'</div>'+
       '<button class="li-del" data-act="del-expense:'+e.id+'">✕</button></div>';
   });
@@ -987,7 +1005,7 @@ function renderExpenseTab(){
     var ci = catInfo(e.category);
     return '<div class="list-item">'+
       '<div class="li-icon" style="background:var(--expense-soft)">'+ci.icon+'</div>'+
-      '<div class="li-body"><div class="li-title">'+ci.label+'</div><div class="li-sub">'+e.date+(e.category==='fuel'&&e.liters?(' · '+fmtNum(e.liters,1)+'公升'):'')+(e.note?(' · '+esc(e.note)):'')+'</div></div>'+
+      '<div class="li-body"><div class="li-title">'+ci.label+'</div><div class="li-sub">'+e.date+(e.category==='fuel'&&e.liters?(' · '+fmtNum(e.liters,2)+'公升'):'')+(e.note?(' · '+esc(e.note)):'')+'</div></div>'+
       '<div class="li-amt expense num">-'+fmtMoney(e.amount)+'</div>'+
       '<button class="li-del" data-act="del-expense:'+e.id+'">✕</button></div>';
   }).join('') : '<div class="empty-state"><div class="ic">🧾</div><div class="t">本月還沒有變動支出</div></div>';
@@ -1031,6 +1049,7 @@ function renderAnalytics(){
   var profit = net.total-totalExp;
   var km = totalKmInRange(range.from, range.to);
   var hours = totalHoursInRange(range.from, range.to);
+  var breakHours = totalBreakHoursInRange(range.from, range.to);
   var fuel = fuelStatsInRange(range.from, range.to);
   var workDays = workingDaysInRange(range.from, range.to);
 
@@ -1070,19 +1089,21 @@ function renderAnalytics(){
   h += '<div class="stat-tile"><div class="lbl">淨利</div><div class="val num">'+fmtMoney(profit)+'</div></div>';
   h += '</div></div>';
 
-  h += '<div class="section"><div class="section-title">本期概況</div><div class="card"><div class="summary-row" style="grid-template-columns:1fr 1fr 1fr">';
+  h += '<div class="section"><div class="section-title">本期概況</div><div class="card"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
   h += '<div class="stat-tile"><div class="lbl">營業天數</div><div class="val num">'+workDays+' 天</div></div>';
   h += '<div class="stat-tile"><div class="lbl">平均日實收</div><div class="val income num">'+(workDays>0?fmtMoney(net.total/workDays):'—')+'</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">平均每日工時</div><div class="val num">'+(workDays>0?fmtNum(hours/workDays,1)+' 小時':'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">平均每日工時</div><div class="val num">'+(workDays>0?fmtNum(hours/workDays,2)+' 小時':'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">平均每日休息時間</div><div class="val num">'+(workDays>0?fmtNum(breakHours/workDays,2)+' 小時':'—')+'</div></div>';
   h += '</div></div></div>';
 
   h += '<div class="section"><div class="section-title">效率指標</div><div class="card"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
-  h += '<div class="stat-tile"><div class="lbl">實際時薪(已扣休息)</div><div class="val num">'+(hours>0?fmtMoney(net.total/hours):'—')+'</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">總工時</div><div class="val num">'+fmtNum(hours,1)+' 小時</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">每公里成本</div><div class="val expense num">'+(km>0?fmtMoney(totalExp/km):'—')+'</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">每公里實收</div><div class="val income num">'+(km>0?fmtMoney(net.total/km):'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">實際時薪(已扣休息)</div><div class="val num">'+(hours>0?fmtMoney2(net.total/hours):'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">總工時</div><div class="val num">'+fmtNum(hours,2)+' 小時</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">每公里成本</div><div class="val expense num">'+(km>0?fmtMoney2(totalExp/km):'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">每公里實收</div><div class="val income num">'+(km>0?fmtMoney2(net.total/km):'—')+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">總里程</div><div class="val num">'+fmtNum(km,1)+' km</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">每公升可跑</div><div class="val num">'+(fuel.liters>0?fmtNum(km/fuel.liters,1)+' km':'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">每公升可跑</div><div class="val num">'+(fuel.liters>0?fmtNum(km/fuel.liters,2)+' km':'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">總休息時間</div><div class="val num">'+fmtNum(breakHours,2)+' 小時</div></div>';
   h += '</div></div></div>';
 
   if(platformList.length){
@@ -1351,10 +1372,12 @@ function openSettingsModal(){
   h += '<div><label style="font-size:11px">大都會 信用卡加扣%</label><input class="num-input" id="f-fee-metrocredit" type="number" step="0.1" value="'+(fr.metroCredit!=null?fr.metroCredit:3)+'"></div>';
   h += '<div><label style="font-size:11px">大都會 企業簽單加扣%</label><input class="num-input" id="f-fee-metroenterprise" type="number" step="0.1" value="'+(fr.metroEnterprise!=null?fr.metroEnterprise:6)+'"></div>';
   h += '</div>';
-  h += '<div class="form-row"><label>Line Go 手續費 %(基本17%+信用卡2.5%)</label><input class="num-input" id="f-fee-linego" type="number" step="0.1" value="'+(fr.linego!=null?fr.linego:19.5)+'"></div>';
+  h += '<div class="form-grid2">';
+  h += '<div><label style="font-size:11px">Line Go 手續費 %(手續費%+信用卡服務費2.5%)</label><input class="num-input" id="f-fee-linego" type="number" step="0.1" value="'+(fr.linego!=null?fr.linego:19.5)+'"></div>';
+  h += '<div><label style="font-size:11px">Uber 手續費 %(用來回推車資,不會扣你輸入的金額)</label><input class="num-input" id="f-fee-uber" type="number" step="0.1" value="'+(fr.uber!=null?fr.uber:25)+'"></div>';
+  h += '</div>';
 
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.5">注意:Uber 你輸入的是 App 顯示的實收金額(已扣手續費),下面%只用來回推「未扣手續費前的車資」,不會再從你輸入的金額扣一次;BOLT 則相反,你輸入的是還沒扣手續費的原始車資,系統會自動扣掉。</div>';
-  h += '<div class="form-row"><label>Uber 手續費 %(用來回推車資,不會扣你輸入的金額)</label><input class="num-input" id="f-fee-uber" type="number" step="0.1" value="'+(fr.uber!=null?fr.uber:25)+'"></div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.5">注意:Uber 你輸入的是 App 顯示的實收金額(已扣手續費),上面%只用來回推「未扣手續費前的車資」,不會再從你輸入的金額扣一次;下面 BOLT 則相反,你輸入的是還沒扣手續費的原始車資,系統會自動扣掉。</div>';
   h += '<div class="form-grid2">';
   h += '<div><label style="font-size:11px">BOLT 未達門檻 手續費 %</label><input class="num-input" id="f-fee-boltflat" type="number" step="0.1" value="'+(fr.boltFlat!=null?fr.boltFlat:20)+'"></div>';
   h += '<div><label style="font-size:11px">BOLT 達門檻後 %</label><input class="num-input" id="f-fee-boltpct" type="number" step="0.1" value="'+(fr.boltPct!=null?fr.boltPct:10)+'"></div>';
