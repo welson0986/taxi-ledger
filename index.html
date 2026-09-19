@@ -496,8 +496,7 @@ function computeNetRevenue(r){
       return gross*(1-pctB/100);
     }
     var flatB = fees.boltFlat!=null?fees.boltFlat:20;
-    var netB = gross-flatB;
-    return netB>0?netB:0;
+    return gross*(1-flatB/100);
   }
   if(r.platform==='tdc'){
     var pct = fees.tdc!=null?fees.tdc:15;
@@ -1357,7 +1356,7 @@ function openSettingsModal(){
   h += '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.5">注意:Uber 你輸入的是 App 顯示的實收金額(已扣手續費),下面%只用來回推「未扣手續費前的車資」,不會再從你輸入的金額扣一次;BOLT 則相反,你輸入的是還沒扣手續費的原始車資,系統會自動扣掉。</div>';
   h += '<div class="form-row"><label>Uber 手續費 %(用來回推車資,不會扣你輸入的金額)</label><input class="num-input" id="f-fee-uber" type="number" step="0.1" value="'+(fr.uber!=null?fr.uber:25)+'"></div>';
   h += '<div class="form-grid2">';
-  h += '<div><label style="font-size:11px">BOLT 未達門檻 每趟扣$</label><input class="num-input" id="f-fee-boltflat" type="number" step="1" value="'+(fr.boltFlat!=null?fr.boltFlat:20)+'"></div>';
+  h += '<div><label style="font-size:11px">BOLT 未達門檻 手續費 %</label><input class="num-input" id="f-fee-boltflat" type="number" step="0.1" value="'+(fr.boltFlat!=null?fr.boltFlat:20)+'"></div>';
   h += '<div><label style="font-size:11px">BOLT 達門檻後 %</label><input class="num-input" id="f-fee-boltpct" type="number" step="0.1" value="'+(fr.boltPct!=null?fr.boltPct:10)+'"></div>';
   h += '</div>';
   h += '<div class="form-row"><label>BOLT 門檻(每週趟次,達標當週全部趟次改用上面%計算)</label><input class="num-input" id="f-fee-boltthreshold" type="number" step="1" value="'+(fr.boltThreshold!=null?fr.boltThreshold:15)+'"></div>';
