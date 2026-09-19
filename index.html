@@ -432,7 +432,7 @@ function defaultState(){
     fixedCosts:[],
     fixedOverrides:{},
     targets:{daily:0,weekly:0,monthly:0},
-    feeRules:{tdc:null,yoxiCash:null,yoxiOther:null,yoxiCreditExtra:null,linego:null,metroFlat:null,metroCredit:null,metroEnterprise:null,uber:null,boltFlat:null,boltPct:null,boltThreshold:null},
+    feeRules:{tdc:null,yoxiCash:null,yoxiOther:null,yoxiCreditExtra:null,linego:null,metroFlat:null,metroCredit:null,metroEnterprise:null,uber:null,boltFlat:null,boltPct:null,boltThreshold:null,boltThresholdEnabled:true},
     platformOverrides:{},
     customPlatforms:[],
     platformOrder:PLATFORM_DEFS.map(function(p){return p.key;}),
@@ -496,13 +496,16 @@ function computeNetRevenue(r){
     return gross;
   }
   if(r.platform==='bolt'){
-    var threshold = fees.boltThreshold!=null?fees.boltThreshold:15;
-    var weekCount = boltWeekTripCount(r.date);
-    if(weekCount>=threshold){
-      var pctB = fees.boltPct!=null?fees.boltPct:10;
-      return gross*(1-pctB/100);
-    }
     var flatB = fees.boltFlat!=null?fees.boltFlat:20;
+    var thresholdEnabled = fees.boltThresholdEnabled!==false;
+    if(thresholdEnabled){
+      var threshold = fees.boltThreshold!=null?fees.boltThreshold:15;
+      var weekCount = boltWeekTripCount(r.date);
+      if(weekCount>=threshold){
+        var pctB = fees.boltPct!=null?fees.boltPct:10;
+        return gross*(1-pctB/100);
+      }
+    }
     return gross*(1-flatB/100);
   }
   if(r.platform==='tdc'){
@@ -1368,10 +1371,10 @@ function openSettingsModal(){
   h += '<div class="form-grid2">';
   h += '<div><label style="font-size:11px">台灣大車隊 %</label><input class="num-input" id="f-fee-tdc" type="number" step="0.1" value="'+(fr.tdc!=null?fr.tdc:15)+'"></div>';
   h += '<div><label style="font-size:11px">大都會 每單扣$</label><input class="num-input" id="f-fee-metroflat" type="number" step="1" value="'+(fr.metroFlat!=null?fr.metroFlat:25)+'"></div>';
+  h += '<div><label style="font-size:11px">大都會 信用卡服務費%</label><input class="num-input" id="f-fee-metrocredit" type="number" step="0.1" value="'+(fr.metroCredit!=null?fr.metroCredit:3)+'"></div>';
+  h += '<div><label style="font-size:11px">大都會 企業簽單服務費%</label><input class="num-input" id="f-fee-metroenterprise" type="number" step="0.1" value="'+(fr.metroEnterprise!=null?fr.metroEnterprise:6)+'"></div>';
   h += '<div><label style="font-size:11px">YOXI 基本手續費 %(現金/企業簽單)</label><input class="num-input" id="f-fee-yoxicash" type="number" step="0.1" value="'+(fr.yoxiCash!=null?fr.yoxiCash:10)+'"></div>';
-  h += '<div><label style="font-size:11px">YOXI 信用卡加收 %</label><input class="num-input" id="f-fee-yoxicreditextra" type="number" step="0.1" value="'+(fr.yoxiCreditExtra!=null?fr.yoxiCreditExtra:2)+'"></div>';
-  h += '<div><label style="font-size:11px">大都會 信用卡加扣%</label><input class="num-input" id="f-fee-metrocredit" type="number" step="0.1" value="'+(fr.metroCredit!=null?fr.metroCredit:3)+'"></div>';
-  h += '<div><label style="font-size:11px">大都會 企業簽單加扣%</label><input class="num-input" id="f-fee-metroenterprise" type="number" step="0.1" value="'+(fr.metroEnterprise!=null?fr.metroEnterprise:6)+'"></div>';
+  h += '<div><label style="font-size:11px">YOXI 信用卡服務費%</label><input class="num-input" id="f-fee-yoxicreditextra" type="number" step="0.1" value="'+(fr.yoxiCreditExtra!=null?fr.yoxiCreditExtra:2)+'"></div>';
   h += '</div>';
   h += '<div class="form-grid2">';
   h += '<div><label style="font-size:11px">Line Go 手續費 %(手續費%+信用卡服務費2.5%)</label><input class="num-input" id="f-fee-linego" type="number" step="0.1" value="'+(fr.linego!=null?fr.linego:19.5)+'"></div>';
@@ -1379,11 +1382,13 @@ function openSettingsModal(){
   h += '</div>';
 
   h += '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.5">注意:Uber 你輸入的是 App 顯示的實收金額(已扣手續費),上面%只用來回推「未扣手續費前的車資」,不會再從你輸入的金額扣一次;下面 BOLT 則相反,你輸入的是還沒扣手續費的原始車資,系統會自動扣掉。</div>';
+  h += '<div class="form-grid2"><div><label style="font-size:11px">BOLT 手續費 %</label><input class="num-input" id="f-fee-boltflat" type="number" step="0.1" value="'+(fr.boltFlat!=null?fr.boltFlat:20)+'"></div></div>';
+  h += '<label style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;color:var(--text-muted);margin-bottom:8px"><input type="checkbox" id="f-fee-boltthresholdenabled" style="width:17px;height:17px" '+(fr.boltThresholdEnabled!==false?'checked':'')+'>開啟 BOLT 車貼獎勵門檻(沒有貼車貼就不用勾,一律用上面的手續費 %)</label>';
   h += '<div class="form-grid2">';
-  h += '<div><label style="font-size:11px">BOLT 未達門檻 手續費 %</label><input class="num-input" id="f-fee-boltflat" type="number" step="0.1" value="'+(fr.boltFlat!=null?fr.boltFlat:20)+'"></div>';
-  h += '<div><label style="font-size:11px">BOLT 達門檻後 %</label><input class="num-input" id="f-fee-boltpct" type="number" step="0.1" value="'+(fr.boltPct!=null?fr.boltPct:10)+'"></div>';
+  h += '<div><label style="font-size:11px">BOLT 車貼獎勵每週趟次門檻</label><input class="num-input" id="f-fee-boltthreshold" type="number" step="1" value="'+(fr.boltThreshold!=null?fr.boltThreshold:15)+'"></div>';
+  h += '<div><label style="font-size:11px">BOLT 趟次門檻達標後 %</label><input class="num-input" id="f-fee-boltpct" type="number" step="0.1" value="'+(fr.boltPct!=null?fr.boltPct:10)+'"></div>';
   h += '</div>';
-  h += '<div class="form-row"><label>BOLT 門檻(每週趟次,達標當週全部趟次改用上面%計算)</label><input class="num-input" id="f-fee-boltthreshold" type="number" step="1" value="'+(fr.boltThreshold!=null?fr.boltThreshold:15)+'"></div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:-4px;margin-bottom:12px">達標當週,全部趟次都會改用上面「達標後%」計算。</div>';
 
   h += '<div class="form-row" style="margin-top:6px"><label>平台管理(拖曳左邊排序,可改名/隱藏/新增)</label></div>';
   h += '<div id="platOrderList">';
@@ -1556,6 +1561,7 @@ function saveSettings(){
   state.feeRules.boltFlat = g('f-fee-boltflat');
   state.feeRules.boltPct = g('f-fee-boltpct');
   state.feeRules.boltThreshold = g('f-fee-boltthreshold');
+  state.feeRules.boltThresholdEnabled = document.getElementById('f-fee-boltthresholdenabled').checked;
   state.syncUrl = document.getElementById('f-sync-url').value.trim();
   save(); closeModal(); renderAll();
 }
