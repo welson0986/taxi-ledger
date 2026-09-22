@@ -467,6 +467,34 @@ function dm(dateStr){
   }
   return m;
 }
+function findStaleOpenShiftDate(){
+  var today = todayStr();
+  var dates = Object.keys(state.dailyMeta).filter(function(d){
+    return d!==today && state.dailyMeta[d].activeShiftStart;
+  }).sort();
+  return dates.length ? dates[0] : null;
+}
+function finalizeStaleShift(dateStr, endTs){
+  var m = state.dailyMeta[dateStr];
+  if(!m || !m.activeShiftStart) return;
+  if(m.onBreak && m.breakStart){
+    m.breakMs += Math.max(0, endTs-m.breakStart);
+    m.breakStart = null; m.onBreak = false;
+  } else if(m.segmentStart){
+    m.workedMs += Math.max(0, endTs-m.segmentStart);
+    m.segmentStart = null;
+  }
+  m.activeShiftStart = null;
+  save();
+  syncDailyRecord(dateStr);
+}
+function openStaleShiftModal(dateStr){
+  var h = '<div class="modal-title">補登下班時間<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:14px;line-height:1.6">系統發現 <b style="color:var(--text)">'+dateStr+'</b> 有上班打卡,但沒有下班打卡,那天的工時一直沒有結算。請補選實際的下班時間,系統才會把那天的工時算進去(否則那天的工時、時薪都會少算)。</div>';
+  h += '<div class="form-row"><label>實際下班時間</label><input type="datetime-local" id="f-stale-endtime" value="'+dateStr+'T23:59"></div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-stale-shift:'+dateStr+'">確認補登</button></div>';
+  openModal(h);
+}
 
 var currentTab = 'entry';
 var uiMonth = new Date(); uiMonth.setDate(1);
@@ -789,7 +817,7 @@ function renderTopbar(){
   var exp = sumExpense(expensesInRange(t,t));
   var val = net.total-exp;
   var el = document.getElementById('todayNet');
-  el.textContent = (val>=0?'今日 +':'今日 ')+fmtMoney(val);
+  el.textContent = (val>=0?'今日淨收入 +':'今日淨收入 ')+fmtMoney(val);
   el.className = 'today-net '+(val>=0?'pos':'neg');
   var nameEl = document.getElementById('appNameLabel');
   if(nameEl) nameEl.textContent = state.appName||'跑車人生';
@@ -822,11 +850,10 @@ function renderEntry(){
   todayRecs.forEach(function(r){ platformTotals[r.platform]=(platformTotals[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
 
   var h = '';
-  h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
+  h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr 1fr">';
   h += '<div class="stat-tile"><div class="lbl">今日實收(含小費)</div><div class="val income num">'+fmtMoney(net.total)+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">今日車資(未扣手續費)</div><div class="val num">'+fmtMoney(gross.total)+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">今日支出</div><div class="val expense num">'+fmtMoney(exp)+'</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">今日淨額</div><div class="val num">'+fmtMoney(net.total-exp)+'</div></div>';
   h += '</div></div>';
 
   h += '<div class="section"><div class="section-title">收入/平台</div><div class="platform-grid">';
@@ -1594,7 +1621,20 @@ document.addEventListener('click', function(e){
     if(expToEdit) openExpenseModal(expToEdit.category, arg);
   }
   else if(cmd==='clock-in'){
+    var staleDate1 = findStaleOpenShiftDate();
+    if(staleDate1){ openStaleShiftModal(staleDate1); return; }
     var m1 = dm(todayStr()); m1.activeShiftStart=Date.now(); m1.segmentStart=Date.now(); m1.onBreak=false; save(); renderAll();
+  }
+  else if(cmd==='save-stale-shift'){
+    var staleVal = document.getElementById('f-stale-endtime').value;
+    if(!staleVal){ alert('請選擇下班時間。'); return; }
+    var staleEndTs = new Date(staleVal).getTime();
+    var staleMeta = state.dailyMeta[arg];
+    var staleStartRef = (staleMeta.onBreak && staleMeta.breakStart) ? staleMeta.breakStart : staleMeta.segmentStart;
+    if(!staleStartRef || isNaN(staleEndTs) || staleEndTs<=staleStartRef){ alert('下班時間必須晚於上班(或上次恢復工作)的時間,請重新選擇。'); return; }
+    finalizeStaleShift(arg, staleEndTs);
+    var nextStale = findStaleOpenShiftDate();
+    if(nextStale){ openStaleShiftModal(nextStale); } else { closeModal(); }
   }
   else if(cmd==='clock-out'){
     var m2 = dm(todayStr());
@@ -1699,6 +1739,8 @@ document.addEventListener('change', function(e){
 });
 
 renderAll();
+var _staleShiftDate = findStaleOpenShiftDate();
+if(_staleShiftDate) openStaleShiftModal(_staleShiftDate);
 })();
 </script>
 
