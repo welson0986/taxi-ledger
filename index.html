@@ -985,6 +985,9 @@ function renderHistory(){
   var histMeta = dm(selectedDay);
   h += '<div class="section" style="margin-top:14px"><div class="card daily-card">'+
     '<div class="daily-row"><span class="l">'+selectedDay+' 里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(histMeta.km!=null?histMeta.km:'')+'" placeholder="0.0" data-km-input-date="'+selectedDay+'"></div>'+
+    '<div class="daily-row"><span class="l">'+selectedDay+' 工時(小時)</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.workedMs||0)/3600000).toFixed(2)+'" placeholder="0.00" data-hours-input-date="'+selectedDay+'"></div>'+
+    '<div class="daily-row"><span class="l">'+selectedDay+' 休息時間(小時)</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.breakMs||0)/3600000).toFixed(2)+'" placeholder="0.00" data-break-input-date="'+selectedDay+'"></div>'+
+    '<div style="font-size:11px;color:var(--text-muted);line-height:1.5">補記或修改過往的工時/休息時間,直接改數字就會覆蓋掉原本打卡累積的時數。</div>'+
     '</div></div>';
 
   h += '<div class="section"><div class="section-title">'+selectedDay+' 明細</div><div class="card">'+renderDayList(selectedDay)+'</div></div>';
@@ -1732,6 +1735,18 @@ document.addEventListener('change', function(e){
     var kd = e.target.getAttribute('data-km-input-date');
     dm(kd).km = e.target.value===''? null : +e.target.value;
     save(); syncDailyRecord(kd);
+  }
+  else if(e.target.matches('[data-hours-input-date]')){
+    var hd = e.target.getAttribute('data-hours-input-date');
+    var mh = dm(hd);
+    mh.workedMs = Math.max(0, (e.target.value===''?0:+e.target.value)*3600000);
+    save(); syncDailyRecord(hd);
+  }
+  else if(e.target.matches('[data-break-input-date]')){
+    var bd = e.target.getAttribute('data-break-input-date');
+    var mb = dm(bd);
+    mb.breakMs = Math.max(0, (e.target.value===''?0:+e.target.value)*3600000);
+    save(); syncDailyRecord(bd);
   }
   else if(e.target.id==='dayPicker'){ if(e.target.value){ analyticsDay = e.target.value; renderAll(); } }
   else if(e.target.id==='customFrom'){ if(e.target.value){ customFrom = e.target.value; renderAll(); } }
