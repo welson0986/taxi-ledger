@@ -501,6 +501,7 @@ var uiMonth = new Date(); uiMonth.setDate(1);
 var selectedDay = todayStr();
 var analyticsPeriod = 'month';
 var analyticsDay = todayStr();
+var lastSubBreakdown = [];
 var customFrom = todayStr();
 var customTo = todayStr();
 function currentEntryDate(){ return currentTab==='history' ? selectedDay : todayStr(); }
@@ -781,10 +782,21 @@ function subBreakdown(recs){
     var detail = breakdownLabel(r);
     var label = detail ? (def.label+' · '+detail) : def.label;
     var val = computeNetRevenue(r)+(+r.tip||0);
-    if(!map[label]) map[label]={count:0,total:0};
-    map[label].count++; map[label].total+=val;
+    if(!map[label]) map[label]={count:0,total:0,ids:[]};
+    map[label].count++; map[label].total+=val; map[label].ids.push(r.id);
   });
-  return Object.keys(map).map(function(k){return {label:k,count:map[k].count,total:map[k].total};}).sort(function(a,b){return b.total-a.total;});
+  return Object.keys(map).map(function(k){return {label:k,count:map[k].count,total:map[k].total,ids:map[k].ids};}).sort(function(a,b){return b.total-a.total;});
+}
+function openSubBreakdownModal(item){
+  var h = '<div class="modal-title">'+esc(item.label)+'<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">共 '+item.count+' 趟,合計 '+fmtMoney(item.total)+'(點項目可查看/修改)</div>';
+  var recsList = item.ids.map(function(id){ return state.records.filter(function(r){return r.id===id;})[0]; }).filter(Boolean);
+  recsList.sort(function(a,b){ return a.date<b.date?1:(a.date>b.date?-1:(b.ts||0)-(a.ts||0)); });
+  h += '<div class="card">' + recsList.map(function(r){
+    var val = computeNetRevenue(r)+(+r.tip||0);
+    return '<div class="list-item" data-act="edit-income:'+r.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+r.date+'</div><div class="li-sub">車資 '+fmtMoney(r.revenue||0)+(r.tip?(' · 小費 '+fmtMoney(r.tip)):'')+'</div></div><div class="li-amt income num">+'+fmtMoney(val)+'</div></div>';
+  }).join('') + '</div>';
+  openModal(h);
 }
 function weekRange(){
   var t = new Date();
@@ -1149,9 +1161,10 @@ function renderAnalytics(){
   }
 
   if(sub.length){
+    lastSubBreakdown = sub;
     h += '<div class="section"><div class="section-title">細項分析(趟次 / 實收)</div><div class="card">';
-    h += sub.map(function(s){
-      return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(s.label)+'</div><div class="li-sub">'+s.count+' 趟</div></div><div class="li-amt income num">'+fmtMoney(s.total)+'</div></div>';
+    h += sub.map(function(s,si){
+      return '<div class="list-item" data-act="open-subbreakdown:'+si+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+esc(s.label)+'</div><div class="li-sub">'+s.count+' 趟</div></div><div class="li-amt income num">'+fmtMoney(s.total)+'</div></div>';
     }).join('');
     h += '</div></div>';
   }
@@ -1664,6 +1677,10 @@ document.addEventListener('click', function(e){
   else if(cmd==='day'){ var dObj=new Date(analyticsDay+'T00:00:00'); dObj.setDate(dObj.getDate()+(+arg)); analyticsDay=toDateStr(dObj); renderAll(); }
   else if(cmd==='select-day'){ selectedDay=arg; renderAll(); }
   else if(cmd==='period'){ analyticsPeriod=arg; renderAll(); }
+  else if(cmd==='open-subbreakdown'){
+    var sbItem = lastSubBreakdown[+arg];
+    if(sbItem) openSubBreakdownModal(sbItem);
+  }
   else if(cmd==='open-fixed-new'){ openFixedModal(); }
   else if(cmd==='save-fixed'){ saveFixed(); }
   else if(cmd==='del-fixed'){ state.fixedCosts=state.fixedCosts.filter(function(f){return f.id!==arg;}); save(); renderAll(); }
