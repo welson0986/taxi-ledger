@@ -452,6 +452,7 @@ function load(){
 var state = load();
 function save(){
   try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+  scheduleCloudSync();
 }
 function dm(dateStr){
   var m = state.dailyMeta[dateStr];
@@ -486,7 +487,30 @@ function finalizeStaleShift(dateStr, endTs){
   }
   m.activeShiftStart = null;
   save();
-  syncDailyRecord(dateStr);
+ 
+}
+function findMissingKmDate(){
+  var today = todayStr(), limit = addDays(today,-7), cands = {};
+  state.records.forEach(function(r){ if(r.date<today && r.date>=limit) cands[r.date]=true; });
+  Object.keys(state.dailyMeta).forEach(function(d){ if(d<today && d>=limit && state.dailyMeta[d].workedMs>0) cands[d]=true; });
+  var dates = Object.keys(cands).filter(function(d){
+    var m = state.dailyMeta[d];
+    return !m || (m.km==null && !m.kmSkipped);
+  }).sort();
+  return dates.length ? dates[dates.length-1] : null;
+}
+function openMissingKmModal(dateStr){
+  var h = '<div class="modal-title">補填里程<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:14px;line-height:1.6"><b style="color:var(--text)">'+dateStr+'</b> 有出車,但還沒填里程。補上之後,每公里成本、每公里實收、油耗才算得出來。</div>';
+  h += '<div class="form-row"><label>'+dateStr+' 里程 (km)</label><input class="num-input" type="number" step="0.1" min="0" inputmode="decimal" id="f-missing-km" placeholder="0.0"></div>';
+  h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="skip-missing-km:'+dateStr+'">這天不記里程</button><button class="btn btn-primary" style="flex:1" data-act="save-missing-km:'+dateStr+'">儲存</button></div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.5">按右上角 ✕ 會先跳過,下次打開 App 會再提醒。</div>';
+  openModal(h);
+  setTimeout(function(){ var el=document.getElementById('f-missing-km'); if(el) el.focus(); }, 50);
+}
+function openNextMissingKmOrClose(){
+  var next = findMissingKmDate();
+  if(next) openMissingKmModal(next); else closeModal();
 }
 function openStaleShiftModal(dateStr){
   var h = '<div class="modal-title">補登下班時間<button class="close" data-act="close-modal">✕</button></div>';
@@ -608,68 +632,99 @@ function describeRecord(r){
   return parts.join(' · ');
 }
 
-/* ---------- Google Sheet sync (fire-and-forget) ---------- */
-function syncToSheet(kind, payload){
-  if(!state.syncUrl) return;
-  payload = payload || {};
-  payload.kind = kind;
+/* ---------- Google Sheet cloud sync (full snapshot) ---------- */
+var cloudSyncTimer = null;
+var cloudSyncSuspended = false;
+function sheetText(v){
+  v = (v==null?'':String(v));
+  return /^[=+\-@]/.test(v) ? "'"+v : v;
+}
+function fmtTs(ts){
+  if(!ts) return '';
+  var d = new Date(ts);
+  return toDateStr(d)+' '+pad(d.getHours())+':'+pad(d.getMinutes());
+}
+function buildCloudSnapshot(){
+  var recs = state.records.slice().sort(function(a,b){ return a.date<b.date?-1:(a.date>b.date?1:(a.ts||0)-(b.ts||0)); });
+  var income = recs.map(function(r){
+    return [r.date, platformDef(r.platform).label, Math.round(computeGrossRevenue(r)*100)/100, +r.tip||0,
+      Math.round(computeNetRevenue(r)*100)/100, sheetText(r.subtype), sheetText(r.fareType), sheetText(r.payment),
+      sheetText(r.discountTier), sheetText(r.estimateType), r.markupAmount||'', r.markupMultiplier||'',
+      sheetText(r.subPlatform), sheetText(r.note), fmtTs(r.ts)];
+  });
+  var exps = state.expenses.slice().sort(function(a,b){ return a.date<b.date?-1:(a.date>b.date?1:(a.ts||0)-(b.ts||0)); });
+  var expense = exps.map(function(e){
+    return [e.date, catInfo(e.category).label, +e.amount||0, e.liters||'', sheetText(e.note), fmtTs(e.ts)];
+  });
+  var daily = Object.keys(state.dailyMeta).sort().map(function(d){
+    var m = state.dailyMeta[d];
+    return [d, m.km!=null?m.km:'', +((m.workedMs||0)/3600000).toFixed(2), +((m.breakMs||0)/3600000).toFixed(2)];
+  }).filter(function(row){ return row[1]!=='' || row[2]>0 || row[3]>0; });
+  var fixed = [];
+  var first = dataFirstDate();
+  if(state.fixedCosts.length && first){
+    monthsBetween(first, todayStr()).forEach(function(ym){
+      state.fixedCosts.forEach(function(fc){
+        fixed.push([ym, sheetText(fc.name), fc.freq==='yearly'?'每年':'每月', +fc.amount||0, Math.round(fixedCostForMonth(fc, ym)*100)/100]);
+      });
+    });
+  }
+  return {
+    kind:'snapshot', income:income, expense:expense, daily:daily, fixed:fixed,
+    incomeCount:state.records.length, expenseCount:state.expenses.length,
+    state: JSON.stringify(state)
+  };
+}
+function hasMeaningfulData(){
+  return state.records.length>0 || state.expenses.length>0;
+}
+function pushCloudSnapshot(){
+  if(!state.syncUrl || cloudSyncSuspended || !hasMeaningfulData()) return false;
   try{
     fetch(state.syncUrl, {
-      method:'POST',
-      mode:'no-cors',
+      method:'POST', mode:'no-cors',
       headers:{'Content-Type':'text/plain;charset=utf-8'},
-      body: JSON.stringify(payload)
+      body: JSON.stringify(buildCloudSnapshot())
     }).catch(function(){});
-  }catch(e){}
+    state.lastCloudPush = Date.now();
+    try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+    return true;
+  }catch(e){ return false; }
 }
-function syncIncomeRecord(r){
-  syncToSheet('income', {
-    id:r.id, date:r.date, ts:r.ts, platform:r.platform, platformLabel:platformDef(r.platform).label,
-    revenue:computeGrossRevenue(r), tip:r.tip, net:computeNetRevenue(r),
-    subtype:r.subtype, fareType:r.fareType, payment:r.payment, discountTier:r.discountTier,
-    estimateType:r.estimateType, markupAmount:r.markupAmount, markupMultiplier:r.markupMultiplier,
-    subPlatform:r.subPlatform, note:r.note
+function scheduleCloudSync(){
+  if(!state.syncUrl) return;
+  if(cloudSyncTimer) clearTimeout(cloudSyncTimer);
+  cloudSyncTimer = setTimeout(function(){ cloudSyncTimer=null; pushCloudSnapshot(); }, 3000);
+}
+function flushCloudSync(){
+  if(cloudSyncTimer){ clearTimeout(cloudSyncTimer); cloudSyncTimer=null; pushCloudSnapshot(); }
+}
+document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='hidden') flushCloudSync(); });
+window.addEventListener('pagehide', flushCloudSync);
+var cloudCbSeq = 0;
+function cloudGet(params){
+  return new Promise(function(resolve, reject){
+    var cb = '__cloudCb'+(++cloudCbSeq)+'_'+Date.now();
+    var q = Object.keys(params).map(function(k){ return k+'='+encodeURIComponent(params[k]); }).join('&');
+    var s = document.createElement('script');
+    var timer = setTimeout(function(){ cleanup(); reject(new Error('timeout')); }, 30000);
+    function cleanup(){ clearTimeout(timer); try{ delete window[cb]; }catch(e){ window[cb]=undefined; } if(s.parentNode) s.parentNode.removeChild(s); }
+    window[cb] = function(data){ cleanup(); resolve(data); };
+    s.onerror = function(){ cleanup(); reject(new Error('load')); };
+    s.src = state.syncUrl+(state.syncUrl.indexOf('?')>=0?'&':'?')+q+'&callback='+cb;
+    document.head.appendChild(s);
   });
-}
-function syncExpenseRecord(e){
-  syncToSheet('expense', {
-    id:e.id, date:e.date, ts:e.ts, category:e.category, categoryLabel:catInfo(e.category).label,
-    amount:e.amount, liters:e.liters, note:e.note
-  });
-}
-function syncDailyRecord(dateStr){
-  var m = dm(dateStr);
-  syncToSheet('daily', {
-    date:dateStr, km:m.km,
-    hours: +((m.workedMs||0)/3600000).toFixed(2),
-    breakHours: +((m.breakMs||0)/3600000).toFixed(2)
-  });
-}
-function syncFixedCost(fc, ym){
-  ym = ym || (function(){ var d=new Date(); return d.getFullYear()+'-'+pad(d.getMonth()+1); })();
-  syncToSheet('fixedcost', {
-    month: ym, name: fc.name, freq: fc.freq, baseAmount: fc.amount,
-    appliedAmount: fixedCostForMonth(fc, ym)
-  });
-}
-function syncAllData(onProgress, onDone){
-  var queue = [];
-  state.records.forEach(function(r){ queue.push(function(){ syncIncomeRecord(r); }); });
-  state.expenses.forEach(function(e){ queue.push(function(){ syncExpenseRecord(e); }); });
-  Object.keys(state.dailyMeta).forEach(function(d){ queue.push(function(){ syncDailyRecord(d); }); });
-  var curYm = (function(){ var d=new Date(); return d.getFullYear()+'-'+pad(d.getMonth()+1); })();
-  state.fixedCosts.forEach(function(fc){ queue.push(function(){ syncFixedCost(fc, curYm); }); });
-  var i = 0;
-  function step(){
-    if(i>=queue.length){ if(onDone) onDone(i); return; }
-    queue[i](); i++;
-    if(onProgress) onProgress(i, queue.length);
-    setTimeout(step, 180);
-  }
-  step();
 }
 
 /* ---------- computations ---------- */
+function dataFirstDate(){
+  var first = null;
+  function consider(d){ if(d && (!first || d<first)) first=d; }
+  state.records.forEach(function(r){ consider(r.date); });
+  state.expenses.forEach(function(e){ consider(e.date); });
+  Object.keys(state.dailyMeta).forEach(function(d){ var m=state.dailyMeta[d]; if(m.km!=null || m.workedMs>0) consider(d); });
+  return first;
+}
 function inRange(dateStr, from, to){ return dateStr>=from && dateStr<=to; }
 function recordsInRange(from,to){ return state.records.filter(function(r){return inRange(r.date,from,to);}); }
 function expensesInRange(from,to){ return state.expenses.filter(function(e){return inRange(e.date,from,to);}); }
@@ -861,7 +916,7 @@ function renderEntry(){
   var platformTotals = {};
   todayRecs.forEach(function(r){ platformTotals[r.platform]=(platformTotals[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
 
-  var h = '';
+  var h = tabWarningHtml();
   h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr 1fr">';
   h += '<div class="stat-tile"><div class="lbl">今日實收(含小費)</div><div class="val income num">'+fmtMoney(net.total)+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">今日車資(未扣手續費)</div><div class="val num">'+fmtMoney(gross.total)+'</div></div>';
@@ -994,8 +1049,19 @@ function renderHistory(){
     h += '</div>';
   }
 
+  var dayRecs = recordsInRange(selectedDay, selectedDay);
+  var dayTrips = dayRecs.filter(function(r){ return !platformDef(r.platform).tipOnly; }).length;
+  var dayNet = sumNetIncome(dayRecs).total;
+  var dayHours = totalHoursInRange(selectedDay, selectedDay);
+  h += '<div class="section" style="margin-top:14px"><div class="section-title">'+selectedDay+' 摘要</div><div class="summary-row" style="grid-template-columns:1fr 1fr">'+
+    '<div class="stat-tile"><div class="lbl">趟數</div><div class="val num">'+dayTrips+' 趟</div></div>'+
+    '<div class="stat-tile"><div class="lbl">實收(含小費)</div><div class="val income num">'+fmtMoney(dayNet)+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">工時(已扣休息)</div><div class="val num">'+fmtNum(dayHours,2)+' 小時</div></div>'+
+    '<div class="stat-tile"><div class="lbl">時薪</div><div class="val num">'+(dayHours>0?fmtMoney2(dayNet/dayHours):'—')+'</div></div>'+
+    '</div></div>';
+
   var histMeta = dm(selectedDay);
-  h += '<div class="section" style="margin-top:14px"><div class="card daily-card">'+
+  h += '<div class="section"><div class="card daily-card">'+
     '<div class="daily-row"><span class="l">'+selectedDay+' 里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(histMeta.km!=null?histMeta.km:'')+'" placeholder="0.0" data-km-input-date="'+selectedDay+'"></div>'+
     '<div class="daily-row"><span class="l">'+selectedDay+' 工時(小時)</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.workedMs||0)/3600000).toFixed(2)+'" placeholder="0.00" data-hours-input-date="'+selectedDay+'"></div>'+
     '<div class="daily-row"><span class="l">'+selectedDay+' 休息時間(小時)</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.breakMs||0)/3600000).toFixed(2)+'" placeholder="0.00" data-break-input-date="'+selectedDay+'"></div>'+
@@ -1077,11 +1143,174 @@ function renderExpenseTab(){
 }
 
 /* ---------- ANALYTICS TAB ---------- */
+var chartTips = {};
+function addDays(dateStr, n){ var d=new Date(dateStr+'T00:00:00'); d.setDate(d.getDate()+n); return toDateStr(d); }
+function daysBetween(a,b){ return Math.round((new Date(b+'T00:00:00')-new Date(a+'T00:00:00'))/86400000); }
+function comparisonRanges(range){
+  if(analyticsPeriod==='all') return null;
+  var today = todayStr();
+  if(range.from>today) return null;
+  var partial = range.to>today;
+  var cur = {from:range.from, to:partial?today:range.to};
+  var len = daysBetween(cur.from, cur.to);
+  var prev, label;
+  if(analyticsPeriod==='day'){ prev={from:addDays(cur.from,-1),to:addDays(cur.to,-1)}; label='前一天'; }
+  else if(analyticsPeriod==='week'){ prev={from:addDays(cur.from,-7),to:addDays(cur.to,-7)}; label=partial?'上週同期':'上週'; }
+  else if(analyticsPeriod==='month'){
+    var f=new Date(cur.from+'T00:00:00'); var pStart=new Date(f.getFullYear(),f.getMonth()-1,1);
+    var pEnd=new Date(f.getFullYear(),f.getMonth(),0);
+    var pTo=new Date(pStart); pTo.setDate(pStart.getDate()+len); if(pTo>pEnd) pTo=pEnd;
+    prev={from:toDateStr(pStart),to:toDateStr(pTo)}; label=partial?'上月同期':'上月';
+  }
+  else { prev={from:addDays(cur.from,-(len+1)),to:addDays(cur.from,-1)}; label='前一段同長度期間'; }
+  return {cur:cur, prev:prev, label:label};
+}
+function periodMetrics(from,to){
+  var recs = recordsInRange(from,to);
+  var net = sumNetIncome(recs).total;
+  var exp = sumExpense(expensesInRange(from,to))+fixedTotalForRange(from,to);
+  var hours = totalHoursInRange(from,to);
+  var km = totalKmInRange(from,to);
+  return {
+    net:net, profit:net-exp,
+    trips:recs.filter(function(r){ return !platformDef(r.platform).tipOnly; }).length,
+    hourly: hours>0?net/hours:null, perKm: km>0?net/km:null
+  };
+}
+function shortRange(r){ var a=r.from.slice(5).replace('-','/'), b=r.to.slice(5).replace('-','/'); return a===b?a:(a+'–'+b); }
+function comparisonHtml(range){
+  var cr = comparisonRanges(range);
+  if(!cr) return '';
+  var a = periodMetrics(cr.cur.from, cr.cur.to), b = periodMetrics(cr.prev.from, cr.prev.to);
+  function row(name, x, y, fmt){
+    var delta = '—', color = 'var(--text-muted)';
+    if(x!=null && y!=null && y!==0){
+      var pct = (x-y)/Math.abs(y)*100;
+      delta = (pct>=0?'▲ ':'▼ ')+Math.abs(pct).toFixed(1)+'%';
+      color = pct>=0?'var(--income)':'var(--expense)';
+    }
+    return '<div class="list-item"><div class="li-body"><div class="li-title">'+name+'</div><div class="li-sub">'+cr.label+' '+(y!=null?fmt(y):'—')+'</div></div><div style="text-align:right"><div class="num" style="font-weight:700">'+(x!=null?fmt(x):'—')+'</div><div class="num" style="font-size:12px;color:'+color+'">'+delta+'</div></div></div>';
+  }
+  var h = '<div class="section"><div class="section-title">與'+cr.label+'比較('+shortRange(cr.cur)+' vs '+shortRange(cr.prev)+')</div><div class="card">';
+  h += row('實收', a.net, b.net, fmtMoney);
+  h += row('淨利', a.profit, b.profit, fmtMoney);
+  h += row('趟數', a.trips, b.trips, function(v){ return v+' 趟'; });
+  h += row('實際時薪', a.hourly, b.hourly, fmtMoney2);
+  h += row('每公里實收', a.perKm, b.perKm, fmtMoney2);
+  h += '</div></div>';
+  return h;
+}
+function platformEfficiencyHtml(recs){
+  var map = {};
+  recs.forEach(function(r){
+    var def = platformDef(r.platform);
+    if(def.tipOnly) return;
+    if(!map[r.platform]) map[r.platform]={label:def.label,color:def.color,trips:0,net:0,gross:0};
+    var m = map[r.platform];
+    m.trips++; m.net += computeNetRevenue(r)+(+r.tip||0); m.gross += computeGrossRevenue(r);
+  });
+  var list = Object.keys(map).map(function(k){ var m=map[k]; m.avg=m.net/m.trips; m.feePct=m.gross>0?(m.gross-(m.net))/m.gross*100:0; return m; })
+    .sort(function(a,b){ return b.avg-a.avg; });
+  if(!list.length) return '';
+  var max = list[0].avg||1;
+  var h = '<div class="section"><div class="section-title">平台效率比較(平均每趟實收)</div><div class="card">';
+  h += list.map(function(m){
+    var w = Math.max(2, m.avg/max*100);
+    return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'+
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><span style="font-size:13.5px;font-weight:700">'+esc(m.label)+'</span><span class="num" style="font-weight:700">'+fmtMoney2(m.avg)+' / 趟</span></div>'+
+      '<div style="height:8px;margin:6px 0 4px;background:var(--surface-sunken);border-radius:4px"><div style="height:8px;width:'+w.toFixed(1)+'%;background:var(--accent);border-radius:4px"></div></div>'+
+      '<div style="font-size:11.5px;color:var(--text-muted)">'+m.trips+' 趟 · 實收 '+fmtMoney(m.net)+' · 手續費佔車資 '+(m.feePct>0?m.feePct.toFixed(1)+'%':'0%')+'</div></div>';
+  }).join('');
+  h += '<div style="font-size:11px;color:var(--text-muted);padding-top:8px">平均每趟實收已扣手續費、含小費;小費箱不列入。</div></div></div>';
+  return h;
+}
+function barChartHtml(id, items, emptyNote){
+  var vals = items.map(function(it){ return it.value||0; });
+  var max = Math.max.apply(null, vals.concat([0]));
+  if(max<=0) return '<div class="card"><div style="font-size:12.5px;color:var(--text-muted);padding:6px 0">'+emptyNote+'</div></div>';
+  chartTips[id] = items.map(function(it){ return it.tip; });
+  var best=-1, worst=-1;
+  items.forEach(function(it,i){
+    if(!it.value) return;
+    if(best<0 || it.value>items[best].value) best=i;
+    if(worst<0 || it.value<items[worst].value) worst=i;
+  });
+  var h = '<div class="card"><div style="display:flex;align-items:flex-end;gap:2px;height:120px">';
+  items.forEach(function(it,i){
+    var pct = (it.value||0)/max*100;
+    h += '<div data-act="bar-tip:'+id+':'+i+'" style="flex:1;min-width:0;height:100%;display:flex;flex-direction:column;justify-content:flex-end;cursor:pointer">'+
+      '<div style="height:'+pct.toFixed(1)+'%;'+(it.value>0?'min-height:2px;':'')+'background:'+(i===best?'var(--accent-strong)':'var(--accent)')+';border-radius:4px 4px 0 0"></div></div>';
+  });
+  h += '</div><div style="display:flex;gap:2px;margin-top:4px">';
+  items.forEach(function(it){ h += '<div style="flex:1;min-width:0;text-align:center;font-size:9.5px;color:var(--text-muted);overflow:visible;white-space:nowrap;display:flex;justify-content:center">'+(it.axis||'')+'</div>'; });
+  h += '</div><div id="tip-'+id+'" style="font-size:12px;color:var(--text);margin-top:8px;line-height:1.5;min-height:18px">'+
+    (best>=0?('最好:'+items[best].tip+(worst>=0&&worst!==best?('<br>最差:'+items[worst].tip):'')):'')+
+    '</div><div style="font-size:10.5px;color:var(--text-muted);margin-top:2px">點長條可看該項數字</div></div>';
+  return h;
+}
+function patternsHtml(recs){
+  chartTips = {};
+  var dayNet = {};
+  recs.forEach(function(r){ dayNet[r.date]=(dayNet[r.date]||0)+computeNetRevenue(r)+(+r.tip||0); });
+  var days = Object.keys(dayNet);
+  if(!days.length) return '';
+  function avgBy(keyFn, keys){
+    var sum={}, cnt={};
+    days.forEach(function(d){ var k=keyFn(d); sum[k]=(sum[k]||0)+dayNet[d]; cnt[k]=(cnt[k]||0)+1; });
+    return keys.map(function(k){ return {key:k, avg:cnt[k]?sum[k]/cnt[k]:0, n:cnt[k]||0}; });
+  }
+  var h = '<div class="section"><div class="section-title">生意規律分析</div>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-4px 0 10px;line-height:1.6">只算有出車的日子,「平均」= 總實收 ÷ 出車天數。資料越多越準,建議切到「全部」看長期規律。</div>';
+
+  var hourSum = new Array(24).fill(0), hourCnt = new Array(24).fill(0), skipped = 0;
+  recs.forEach(function(r){
+    if(platformDef(r.platform).tipOnly || !r.ts) return;
+    var d = new Date(r.ts);
+    if(toDateStr(d)!==r.date){ skipped++; return; }
+    hourSum[d.getHours()] += computeNetRevenue(r)+(+r.tip||0); hourCnt[d.getHours()]++;
+  });
+  h += '<div style="font-size:13px;font-weight:700;margin:4px 0 6px">時段(依記帳時間)</div>';
+  h += barChartHtml('hour', hourSum.map(function(v,i){
+    return {value:v, axis:(i%3===0?String(i):''), tip:pad(i)+':00–'+pad(i)+':59 · '+hourCnt[i]+' 趟 · 實收 '+fmtMoney(v)};
+  }), '還沒有可分析的時段資料。');
+  if(skipped) h += '<div style="font-size:10.5px;color:var(--text-muted);margin:4px 0 0">有 '+skipped+' 筆是事後補記的(記帳時間不是當天),不列入時段分析。</div>';
+
+  var wd = ['一','二','三','四','五','六','日'];
+  var byWd = avgBy(function(d){ return (new Date(d+'T00:00:00').getDay()+6)%7; }, [0,1,2,3,4,5,6]);
+  h += '<div style="font-size:13px;font-weight:700;margin:14px 0 6px">星期(平均每個出車日實收)</div>';
+  h += barChartHtml('weekday', byWd.map(function(x){
+    return {value:x.avg, axis:wd[x.key], tip:'週'+wd[x.key]+' · 平均 '+fmtMoney(x.avg)+' / 天('+x.n+' 天)'};
+  }), '');
+
+  var dom = []; for(var i=1;i<=31;i++) dom.push(i);
+  var byDom = avgBy(function(d){ return +d.slice(8,10); }, dom);
+  h += '<div style="font-size:13px;font-weight:700;margin:14px 0 6px">每月幾號(平均每個出車日實收)</div>';
+  h += barChartHtml('dom', byDom.map(function(x){
+    return {value:x.avg, axis:((x.key===1||x.key%5===0)?x.key:''), tip:x.key+' 號 · 平均 '+fmtMoney(x.avg)+' / 天('+x.n+' 天)'};
+  }), '');
+  var thirds = avgBy(function(d){ var n=+d.slice(8,10); return n<=10?0:(n<=20?1:2); }, [0,1,2]);
+  h += '<div class="summary-row" style="grid-template-columns:1fr 1fr 1fr;margin-top:8px">'+
+    ['上旬(1–10)','中旬(11–20)','下旬(21–月底)'].map(function(n,i){
+      return '<div class="stat-tile"><div class="lbl">'+n+'</div><div class="val num" style="font-size:15px">'+(thirds[i].n?fmtMoney(thirds[i].avg):'—')+'</div></div>';
+    }).join('')+'</div>';
+
+  var months = {}; days.forEach(function(d){ months[d.slice(0,7)]=true; });
+  if(Object.keys(months).length>=2){
+    var byMonth = avgBy(function(d){ return +d.slice(5,7); }, [1,2,3,4,5,6,7,8,9,10,11,12]);
+    h += '<div style="font-size:13px;font-weight:700;margin:14px 0 6px">月份(平均每個出車日實收)</div>';
+    h += barChartHtml('month', byMonth.map(function(x){
+      return {value:x.avg, axis:x.key, tip:x.key+' 月 · 平均 '+fmtMoney(x.avg)+' / 天('+x.n+' 天)'};
+    }), '');
+  }
+  h += '</div>';
+  return h;
+}
 function renderAnalytics(){
   var range;
   if(analyticsPeriod==='day'){ range={from:analyticsDay,to:analyticsDay}; }
   else if(analyticsPeriod==='week'){ range=weekRange(); }
   else if(analyticsPeriod==='month'){ range=monthRange(uiMonth); }
+  else if(analyticsPeriod==='all'){ range={from:dataFirstDate()||todayStr(), to:todayStr()}; }
   else { range = customFrom<=customTo ? {from:customFrom,to:customTo} : {from:customTo,to:customFrom}; }
 
   var recs = recordsInRange(range.from, range.to);
@@ -1112,6 +1341,7 @@ function renderAnalytics(){
     '<button class="'+(analyticsPeriod==='week'?'active':'')+'" data-act="period:week">本週</button>'+
     '<button class="'+(analyticsPeriod==='month'?'active':'')+'" data-act="period:month">本月</button>'+
     '<button class="'+(analyticsPeriod==='custom'?'active':'')+'" data-act="period:custom">自訂區間</button>'+
+    '<button class="'+(analyticsPeriod==='all'?'active':'')+'" data-act="period:all">全部</button>'+
     '</div></div>';
 
   if(analyticsPeriod==='day'){
@@ -1123,6 +1353,8 @@ function renderAnalytics(){
       '<div class="form-row"><label>起始日期</label><input type="date" id="customFrom" value="'+customFrom+'"></div>'+
       '<div class="form-row"><label>結束日期</label><input type="date" id="customTo" value="'+customTo+'"></div>'+
       '</div></div>';
+  } else if(analyticsPeriod==='all'){
+    h += '<div style="text-align:center;font-size:12.5px;color:var(--text-muted);margin:-4px 0 12px">全部資料:'+range.from+' ~ '+range.to+'</div>';
   }
 
   h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr 1fr">';
@@ -1134,6 +1366,7 @@ function renderAnalytics(){
   h += '<div class="stat-tile"><div class="lbl">總支出(含固定攤提)</div><div class="val expense num">'+fmtMoney(totalExp)+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">淨利</div><div class="val num">'+fmtMoney(profit)+'</div></div>';
   h += '</div></div>';
+  h += comparisonHtml(range);
 
   h += '<div class="section"><div class="section-title">本期概況</div><div class="card"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
   h += '<div class="stat-tile"><div class="lbl">營業天數</div><div class="val num">'+workDays+' 天</div></div>';
@@ -1159,6 +1392,7 @@ function renderAnalytics(){
     });
     h += '</div></div></div>';
   }
+  h += platformEfficiencyHtml(recs);
 
   if(sub.length){
     lastSubBreakdown = sub;
@@ -1168,6 +1402,7 @@ function renderAnalytics(){
     }).join('');
     h += '</div></div>';
   }
+  h += patternsHtml(recs);
 
   var tg = state.targets;
   var targetVal = analyticsPeriod==='day'?tg.daily : analyticsPeriod==='week'?tg.weekly : analyticsPeriod==='month'?tg.monthly : 0;
@@ -1322,7 +1557,7 @@ function saveIncome(key, editId){
   var mm = grab('f-markup-multiplier'); rec.markupMultiplier = (mm!=null && mm!=='') ? +mm : undefined;
   if(def.subPlatformOptions) rec.subPlatform = grab('f-subplatform');
   if(!existing) state.records.push(rec);
-  save(); syncIncomeRecord(rec); closeModal(); renderAll();
+  save(); closeModal(); renderAll();
 }
 
 function openExpenseModal(catKey, editId){
@@ -1356,7 +1591,7 @@ function saveExpense(catKey, editId){
   rec.amount = amount; rec.note = note;
   if(liters!=null) rec.liters = liters;
   if(!existing) state.expenses.push(rec);
-  save(); syncExpenseRecord(rec); closeModal(); renderAll();
+  save(); closeModal(); renderAll();
 }
 
 function openFixedModal(){
@@ -1378,7 +1613,7 @@ function saveFixed(){
   if(!name || amount<=0){ closeModal(); return; }
   var fc = {id:uid(), name:name, amount:amount, freq:freq};
   state.fixedCosts.push(fc);
-  save(); syncFixedCost(fc); closeModal(); renderAll();
+  save(); closeModal(); renderAll();
 }
 
 function openFixedOverrideModal(fcId){
@@ -1398,7 +1633,7 @@ function saveFixedOverride(fcId){
   var amount = +document.getElementById('f-amount').value || 0;
   if(!state.fixedOverrides[ym]) state.fixedOverrides[ym]={};
   state.fixedOverrides[ym][fcId]=amount;
-  save(); syncFixedCost(fc, ym); closeModal(); renderAll();
+  save(); closeModal(); renderAll();
 }
 function resetFixedOverride(fcId){
   var y=uiMonth.getFullYear(), mo=uiMonth.getMonth();
@@ -1457,7 +1692,8 @@ function openSettingsModal(){
 
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-settings">儲存設定</button></div>';
   h += '<div style="height:10px"></div>';
-  h += '<div class="btn-row"><button class="btn btn-ghost" data-act="sync-all">立即同步全部資料到 Google Sheet</button></div>';
+  h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="sync-all">立即同步到雲端</button><button class="btn btn-ghost" style="flex:1" data-act="open-restore">從雲端還原</button></div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">'+(state.lastCloudPush?('上次送出同步:'+fmtTs(state.lastCloudPush)):'這個瀏覽器還沒有送出過同步')+'</div>';
   h += '<div id="syncStatus" style="font-size:12px;color:var(--text-muted);margin-top:8px;text-align:center"></div>';
   h += '<div style="height:14px"></div>';
 
@@ -1466,7 +1702,7 @@ function openSettingsModal(){
   h += '<div style="height:14px"></div>';
 
   h += '<div class="btn-row"><button class="btn btn-danger" data-act="reset-all">清除所有資料</button></div>';
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.6">資料儲存在這支手機的瀏覽器裡,清除瀏覽器資料或換手機會遺失。設定 Google Sheet 網址後,之後每記一筆都會自動同步過去;刪除記錄不會回頭刪掉表單裡已經同步的那一列。</div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.6">資料儲存在這支手機的瀏覽器裡。設定 Google Sheet 網址後,每次新增、修改、刪除都會在幾秒後自動把完整資料同步到雲端(表單會整份更新,不會重複,刪除也會同步),雲端另外保留最近 60 次完整備份,換手機或資料不見時可以用「從雲端還原」拿回來。</div>';
   openModal(h);
   wirePlatformDrag();
 }
@@ -1524,6 +1760,56 @@ function copyExportText(){
   } else {
     try{ document.execCommand('copy') ? ok() : fail(); }catch(err){ fail(); }
   }
+}
+var lastCloudVersions = [];
+function openCloudRestoreModal(){
+  if(!state.syncUrl){ alert('請先在設定填入 Google Sheet 同步網址,並按「儲存設定」。'); return; }
+  var h = '<div class="modal-title">從雲端還原<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">雲端會保留最近 60 次的完整備份。選一個時間點,就會用那份備份<b style="color:var(--expense)">覆蓋這個瀏覽器目前的所有資料</b>。</div>';
+  h += '<div id="restoreList" style="font-size:13px;color:var(--text-muted)">讀取雲端備份中…</div>';
+  openModal(h);
+  cloudGet({action:'list'}).then(function(res){
+    var el = document.getElementById('restoreList'); if(!el) return;
+    if(!res || !res.ok || !res.versions){ el.textContent = '讀取失敗:Apps Script 可能還是舊版,請先更新並重新部署。'; return; }
+    if(!res.versions.length){ el.textContent = '雲端還沒有任何備份。'; return; }
+    lastCloudVersions = res.versions;
+    el.innerHTML = '<div class="card">'+res.versions.map(function(v,i){
+      return '<div class="list-item" data-act="do-restore:'+i+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+fmtTs(v.time)+(i===0?'(最新)':'')+'</div><div class="li-sub">收入 '+v.income+' 筆 · 支出 '+v.expense+' 筆</div></div><div class="li-amt num" style="color:var(--accent)">還原</div></div>';
+    }).join('')+'</div>';
+  }).catch(function(){
+    var el = document.getElementById('restoreList');
+    if(el) el.textContent = '讀取失敗:請確認網路正常,以及 Apps Script 已更新成新版並重新部署。';
+  });
+}
+function doCloudRestore(i){
+  var v = lastCloudVersions[i]; if(!v) return;
+  if(!confirm('確定要用 '+fmtTs(v.time)+' 的雲端備份(收入 '+v.income+' 筆、支出 '+v.expense+' 筆)覆蓋這個瀏覽器目前的所有資料嗎?')) return;
+  var el = document.getElementById('restoreList');
+  if(el) el.textContent = '下載備份中…';
+  cloudGet({action:'get', time:v.time}).then(function(res){
+    if(!res || !res.ok || !res.state) throw new Error('empty');
+    var parsed = JSON.parse(res.state);
+    if(!parsed || !Array.isArray(parsed.records)) throw new Error('bad');
+    var d = defaultState();
+    for(var k in d){ if(!(k in parsed)) parsed[k]=d[k]; }
+    parsed.syncUrl = state.syncUrl;
+    state = parsed;
+    save(); closeModal(); renderAll();
+    alert('已從雲端還原(收入 '+state.records.length+' 筆、支出 '+state.expenses.length+' 筆)。');
+  }).catch(function(){
+    if(el) el.textContent = '還原失敗,請稍後再試一次。';
+  });
+}
+function isIOS(){ return /iPhone|iPad|iPod/.test(navigator.userAgent); }
+function isStandalone(){
+  return window.navigator.standalone===true || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+}
+function tabWarningHtml(){
+  if(!isIOS() || isStandalone()) return '';
+  try{ if(sessionStorage.getItem('hideTabWarning')) return ''; }catch(e){}
+  return '<div class="card" style="border-color:var(--expense);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6">'+
+    '<b style="color:var(--expense)">⚠️ 你現在是用 Safari 分頁開啟</b><br>iPhone 在 Safari 分頁裡的資料,太久沒打開可能被系統自動清掉,而且跟主畫面圖示的資料是分開的兩份。建議固定從主畫面的圖示開啟。'+
+    '<div style="text-align:right;margin-top:6px"><button class="btn btn-ghost" style="padding:6px 12px;font-size:12px;width:auto" data-act="dismiss-tab-warning">知道了</button></div></div>';
 }
 function openImportModal(){
   var h = '<div class="modal-title">匯入還原<button class="close" data-act="close-modal">✕</button></div>';
@@ -1605,8 +1891,12 @@ function saveSettings(){
   state.feeRules.boltPct = g('f-fee-boltpct');
   state.feeRules.boltThreshold = g('f-fee-boltthreshold');
   state.feeRules.boltThresholdEnabled = document.getElementById('f-fee-boltthresholdenabled').checked;
+  var prevSyncUrl = state.syncUrl;
   state.syncUrl = document.getElementById('f-sync-url').value.trim();
   save(); closeModal(); renderAll();
+  if(state.syncUrl && state.syncUrl!==prevSyncUrl && !hasMeaningfulData()){
+    if(confirm('這個瀏覽器目前沒有任何記帳資料。要從雲端還原之前的資料嗎?')) openCloudRestoreModal();
+  }
 }
 
 /* ---------- EVENT DELEGATION ---------- */
@@ -1650,14 +1940,26 @@ document.addEventListener('click', function(e){
     if(!staleStartRef || isNaN(staleEndTs) || staleEndTs<=staleStartRef){ alert('下班時間必須晚於上班(或上次恢復工作)的時間,請重新選擇。'); return; }
     finalizeStaleShift(arg, staleEndTs);
     var nextStale = findStaleOpenShiftDate();
-    if(nextStale){ openStaleShiftModal(nextStale); } else { closeModal(); }
+    if(nextStale){ openStaleShiftModal(nextStale); } else { openNextMissingKmOrClose(); }
+  }
+  else if(cmd==='save-missing-km'){
+    var mkVal = document.getElementById('f-missing-km').value;
+    if(mkVal==='' || isNaN(+mkVal) || +mkVal<0){ alert('請輸入里程數字。'); return; }
+    dm(arg).km = +mkVal;
+    save();
+    openNextMissingKmOrClose();
+  }
+  else if(cmd==='skip-missing-km'){
+    dm(arg).kmSkipped = true;
+    save();
+    openNextMissingKmOrClose();
   }
   else if(cmd==='clock-out'){
     var m2 = dm(todayStr());
     if(m2.onBreak && m2.breakStart){ m2.breakMs += (Date.now()-m2.breakStart); m2.breakStart=null; m2.onBreak=false; }
     if(m2.segmentStart){ m2.workedMs += (Date.now()-m2.segmentStart); m2.segmentStart=null; }
     m2.activeShiftStart=null;
-    save(); syncDailyRecord(todayStr()); renderAll();
+    save(); renderAll();
   }
   else if(cmd==='break-start'){
     var m3 = dm(todayStr());
@@ -1670,13 +1972,19 @@ document.addEventListener('click', function(e){
     var m4 = dm(todayStr());
     if(m4.onBreak && m4.breakStart){
       m4.breakMs += (Date.now()-m4.breakStart); m4.breakStart=null; m4.onBreak=false; m4.segmentStart=Date.now();
-      save(); syncDailyRecord(todayStr()); renderAll();
+      save(); renderAll();
     }
   }
   else if(cmd==='month'){ uiMonth.setMonth(uiMonth.getMonth()+(+arg)); renderAll(); }
   else if(cmd==='day'){ var dObj=new Date(analyticsDay+'T00:00:00'); dObj.setDate(dObj.getDate()+(+arg)); analyticsDay=toDateStr(dObj); renderAll(); }
   else if(cmd==='select-day'){ selectedDay=arg; renderAll(); }
   else if(cmd==='period'){ analyticsPeriod=arg; renderAll(); }
+  else if(cmd==='bar-tip'){
+    var btParts = arg.split(':');
+    var btEl = document.getElementById('tip-'+btParts[0]);
+    var btArr = chartTips[btParts[0]];
+    if(btEl && btArr) btEl.textContent = btArr[+btParts[1]];
+  }
   else if(cmd==='open-subbreakdown'){
     var sbItem = lastSubBreakdown[+arg];
     if(sbItem) openSubBreakdownModal(sbItem);
@@ -1697,10 +2005,16 @@ document.addEventListener('click', function(e){
   else if(cmd==='sync-all'){
     if(!state.syncUrl){ alert('請先在上面填入 Google Sheet 同步網址,再按儲存設定。'); return; }
     var statusEl = document.getElementById('syncStatus');
-    syncAllData(
-      function(done,total){ if(statusEl) statusEl.textContent = '同步中… '+done+' / '+total; },
-      function(total){ if(statusEl) statusEl.textContent = '已送出 '+total+' 筆,請到 Google Sheet 確認資料是否進來。'; }
-    );
+    if(!hasMeaningfulData()){ if(statusEl) statusEl.textContent = '這個瀏覽器目前沒有任何收入或支出資料,為了避免空資料蓋掉雲端,不會上傳。若要拿回資料請按「從雲端還原」。'; return; }
+    if(cloudSyncTimer){ clearTimeout(cloudSyncTimer); cloudSyncTimer=null; }
+    pushCloudSnapshot();
+    if(statusEl) statusEl.textContent = '已送出全部資料('+state.records.length+' 筆收入、'+state.expenses.length+' 筆支出),約 10 秒後可按「從雲端還原」查看最新備份時間確認。';
+  }
+  else if(cmd==='open-restore'){ openCloudRestoreModal(); }
+  else if(cmd==='do-restore'){ doCloudRestore(+arg); }
+  else if(cmd==='dismiss-tab-warning'){
+    try{ sessionStorage.setItem('hideTabWarning','1'); }catch(err){}
+    renderAll();
   }
   else if(cmd==='open-export'){ openExportModal(); }
   else if(cmd==='copy-export'){ copyExportText(); }
@@ -1746,24 +2060,24 @@ document.addEventListener('input', function(e){
 document.addEventListener('change', function(e){
   if(e.target.matches('[data-km-input]')){
     dm(todayStr()).km = e.target.value===''? null : +e.target.value;
-    save(); syncDailyRecord(todayStr());
+    save();
   }
   else if(e.target.matches('[data-km-input-date]')){
     var kd = e.target.getAttribute('data-km-input-date');
     dm(kd).km = e.target.value===''? null : +e.target.value;
-    save(); syncDailyRecord(kd);
+    save();
   }
   else if(e.target.matches('[data-hours-input-date]')){
     var hd = e.target.getAttribute('data-hours-input-date');
     var mh = dm(hd);
     mh.workedMs = Math.max(0, (e.target.value===''?0:+e.target.value)*3600000);
-    save(); syncDailyRecord(hd);
+    save();
   }
   else if(e.target.matches('[data-break-input-date]')){
     var bd = e.target.getAttribute('data-break-input-date');
     var mb = dm(bd);
     mb.breakMs = Math.max(0, (e.target.value===''?0:+e.target.value)*3600000);
-    save(); syncDailyRecord(bd);
+    save();
   }
   else if(e.target.id==='dayPicker'){ if(e.target.value){ analyticsDay = e.target.value; renderAll(); } }
   else if(e.target.id==='customFrom'){ if(e.target.value){ customFrom = e.target.value; renderAll(); } }
@@ -1772,7 +2086,8 @@ document.addEventListener('change', function(e){
 
 renderAll();
 var _staleShiftDate = findStaleOpenShiftDate();
-if(_staleShiftDate) openStaleShiftModal(_staleShiftDate);
+if(_staleShiftDate){ openStaleShiftModal(_staleShiftDate); }
+else { var _missingKmDate = findMissingKmDate(); if(_missingKmDate) openMissingKmModal(_missingKmDate); }
 })();
 </script>
 
