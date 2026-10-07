@@ -91,7 +91,7 @@ body{
 .content{flex:1;overflow-y:auto;padding:14px 16px 24px;-webkit-overflow-scrolling:touch}
 .bottom-nav{
   position:sticky;bottom:0;z-index:20;
-  display:grid;grid-template-columns:repeat(4,1fr);
+  display:grid;grid-template-columns:repeat(5,1fr);
   background:var(--surface);border-top:1px solid var(--border);
   padding:6px 6px calc(6px + env(safe-area-inset-bottom,0px));
 }
@@ -275,6 +275,7 @@ body{
     <button class="nav-btn" data-act="tab:entry"><span class="ic">✏️</span>記帳</button>
     <button class="nav-btn" data-act="tab:history"><span class="ic">📅</span>歷史</button>
     <button class="nav-btn" data-act="tab:expense"><span class="ic">🧾</span>支出</button>
+    <button class="nav-btn" data-act="tab:payout"><span class="ic">🏦</span>撥款</button>
     <button class="nav-btn" data-act="tab:analytics"><span class="ic">📊</span>分析</button>
   </nav>
 </div>
@@ -398,7 +399,13 @@ function platformDef(key){
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function pad(n){ return n<10?'0'+n:''+n; }
 function toDateStr(d){ return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
-function todayStr(){ return toDateStr(new Date()); }
+function dayCutoffHour(){ return (typeof state!=='undefined' && state && state.dayCutoffHour!=null) ? +state.dayCutoffHour : 5; }
+function businessDayOf(ts){
+  var d = new Date(ts);
+  if(d.getHours() < dayCutoffHour()) d.setDate(d.getDate()-1);
+  return toDateStr(d);
+}
+function todayStr(){ return businessDayOf(Date.now()); }
 function monthKeyOf(dateStr){ return dateStr.slice(0,7); }
 function fmtMoney(n){
   n = Math.round(n||0);
@@ -436,7 +443,10 @@ function defaultState(){
     platformOverrides:{},
     customPlatforms:[],
     platformOrder:PLATFORM_DEFS.map(function(p){return p.key;}),
-    syncUrl:''
+    syncUrl:'',
+    dayCutoffHour:5,
+    payoutSettings:{},
+    payouts:[]
   };
 }
 function load(){
@@ -449,8 +459,11 @@ function load(){
     return s;
   }catch(e){ return defaultState(); }
 }
+var FEE_DEFAULTS = {tdc:15,yoxiCash:10,yoxiCreditExtra:2,linego:19.5,metroFlat:25,metroCredit:3,metroEnterprise:6,uber:25,boltFlat:20,boltPct:10,boltThreshold:15,boltThresholdEnabled:true};
 var state = load();
+if(stampMissingFeeSnapshots()){ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){} }
 function save(){
+  state.lastChangeAt = Date.now();
   try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
   scheduleCloudSync();
 }
@@ -521,7 +534,7 @@ function openStaleShiftModal(dateStr){
 }
 
 var currentTab = 'entry';
-var uiMonth = new Date(); uiMonth.setDate(1);
+var uiMonth = new Date(todayStr()+'T00:00:00'); uiMonth.setDate(1);
 var selectedDay = todayStr();
 var analyticsPeriod = 'month';
 var analyticsDay = todayStr();
@@ -541,10 +554,20 @@ function boltWeekTripCount(dateStr){
   state.records.forEach(function(r){ if(r.platform==='bolt' && r.date>=from && r.date<=to) count++; });
   return count;
 }
+function resolvedFeeRules(){
+  var fr = state.feeRules||{}, out = {};
+  for(var k in FEE_DEFAULTS){ out[k] = (fr[k]!=null) ? fr[k] : FEE_DEFAULTS[k]; }
+  return out;
+}
+function stampMissingFeeSnapshots(){
+  var snap = null, n = 0;
+  state.records.forEach(function(r){ if(!r.fees || r.fees.tdc==null){ snap = snap || resolvedFeeRules(); r.fees = snap; n++; } });
+  return n;
+}
 function computeNetRevenue(r){
   var gross = +r.revenue||0;
   if(gross<=0) return 0;
-  var fees = state.feeRules||{};
+  var fees = r.fees||state.feeRules||{};
   if(r.platform==='uber'){
     return gross;
   }
@@ -610,7 +633,7 @@ function computeNetRevenue(r){
 function computeGrossRevenue(r){
   var v = +r.revenue||0;
   if(v<=0) return 0;
-  var fees = state.feeRules||{};
+  var fees = r.fees||state.feeRules||{};
   if(r.platform==='uber'){
     var pctU = fees.uber!=null?fees.uber:25;
     return v/(1-pctU/100);
@@ -685,9 +708,10 @@ function pushCloudSnapshot(){
       method:'POST', mode:'no-cors',
       headers:{'Content-Type':'text/plain;charset=utf-8'},
       body: JSON.stringify(buildCloudSnapshot())
+    }).then(function(){
+      state.lastCloudPushOk = Date.now();
+      try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
     }).catch(function(){});
-    state.lastCloudPush = Date.now();
-    try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
     return true;
   }catch(e){ return false; }
 }
@@ -696,6 +720,11 @@ function scheduleCloudSync(){
   if(cloudSyncTimer) clearTimeout(cloudSyncTimer);
   cloudSyncTimer = setTimeout(function(){ cloudSyncTimer=null; pushCloudSnapshot(); }, 3000);
 }
+function cloudSyncIfBehind(){
+  if(!state.syncUrl || !hasMeaningfulData()) return;
+  if(!state.lastCloudPushOk || (state.lastChangeAt||0) > state.lastCloudPushOk) pushCloudSnapshot();
+}
+window.addEventListener('online', function(){ setTimeout(cloudSyncIfBehind, 1500); });
 function flushCloudSync(){
   if(cloudSyncTimer){ clearTimeout(cloudSyncTimer); cloudSyncTimer=null; pushCloudSnapshot(); }
 }
@@ -854,7 +883,7 @@ function openSubBreakdownModal(item){
   openModal(h);
 }
 function weekRange(){
-  var t = new Date();
+  var t = new Date(todayStr()+'T00:00:00');
   var day = (t.getDay()+6)%7;
   var mon = new Date(t); mon.setDate(t.getDate()-day);
   var sun = new Date(mon); sun.setDate(mon.getDate()+6);
@@ -868,6 +897,226 @@ function monthRange(m){
   return {from:from, to:to};
 }
 
+/* ---------- payouts: cash vs platform, batches, reconciliation ---------- */
+var WEEKDAY_NAMES = ['一','二','三','四','五','六','日'];
+var PAYOUT_DEFAULTS = {
+  uber:{collect:'platform', schedule:'weekly', weekday:3, days:2, cashFeeFromPayout:true},
+  bolt:{collect:'platform', schedule:'unset', weekday:3, days:2, cashFeeFromPayout:true},
+  tdc:{collect:'platform', schedule:'tplus', weekday:3, days:2, cashFeeFromPayout:true},
+  metro:{collect:'platform', schedule:'unset', weekday:3, days:2, cashFeeFromPayout:true},
+  yoxi:{collect:'platform', schedule:'unset', weekday:3, days:2, cashFeeFromPayout:true},
+  linego:{collect:'platform', schedule:'unset', weekday:3, days:2, cashFeeFromPayout:true}
+};
+function payoutCfg(key){
+  var base = PAYOUT_DEFAULTS[key] || {collect:'cash', schedule:'none', weekday:3, days:2, cashFeeFromPayout:true};
+  var ov = (state.payoutSettings||{})[key] || {};
+  var out = {};
+  for(var k in base) out[k] = (ov[k]!=null) ? ov[k] : base[k];
+  return out;
+}
+function isCashRecord(r){
+  var def = platformDef(r.platform);
+  if(def.paymentOptions){
+    if(r.payment) return r.payment==='現金';
+    return r.fareType==='據點叫車';
+  }
+  return payoutCfg(r.platform).collect==='cash';
+}
+function moneyFlow(r){
+  var tip = +r.tip||0;
+  var net = computeNetRevenue(r);
+  var cfg = payoutCfg(r.platform);
+  if(isCashRecord(r)){
+    var fee = Math.max(0, (+r.revenue||0) - net);
+    var netted = cfg.cashFeeFromPayout && cfg.schedule!=='none';
+    return {cash:(+r.revenue||0)+tip, noncash:0, cashFee:fee, netted:netted};
+  }
+  return {cash:0, noncash:net+tip, cashFee:0, netted:false};
+}
+function cashSummary(recs){
+  var cash=0, noncash=0, feeNetted=0, feeSep=0;
+  recs.forEach(function(r){
+    var f=moneyFlow(r);
+    cash+=f.cash; noncash+=f.noncash;
+    if(f.cashFee){ if(f.netted) feeNetted+=f.cashFee; else feeSep+=f.cashFee; }
+  });
+  return {cash:cash, noncash:noncash, feeNetted:feeNetted, feeSeparate:feeSep};
+}
+function isBankDay(ds){
+  var dow = new Date(ds+'T00:00:00').getDay();
+  return dow!==0 && dow!==6 && !TW_HOLIDAYS[ds];
+}
+function weekMonday(ds){
+  var d = new Date(ds+'T00:00:00');
+  d.setDate(d.getDate()-((d.getDay()+6)%7));
+  return toDateStr(d);
+}
+function payoutBatchOf(r){
+  var cfg = payoutCfg(r.platform);
+  if(cfg.schedule==='none') return null;
+  if(cfg.schedule==='weekly'){
+    var payDate = addDays(weekMonday(r.date), 7 + ((+cfg.weekday||3)-1));
+    return {id:r.platform+'|'+payDate, payDate:payDate};
+  }
+  if(cfg.schedule==='tplus'){
+    var d = r.date, left = Math.max(0, +cfg.days||0);
+    while(left>0){ d = addDays(d,1); if(isBankDay(d)) left--; }
+    while(!isBankDay(d)) d = addDays(d,1);
+    return {id:r.platform+'|'+d, payDate:d};
+  }
+  var mon = weekMonday(r.date);
+  return {id:r.platform+'|wk'+mon, payDate:null, weekFrom:mon};
+}
+function payoutLedger(){
+  var byPlat = {};
+  state.records.forEach(function(r){
+    var cfg = payoutCfg(r.platform);
+    if(cfg.schedule==='none') return;
+    (byPlat[r.platform] = byPlat[r.platform] || []).push(r);
+  });
+  var map = {}, owedByPlatform = {};
+  Object.keys(byPlat).forEach(function(pk){
+    var recs = byPlat[pk].slice().sort(function(a,b){ return a.date<b.date?-1:(a.date>b.date?1:(a.ts||0)-(b.ts||0)); });
+    var owed = 0;
+    recs.forEach(function(r){
+      var f = moneyFlow(r);
+      if(f.cashFee && f.netted){ owed += f.cashFee; return; }
+      if(!f.noncash) return;
+      var b = payoutBatchOf(r); if(!b) return;
+      var ded = Math.min(owed, f.noncash);
+      owed -= ded;
+      if(!map[b.id]) map[b.id] = {id:b.id, platform:pk, payDate:b.payDate, weekFrom:b.weekFrom||null, expected:0, trips:0, from:r.date, to:r.date, earned:0, cashFees:0};
+      var m = map[b.id];
+      m.earned += f.noncash; m.cashFees += ded; m.expected += f.noncash-ded; m.trips++;
+      if(r.date<m.from) m.from=r.date;
+      if(r.date>m.to) m.to=r.date;
+    });
+    if(owed>0.5) owedByPlatform[pk] = owed;
+  });
+  var paid = {};
+  (state.payouts||[]).forEach(function(p){ paid[p.batch] = p; });
+  var batches = Object.keys(map).map(function(k){ var b=map[k]; b.payout = paid[k]||null; return b; });
+  return {batches:batches, owed:owedByPlatform};
+}
+function payoutBatches(){ return payoutLedger().batches; }
+function shortDate(ds){ return ds.slice(5).replace('-','/'); }
+function batchTitle(b){
+  var name = platformDef(b.platform).label;
+  if(b.payDate) return name+' · '+shortDate(b.payDate)+'(週'+WEEKDAY_NAMES[(new Date(b.payDate+'T00:00:00').getDay()+6)%7]+')撥款';
+  return name+' · '+shortDate(b.weekFrom)+' 那一週';
+}
+function batchRowHtml(b, growing){
+  var diffHtml = '';
+  if(b.payout){
+    var diff = (+b.payout.amount||0) - Math.round(b.expected);
+    diffHtml = '<div class="num" style="font-size:12px;color:'+(Math.abs(diff)<1?'var(--income)':'var(--expense)')+'">'+(Math.abs(diff)<1?'✓ 金額相符':('差 '+(diff>0?'+':'')+fmtMoney(diff)))+'</div>';
+  }
+  var sub = b.trips+' 趟 · '+shortDate(b.from)+(b.to!==b.from?('–'+shortDate(b.to)):'')+(b.cashFees>0?(' · 扣累積現金單手續費 '+fmtMoney(b.cashFees)):'');
+  if(growing) sub += ' · 還在累計中';
+  return '<div class="list-item" data-act="open-payout:'+b.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+esc(batchTitle(b))+'</div><div class="li-sub">'+sub+'</div></div>'+
+    '<div style="text-align:right;flex:none"><div class="num" style="font-weight:700">'+(b.payout?fmtMoney(b.payout.amount):fmtMoney(b.expected))+'</div>'+
+    (b.payout?('<div style="font-size:11px;color:var(--text-muted)">預計 '+fmtMoney(b.expected)+'</div>'):'')+diffHtml+'</div></div>';
+}
+function renderPayoutTab(){
+  var today = todayStr();
+  var ledger = payoutLedger();
+  var all = ledger.batches;
+  var due = all.filter(function(b){ return !b.payout && b.payDate && b.payDate<=today; }).sort(function(a,b){ return a.payDate<b.payDate?-1:1; });
+  var upcoming = all.filter(function(b){ return !b.payout && b.payDate && b.payDate>today; }).sort(function(a,b){ return a.payDate<b.payDate?-1:1; });
+  var unset = all.filter(function(b){ return !b.payout && !b.payDate; }).sort(function(a,b){ return a.weekFrom<b.weekFrom?1:-1; });
+  var done = all.filter(function(b){ return b.payout; }).sort(function(a,b){ return (a.payDate||a.weekFrom)<(b.payDate||b.weekFrom)?1:-1; });
+  function sum(list){ var t=0; list.forEach(function(b){ t+=b.expected; }); return t; }
+  var thisMon = weekMonday(today);
+  var h = '';
+  h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">'+
+    '<div class="stat-tile"><div class="lbl">已到撥款日,待確認</div><div class="val num">'+fmtMoney(sum(due))+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">還沒到撥款日</div><div class="val num">'+fmtMoney(sum(upcoming)+sum(unset))+'</div></div>'+
+    '</div></div>';
+  var owedKeys = Object.keys(ledger.owed);
+  if(owedKeys.length){
+    var owedTotal = 0; owedKeys.forEach(function(k){ owedTotal += ledger.owed[k]; });
+    h += '<div class="section"><div class="card" style="padding:12px 14px"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:13px;font-weight:700">累積待扣的現金單手續費</span><span class="num expense" style="font-weight:700">'+fmtMoney(owedTotal)+'</span></div>'+
+      '<div style="font-size:12px;color:var(--text-muted);margin-top:4px;line-height:1.6">'+owedKeys.map(function(k){ return esc(platformDef(k).label)+' '+fmtMoney(ledger.owed[k]); }).join(' · ')+'<br>會從之後的非現金單撥款裡扣回去。</div></div></div>';
+  }
+  h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-4px 0 12px;line-height:1.6">平台撥款 = 非現金單的實收(已扣它自己的手續費,含小費),再扣掉之前累積的現金單手續費(依時間順序往後扣,不夠扣就繼續累積)。錢入帳後點那一筆,輸入實際金額,系統會比對差多少。</div>';
+  h += '<div class="btn-row" style="margin-bottom:14px"><button class="btn btn-ghost" data-act="open-payout-settings">⚙️ 撥款設定(各平台撥款時間)</button></div>';
+  if(due.length) h += '<div class="section"><div class="section-title">已到撥款日,請確認有沒有入帳</div><div class="card">'+due.map(function(b){ return batchRowHtml(b); }).join('')+'</div></div>';
+  if(upcoming.length) h += '<div class="section"><div class="section-title">即將撥款</div><div class="card">'+upcoming.map(function(b){
+    return batchRowHtml(b, payoutCfg(b.platform).schedule==='weekly' && b.from>=thisMon);
+  }).join('')+'</div></div>';
+  if(unset.length) h += '<div class="section"><div class="section-title">撥款日還沒設定(先依週分組)</div><div class="card">'+unset.map(function(b){ return batchRowHtml(b, b.weekFrom===thisMon); }).join('')+'</div></div>';
+  if(done.length) h += '<div class="section"><div class="section-title">已對帳</div><div class="card">'+done.slice(0,30).map(function(b){ return batchRowHtml(b); }).join('')+'</div></div>';
+  if(!all.length) h += '<div class="card"><div class="empty-state"><div class="ic">🏦</div><div class="t">還沒有需要平台撥款的記錄</div></div></div>';
+  return h;
+}
+function openPayoutModal(batchId){
+  var b = payoutBatches().filter(function(x){ return x.id===batchId; })[0];
+  if(!b) return;
+  var p = b.payout;
+  var h = '<div class="modal-title">'+esc(batchTitle(b))+'<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div class="card" style="margin-bottom:12px">'+
+    '<div class="list-item"><div class="li-body"><div class="li-title">非現金單實收(已扣自己的手續費,含小費)</div></div><div class="li-amt num">'+fmtMoney(b.earned)+'</div></div>'+
+    (b.cashFees>0?'<div class="list-item"><div class="li-body"><div class="li-title">扣:之前累積的現金單手續費</div></div><div class="li-amt expense num">-'+fmtMoney(b.cashFees)+'</div></div>':'')+
+    '<div class="list-item"><div class="li-body"><div class="li-title"><b>系統預計撥款</b></div><div class="li-sub">'+b.trips+' 趟 · '+b.from+(b.to!==b.from?(' ~ '+b.to):'')+'</div></div><div class="li-amt num"><b>'+fmtMoney(b.expected)+'</b></div></div>'+
+    '</div>';
+  h += '<div class="form-grid2"><div class="form-row"><label>實際入帳金額</label><input class="num-input" id="f-payout-amount" type="number" inputmode="numeric" step="1" placeholder="'+Math.round(b.expected)+'" value="'+(p?p.amount:'')+'"></div>'+
+    '<div class="form-row"><label>入帳日期</label><input type="date" id="f-payout-date" value="'+(p?p.receivedDate:(b.payDate&&b.payDate<=todayStr()?b.payDate:todayStr()))+'"></div></div>';
+  h += '<div class="form-row"><label>備註(選填)</label><input id="f-payout-note" type="text" value="'+esc(p?(p.note||''):'')+'"></div>';
+  h += '<div class="btn-row" style="gap:8px">'+(p?'<button class="btn btn-danger" style="flex:1" data-act="del-payout:'+b.id+'">取消對帳</button>':'')+'<button class="btn btn-primary" style="flex:1" data-act="save-payout:'+b.id+'">儲存</button></div>';
+  openModal(h);
+}
+function savePayout(batchId){
+  var amt = document.getElementById('f-payout-amount').value;
+  if(amt==='' || isNaN(+amt)){ alert('請輸入實際入帳金額。'); return; }
+  var b = payoutBatches().filter(function(x){ return x.id===batchId; })[0];
+  state.payouts = (state.payouts||[]).filter(function(p){ return p.batch!==batchId; });
+  state.payouts.push({id:uid(), batch:batchId, platform:b?b.platform:batchId.split('|')[0], amount:+amt,
+    expectedAtSave:b?Math.round(b.expected):null, receivedDate:document.getElementById('f-payout-date').value||todayStr(),
+    note:(document.getElementById('f-payout-note').value||'').trim()});
+  save(); closeModal(); renderAll();
+}
+function payoutPlatforms(){
+  return allPlatforms().filter(function(p){ return !p.hidden && !platformDef(p.key).tipOnly; });
+}
+function poSelect(id, options, current){
+  return '<select id="'+id+'" style="width:100%;background:var(--surface-sunken);border:1px solid var(--border);border-radius:9px;padding:8px;color:var(--text);font-family:inherit;font-size:13px">'+
+    options.map(function(o){ return '<option value="'+o[0]+'"'+(String(current)===String(o[0])?' selected':'')+'>'+o[1]+'</option>'; }).join('')+'</select>';
+}
+function openPayoutSettingsModal(){
+  var h = '<div class="modal-title">撥款設定<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">設定每個平台怎麼收錢、什麼時候撥款。台灣大車隊、大都會、YOXI 會依每一筆選的付款方式判斷,選「現金」的那趟就算現金收入。<br>「每週固定一天」= 上週一到週日的趟次,在這週的那一天撥款。</div>';
+  payoutPlatforms().forEach(function(p){
+    var cfg = payoutCfg(p.key);
+    var hasPay = !!platformDef(p.key).paymentOptions;
+    h += '<div style="padding:10px 0;border-bottom:1px solid var(--border)">';
+    h += '<div style="font-weight:700;font-size:14px;margin-bottom:6px">'+esc(p.label)+'</div>';
+    h += '<div class="form-grid2">';
+    h += '<div><label style="font-size:11px">收款方式</label>'+(hasPay?'<div style="font-size:12.5px;padding:9px 0;color:var(--text-muted)">依每筆付款方式</div>':poSelect('f-po-collect-'+p.key, [['cash','現金(自己收)'],['platform','平台撥款']], cfg.collect))+'</div>';
+    h += '<div><label style="font-size:11px">撥款時間</label>'+poSelect('f-po-schedule-'+p.key, [['none','不用撥款'],['weekly','每週固定一天'],['tplus','趟次日後N個工作天'],['unset','還不確定']], cfg.schedule)+'</div>';
+    h += '<div><label style="font-size:11px">每週撥款日</label>'+poSelect('f-po-weekday-'+p.key, WEEKDAY_NAMES.map(function(n,i){ return [i+1,'週'+n]; }), cfg.weekday)+'</div>';
+    h += '<div><label style="font-size:11px">N個工作天(六日、國定假日順延)</label><input id="f-po-days-'+p.key+'" type="number" min="0" step="1" inputmode="numeric" value="'+cfg.days+'" style="width:100%;box-sizing:border-box;background:var(--surface-sunken);border:1px solid var(--border);border-radius:9px;padding:8px;color:var(--text);font-family:inherit;font-size:13px"></div>';
+    h += '</div>';
+    if(hasPay) h += '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);margin-top:8px"><input type="checkbox" id="f-po-cashfee-'+p.key+'"'+(cfg.cashFeeFromPayout?' checked':'')+'>現金單的手續費從撥款扣(不勾 = 另外繳,例如儲值金扣款)</label>';
+    h += '</div>';
+  });
+  h += '<div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" data-act="save-payout-settings">儲存撥款設定</button></div>';
+  openModal(h);
+}
+function savePayoutSettings(){
+  state.payoutSettings = state.payoutSettings || {};
+  payoutPlatforms().forEach(function(p){
+    function v(id){ var el=document.getElementById(id); return el?el.value:null; }
+    var o = {};
+    var c = v('f-po-collect-'+p.key); if(c) o.collect = c;
+    o.schedule = v('f-po-schedule-'+p.key);
+    o.weekday = +v('f-po-weekday-'+p.key);
+    o.days = Math.max(0, +v('f-po-days-'+p.key)||0);
+    var cf = document.getElementById('f-po-cashfee-'+p.key); if(cf) o.cashFeeFromPayout = cf.checked;
+    state.payoutSettings[p.key] = o;
+  });
+  save(); closeModal(); renderAll();
+}
+
 /* ---------- rendering shell ---------- */
 function renderAll(){
   document.querySelectorAll('.nav-btn').forEach(function(b){ b.classList.toggle('active', b.dataset.act==='tab:'+currentTab); });
@@ -877,6 +1126,7 @@ function renderAll(){
   else if(currentTab==='history') c.innerHTML = renderHistory();
   else if(currentTab==='expense') c.innerHTML = renderExpenseTab();
   else if(currentTab==='analytics') c.innerHTML = renderAnalytics();
+  else if(currentTab==='payout') c.innerHTML = renderPayoutTab();
 }
 function renderTopbar(){
   var t = todayStr();
@@ -917,11 +1167,34 @@ function renderEntry(){
   todayRecs.forEach(function(r){ platformTotals[r.platform]=(platformTotals[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
 
   var h = tabWarningHtml();
+  var nowCal = toDateStr(new Date());
+  if(nowCal!==t){
+    h += '<div class="card" style="margin-bottom:12px;padding:10px 14px;font-size:12.5px;line-height:1.6;color:var(--text-muted)">🌙 現在已過午夜,'+pad(dayCutoffHour())+':00 以前記的帳、打的下班卡,都算在 <b style="color:var(--text)">'+t.slice(5).replace('-','/')+'</b> 這個營業日。</div>';
+  }
   h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr 1fr">';
   h += '<div class="stat-tile"><div class="lbl">今日實收(含小費)</div><div class="val income num">'+fmtMoney(net.total)+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">今日車資(未扣手續費)</div><div class="val num">'+fmtMoney(gross.total)+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">今日支出</div><div class="val expense num">'+fmtMoney(exp)+'</div></div>';
   h += '</div></div>';
+  var todayFlow = cashSummary(todayRecs);
+  if(todayRecs.length){
+    h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">'+
+      '<div class="stat-tile"><div class="lbl">今日現金收入(應在身上)</div><div class="val num">'+fmtMoney(todayFlow.cash)+'</div></div>'+
+      '<div class="stat-tile"><div class="lbl">今日非現金單(待撥款)</div><div class="val num">'+fmtMoney(todayFlow.noncash)+'</div></div>'+
+      '</div>'+
+      (todayFlow.feeNetted>0?'<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px">今日現金單手續費 '+fmtMoney(todayFlow.feeNetted)+',會從之後的撥款扣回去</div>':'')+
+      (todayFlow.feeSeparate>0?'<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px">另外要繳給車隊的現金單手續費:'+fmtMoney(todayFlow.feeSeparate)+'</div>':'')+'</div>';
+  }
+  var dailyTarget = (state.targets&&state.targets.daily)||0;
+  if(dailyTarget>0){
+    var tPct = Math.min(100, Math.round(net.total/dailyTarget*100));
+    var tLeft = dailyTarget-net.total;
+    h += '<div class="section"><div class="card"><div class="progress-wrap">'+
+      '<div class="progress-lbl"><span class="p">今日目標 '+fmtMoney(net.total)+' / '+fmtMoney(dailyTarget)+'</span><span class="v num">'+tPct+'%</span></div>'+
+      '<div class="progress-bar"><div class="progress-fill" style="width:'+tPct+'%"></div></div>'+
+      '<div style="font-size:12px;color:var(--text-muted);margin-top:6px">'+(tLeft>0?('還差 '+fmtMoney(tLeft)):'🎉 今日目標達成')+'</div>'+
+      '</div></div></div>';
+  }
 
   h += '<div class="section"><div class="section-title">收入/平台</div><div class="platform-grid">';
   visiblePlatforms().forEach(function(p){
@@ -1266,7 +1539,7 @@ function patternsHtml(recs){
   recs.forEach(function(r){
     if(platformDef(r.platform).tipOnly || !r.ts) return;
     var d = new Date(r.ts);
-    if(toDateStr(d)!==r.date){ skipped++; return; }
+    if(businessDayOf(r.ts)!==r.date){ skipped++; return; }
     hourSum[d.getHours()] += computeNetRevenue(r)+(+r.tip||0); hourCnt[d.getHours()]++;
   });
   h += '<div style="font-size:13px;font-weight:700;margin:4px 0 6px">時段(依記帳時間)</div>';
@@ -1418,6 +1691,7 @@ function renderAnalytics(){
 
 /* ---------- MODALS ---------- */
 var currentIncomeModalKey = null;
+var currentIncomeEditFees = null;
 function openModal(html){
   currentIncomeModalKey = null;
   var root = document.getElementById('modalRoot');
@@ -1427,7 +1701,7 @@ function openModal(html){
 function computePreviewRecordFromForm(key){
   var def = platformDef(key);
   function grab(id){ var el=document.getElementById(id); return el?el.value:null; }
-  var rec = {platform:key};
+  var rec = {platform:key, fees:currentIncomeEditFees||undefined};
   rec.revenue = +grab('f-revenue')||0;
   rec.tip = +grab('f-tip')||0;
   if(def.fareTypeOptions){ var fte=document.getElementById('chip-fareType'); rec.fareType = fte?fte.value:def.fareTypeOptions[0]; }
@@ -1532,6 +1806,7 @@ function openIncomeModal(key, editId){
   h += '<button class="btn btn-primary" data-act="save-income:'+key+(existing?(':'+existing.id):'')+'">儲存</button></div>';
   openModal(h);
   currentIncomeModalKey = key;
+  currentIncomeEditFees = existing ? (existing.fees||null) : null;
   updateIncomePreview();
   setTimeout(function(){ var el=document.getElementById('f-revenue')||document.getElementById('f-tip'); if(el) el.focus(); }, 50);
 }
@@ -1543,7 +1818,7 @@ function saveIncome(key, editId){
   var note = (grab('f-note')||'').trim();
   if(revenue<=0 && tip<=0){ closeModal(); return; }
   var existing = editId ? state.records.filter(function(r){return r.id===editId;})[0] : null;
-  var rec = existing || {id:uid(), date:currentEntryDate(), ts:Date.now(), platform:key};
+  var rec = existing || {id:uid(), date:currentEntryDate(), ts:Date.now(), platform:key, fees:resolvedFeeRules()};
   rec.revenue = revenue; rec.tip = tip; rec.note = note;
   if(def.subtypeOptions) rec.subtype = grab('chip-subtype');
   if(def.fareTypeOptions) rec.fareType = grab('chip-fareType');
@@ -1688,12 +1963,16 @@ function openSettingsModal(){
        '<div><span style="font-size:11px;color:var(--text-muted)">每週</span><input class="num-input" id="f-target-weekly" type="number" min="0" value="'+(state.targets.weekly||'')+'"></div></div>';
   h += '<div><span style="font-size:11px;color:var(--text-muted)">每月</span><input class="num-input" id="f-target-monthly" type="number" min="0" value="'+(state.targets.monthly||'')+'"></div></div>';
 
+  var cutoffNow = dayCutoffHour();
+  h += '<div class="form-row" style="margin-top:6px"><label>營業日分界時間(跑過午夜時,這個時間以前都算前一天)</label><select id="f-day-cutoff">'+
+    [0,1,2,3,4,5,6,7,8].map(function(hh){ return '<option value="'+hh+'"'+(hh===cutoffNow?' selected':'')+'>'+(hh===0?'午夜 00:00(不跨夜)':('凌晨 '+pad(hh)+':00'))+'</option>'; }).join('')+
+    '</select></div>';
   h += '<div class="form-row" style="margin-top:6px"><label>Google Sheet 同步網址</label><input id="f-sync-url" type="text" placeholder="https://script.google.com/macros/s/.../exec" value="'+esc(state.syncUrl||'')+'"></div>';
 
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-settings">儲存設定</button></div>';
   h += '<div style="height:10px"></div>';
   h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="sync-all">立即同步到雲端</button><button class="btn btn-ghost" style="flex:1" data-act="open-restore">從雲端還原</button></div>';
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">'+(state.lastCloudPush?('上次送出同步:'+fmtTs(state.lastCloudPush)):'這個瀏覽器還沒有送出過同步')+'</div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">'+(state.lastCloudPushOk?('上次成功送出同步:'+fmtTs(state.lastCloudPushOk)):'這個瀏覽器還沒有成功送出過同步')+((state.lastChangeAt||0)>(state.lastCloudPushOk||0)&&state.lastCloudPushOk?' · 有新的變動尚未送出':'')+'</div>';
   h += '<div id="syncStatus" style="font-size:12px;color:var(--text-muted);margin-top:8px;text-align:center"></div>';
   h += '<div style="height:14px"></div>';
 
@@ -1794,6 +2073,7 @@ function doCloudRestore(i){
     for(var k in d){ if(!(k in parsed)) parsed[k]=d[k]; }
     parsed.syncUrl = state.syncUrl;
     state = parsed;
+    stampMissingFeeSnapshots();
     save(); closeModal(); renderAll();
     alert('已從雲端還原(收入 '+state.records.length+' 筆、支出 '+state.expenses.length+' 筆)。');
   }).catch(function(){
@@ -1828,6 +2108,7 @@ function doImportData(){
   var d = defaultState();
   for(var k in d){ if(!(k in parsed)) parsed[k]=d[k]; }
   state = parsed;
+  stampMissingFeeSnapshots();
   save(); closeModal(); renderAll();
   alert('資料已還原。');
 }
@@ -1874,6 +2155,7 @@ function savePlatformSettings(){
   });
 }
 function saveSettings(){
+  var feesBefore = JSON.stringify(resolvedFeeRules());
   savePlatformSettings();
   state.targets.daily = +document.getElementById('f-target-daily').value || 0;
   state.targets.weekly = +document.getElementById('f-target-weekly').value || 0;
@@ -1891,12 +2173,22 @@ function saveSettings(){
   state.feeRules.boltPct = g('f-fee-boltpct');
   state.feeRules.boltThreshold = g('f-fee-boltthreshold');
   state.feeRules.boltThresholdEnabled = document.getElementById('f-fee-boltthresholdenabled').checked;
+  state.dayCutoffHour = +document.getElementById('f-day-cutoff').value;
   var prevSyncUrl = state.syncUrl;
   state.syncUrl = document.getElementById('f-sync-url').value.trim();
   save(); closeModal(); renderAll();
   if(state.syncUrl && state.syncUrl!==prevSyncUrl && !hasMeaningfulData()){
     if(confirm('這個瀏覽器目前沒有任何記帳資料。要從雲端還原之前的資料嗎?')) openCloudRestoreModal();
+    return;
   }
+  if(JSON.stringify(resolvedFeeRules())!==feesBefore && state.records.length) openFeeApplyModal();
+}
+function openFeeApplyModal(){
+  var h = '<div class="modal-title">手續費設定已更新<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:14px;line-height:1.6">新的手續費會用在<b style="color:var(--text)">之後新增的記錄</b>,過去的記錄維持當時的手續費,不會被改動。<br><br>如果是平台從某一天開始調整、或是之前設定填錯了,可以選一個日期,讓那天(含)之後的記錄也改用新的手續費。</div>';
+  h += '<div class="form-row"><label>從這一天起的記錄改用新手續費</label><input type="date" id="f-fee-apply-from" value="'+todayStr()+'"></div>';
+  h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="close-modal">不用,只影響之後新增的</button><button class="btn btn-primary" style="flex:1" data-act="apply-fees-from">套用</button></div>';
+  openModal(h);
 }
 
 /* ---------- EVENT DELEGATION ---------- */
@@ -2011,6 +2303,19 @@ document.addEventListener('click', function(e){
     if(statusEl) statusEl.textContent = '已送出全部資料('+state.records.length+' 筆收入、'+state.expenses.length+' 筆支出),約 10 秒後可按「從雲端還原」查看最新備份時間確認。';
   }
   else if(cmd==='open-restore'){ openCloudRestoreModal(); }
+  else if(cmd==='open-payout'){ openPayoutModal(arg); }
+  else if(cmd==='save-payout'){ savePayout(arg); }
+  else if(cmd==='del-payout'){ state.payouts=(state.payouts||[]).filter(function(p){ return p.batch!==arg; }); save(); closeModal(); renderAll(); }
+  else if(cmd==='open-payout-settings'){ openPayoutSettingsModal(); }
+  else if(cmd==='save-payout-settings'){ savePayoutSettings(); }
+  else if(cmd==='apply-fees-from'){
+    var afFrom = document.getElementById('f-fee-apply-from').value;
+    if(!afFrom){ alert('請選擇日期。'); return; }
+    var afSnap = resolvedFeeRules(), afN = 0;
+    state.records.forEach(function(r){ if(r.date>=afFrom){ r.fees = afSnap; afN++; } });
+    save(); closeModal();
+    alert('已將 '+afFrom+' 起的 '+afN+' 筆記錄改用新手續費。');
+  }
   else if(cmd==='do-restore'){ doCloudRestore(+arg); }
   else if(cmd==='dismiss-tab-warning'){
     try{ sessionStorage.setItem('hideTabWarning','1'); }catch(err){}
@@ -2085,6 +2390,7 @@ document.addEventListener('change', function(e){
 });
 
 renderAll();
+setTimeout(cloudSyncIfBehind, 2000);
 var _staleShiftDate = findStaleOpenShiftDate();
 if(_staleShiftDate){ openStaleShiftModal(_staleShiftDate); }
 else { var _missingKmDate = findMissingKmDate(); if(_missingKmDate) openMissingKmModal(_missingKmDate); }
