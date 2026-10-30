@@ -446,7 +446,9 @@ function defaultState(){
     syncUrl:'',
     dayCutoffHour:5,
     payoutSettings:{},
-    payouts:[]
+    payouts:[],
+    activeTrip:null,
+    pendingTrips:[]
   };
 }
 function load(){
@@ -652,9 +654,11 @@ function describeRecord(r){
   if(r.stationFee) parts.push('據點費$'+r.stationFee);
   if(r.markupMultiplier) parts.push('加成'+r.markupMultiplier+'倍');
   if(r.markupAmount) parts.push('加成$'+r.markupAmount);
+  if(r.pickup && r.dropoff) parts.push('🚕'+Math.round((r.dropoff.ts-r.pickup.ts)/60000)+'分');
+  if(r.area) parts.push('📍'+r.area);
+  if(r.event) parts.push('🎉'+r.event);
   return parts.join(' · ');
 }
-
 /* ---------- Google Sheet cloud sync (full snapshot) ---------- */
 var cloudSyncTimer = null;
 var cloudSyncSuspended = false;
@@ -694,6 +698,7 @@ function buildCloudSnapshot(){
   }
   return {
     kind:'snapshot', income:income, expense:expense, daily:daily, fixed:fixed,
+    incomeExtraHeader:TRIP_SHEET_HEADER, incomeExtra:recs.map(tripSheetCols),
     incomeCount:state.records.length, expenseCount:state.expenses.length,
     state: JSON.stringify(state)
   };
@@ -701,14 +706,44 @@ function buildCloudSnapshot(){
 function hasMeaningfulData(){
   return state.records.length>0 || state.expenses.length>0;
 }
+var CLOUD_KEY_STORAGE = 'taxi_ledger_cloudkey';
+var cloudAuthStatus = 'unknown';
+function getCloudKey(){ try{ return localStorage.getItem(CLOUD_KEY_STORAGE)||''; }catch(e){ return ''; } }
+function setCloudKey(k){ try{ if(k) localStorage.setItem(CLOUD_KEY_STORAGE, k); else localStorage.removeItem(CLOUD_KEY_STORAGE); }catch(e){} }
+function cloudAuthCheck(after){
+  if(!state.syncUrl){ cloudAuthStatus='unknown'; if(after) after(); return; }
+  cloudGet({action:'ping'}).then(function(res){
+    var prev = cloudAuthStatus;
+    if(res && res.ok && res.auth===true) cloudAuthStatus = 'ok';
+    else if(res && res.error==='unauthorized') cloudAuthStatus = 'bad';
+    else if(res && res.ok) cloudAuthStatus = 'open';
+    else cloudAuthStatus = 'unreachable';
+    if(cloudAuthStatus==='bad'){ state.lastCloudPushOk = 0; try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){} }
+    if(prev==='bad' && cloudAuthStatus==='ok'){ state.lastCloudPushOk = 0; cloudSyncIfBehind(); }
+    if(currentTab==='entry' && !document.getElementById('modalBody')) renderAll();
+    if(after) after();
+  }).catch(function(){ cloudAuthStatus='unreachable'; if(after) after(); });
+}
+function cloudStatusText(){
+  return {
+    ok:'✓ 已連線,密碼正確',
+    bad:'✕ 密碼不對或還沒填,資料沒有同步到雲端',
+    open:'⚠️ 雲端程式還沒啟用密碼(舊版),目前任何知道網址的人都能讀寫',
+    unreachable:'連不上雲端(可能沒網路),恢復後會自動補送',
+    unknown:'尚未檢查'
+  }[cloudAuthStatus] || '';
+}
 function pushCloudSnapshot(){
   if(!state.syncUrl || cloudSyncSuspended || !hasMeaningfulData()) return false;
   try{
+    var snap = buildCloudSnapshot();
+    snap.key = getCloudKey();
     fetch(state.syncUrl, {
       method:'POST', mode:'no-cors',
       headers:{'Content-Type':'text/plain;charset=utf-8'},
-      body: JSON.stringify(buildCloudSnapshot())
+      body: JSON.stringify(snap)
     }).then(function(){
+      if(cloudAuthStatus==='bad') return;
       state.lastCloudPushOk = Date.now();
       try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
     }).catch(function(){});
@@ -740,7 +775,7 @@ function cloudGet(params){
     function cleanup(){ clearTimeout(timer); try{ delete window[cb]; }catch(e){ window[cb]=undefined; } if(s.parentNode) s.parentNode.removeChild(s); }
     window[cb] = function(data){ cleanup(); resolve(data); };
     s.onerror = function(){ cleanup(); reject(new Error('load')); };
-    s.src = state.syncUrl+(state.syncUrl.indexOf('?')>=0?'&':'?')+q+'&callback='+cb;
+    s.src = state.syncUrl+(state.syncUrl.indexOf('?')>=0?'&':'?')+q+'&key='+encodeURIComponent(getCloudKey())+'&callback='+cb;
     document.head.appendChild(s);
   });
 }
@@ -878,7 +913,7 @@ function openSubBreakdownModal(item){
   recsList.sort(function(a,b){ return a.date<b.date?1:(a.date>b.date?-1:(b.ts||0)-(a.ts||0)); });
   h += '<div class="card">' + recsList.map(function(r){
     var val = computeNetRevenue(r)+(+r.tip||0);
-    return '<div class="list-item" data-act="edit-income:'+r.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+r.date+'</div><div class="li-sub">車資 '+fmtMoney(r.revenue||0)+(r.tip?(' · 小費 '+fmtMoney(r.tip)):'')+(r.note?(' · '+esc(r.note)):'')+'</div></div><div class="li-amt income num">+'+fmtMoney(val)+'</div></div>';
+    return '<div class="list-item" data-act="edit-income:'+r.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+r.date+'</div><div class="li-sub">車資 '+fmtMoney(r.revenue||0)+(r.tip?(' · 小費 '+fmtMoney(r.tip)):'')+(r.area?(' · 📍'+esc(r.area)):'')+(r.event?(' · 🎉'+esc(r.event)):'')+(r.note?(' · '+esc(r.note)):'')+'</div></div><div class="li-amt income num">+'+fmtMoney(val)+'</div></div>';
   }).join('') + '</div>';
   openModal(h);
 }
@@ -1117,6 +1152,168 @@ function savePayoutSettings(){
   save(); closeModal(); renderAll();
 }
 
+/* ---------- trips: pickup / dropoff with one-shot GPS ---------- */
+var pendingIncomeTripId = null;
+function hhmm(ts){ var d=new Date(ts); return pad(d.getHours())+':'+pad(d.getMinutes()); }
+function tripMinutes(t){ return (t.pickup && t.dropoff) ? Math.max(0,(t.dropoff.ts-t.pickup.ts)/60000) : null; }
+function tripLabel(t){
+  var m = tripMinutes(t);
+  return hhmm(t.pickup.ts)+(t.dropoff?(' → '+hhmm(t.dropoff.ts)):' → 載客中')+(m!=null?(' · '+Math.round(m)+' 分鐘'):'');
+}
+function showToast(msg, ms){
+  var el = document.getElementById('appToast');
+  if(!el){
+    el = document.createElement('div'); el.id = 'appToast';
+    el.style.cssText = 'position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);max-width:340px;width:calc(100% - 32px);background:var(--text);color:var(--bg);padding:11px 14px;border-radius:12px;font-size:13px;line-height:1.5;z-index:200;box-shadow:var(--shadow);text-align:center';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg; el.style.display = 'block';
+  clearTimeout(el._t); el._t = setTimeout(function(){ el.style.display='none'; }, ms||3500);
+}
+function geoCapture(cb){
+  if(!navigator.geolocation){ cb(null, '這支手機的瀏覽器不支援定位,這趟只記時間。'); return; }
+  var done = false;
+  navigator.geolocation.getCurrentPosition(function(p){
+    if(done) return; done = true;
+    cb({lat:+p.coords.latitude.toFixed(6), lng:+p.coords.longitude.toFixed(6), acc:Math.round(p.coords.accuracy||0)}, '');
+  }, function(err){
+    if(done) return; done = true;
+    if(err && err.code===1) cb(null, '定位權限被拒絕,這趟只記時間。要記位置:iPhone「設定 → 隱私權與安全性 → 定位服務」打開,再回 App 按上車時選「允許」。');
+    else cb(null, '這次抓不到位置(可能訊號不好),這趟只記時間,記帳照常。');
+  }, {enableHighAccuracy:true, timeout:10000, maximumAge:15000});
+}
+function applyTripLoc(tripId, which, loc){
+  if(!loc) return;
+  function setOn(pt){ if(pt){ pt.lat=loc.lat; pt.lng=loc.lng; pt.acc=loc.acc; } }
+  if(state.activeTrip && state.activeTrip.id===tripId) setOn(state.activeTrip[which]);
+  (state.pendingTrips||[]).forEach(function(t){ if(t.id===tripId) setOn(t[which]); });
+  state.records.forEach(function(r){ if(r.tripId===tripId) setOn(r[which]); });
+  save();
+}
+function captureFor(tripId, which){
+  state.geoAsked = true;
+  geoCapture(function(loc, msg){
+    if(loc){
+      applyTripLoc(tripId, which, loc);
+      showToast((which==='pickup'?'上車':'下車')+'位置已記錄(誤差約 '+loc.acc+' 公尺)');
+    } else {
+      showToast(msg, 7000);
+    }
+  });
+}
+function tripStart(){
+  if(state.activeTrip) return;
+  var t = {id:uid(), pickup:{ts:Date.now()}};
+  state.activeTrip = t;
+  save(); renderAll();
+  showToast('已記錄上車時間,定位中…');
+  captureFor(t.id, 'pickup');
+}
+function tripEnd(){
+  var t = state.activeTrip; if(!t) return;
+  t.dropoff = {ts:Date.now()};
+  state.activeTrip = null;
+  state.pendingTrips = state.pendingTrips || [];
+  state.pendingTrips.push(t);
+  save(); renderAll();
+  captureFor(t.id, 'dropoff');
+  openTripLinkModal(t.id);
+}
+function findPendingTrip(id){ return (state.pendingTrips||[]).filter(function(t){ return t.id===id; })[0]; }
+function attachTripToRecord(t, rec){
+  rec.tripId = t.id;
+  rec.pickup = t.pickup;
+  rec.dropoff = t.dropoff;
+  state.pendingTrips = (state.pendingTrips||[]).filter(function(x){ return x.id!==t.id; });
+}
+function tripCardHtml(){
+  var a = state.activeTrip, pend = state.pendingTrips||[];
+  var big = 'width:100%;border:none;border-radius:16px;padding:18px;font-size:22px;font-weight:900;color:#fff;cursor:pointer;font-family:inherit;letter-spacing:2px';
+  var h = '<div class="section"><div class="card" style="padding:14px">';
+  if(a){
+    h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">🚕 載客中 · '+hhmm(a.pickup.ts)+' 上車 · 已 '+Math.round((Date.now()-a.pickup.ts)/60000)+' 分鐘'+(a.pickup.lat!=null?' · 📍已定位':'')+'</div>';
+    h += '<button data-act="trip-end" style="'+big+';background:var(--expense)">下車</button>';
+    h += '<div style="text-align:right;margin-top:8px"><a data-act="trip-cancel" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">按錯了,取消這趟</a></div>';
+  } else {
+    h += '<button data-act="trip-start" style="'+big+';background:var(--income)">上車</button>';
+    if(!state.geoAsked) h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;line-height:1.5">第一次按,iPhone 會問要不要讓網頁取得位置,請按「允許」。只在按下的那一刻抓一次位置,不會一直追蹤。</div>';
+  }
+  if(pend.length){
+    h += '<div style="font-size:12.5px;font-weight:700;margin:14px 0 4px">已下車、還沒記車資('+pend.length+')</div>';
+    h += pend.slice().reverse().map(function(t){
+      return '<div class="list-item" data-act="open-trip-link:'+t.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+tripLabel(t)+'</div><div class="li-sub">'+businessDayOf(t.pickup.ts)+(t.pickup.lat!=null?' · 📍有位置':' · 無位置')+'</div></div><div class="li-amt num" style="color:var(--accent)">記帳</div></div>';
+    }).join('');
+  }
+  h += '</div></div>';
+  return h;
+}
+function openTripLinkModal(tripId){
+  var t = findPendingTrip(tripId); if(!t) return;
+  var h = '<div class="modal-title">這趟要記到哪裡?<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:12px">'+tripLabel(t)+'</div>';
+  h += '<div class="section-title" style="margin-bottom:8px">記一筆新的收入</div><div class="chip-row" style="margin-bottom:14px">';
+  visiblePlatforms().forEach(function(p){
+    if(platformDef(p.key).tipOnly) return;
+    h += '<button type="button" class="chip-opt" data-act="trip-new-income:'+t.id+':'+p.key+'">'+esc(p.icon||'')+' '+esc(p.label)+'</button>';
+  });
+  h += '</div>';
+  var day = businessDayOf(t.pickup.ts);
+  var unlinked = state.records.filter(function(r){ return !r.tripId && r.date===day && !platformDef(r.platform).tipOnly; })
+    .sort(function(a,b){ return (b.ts||0)-(a.ts||0); }).slice(0,6);
+  if(unlinked.length){
+    h += '<div class="section-title" style="margin-bottom:8px">或連到已經記好的收入</div><div class="card" style="margin-bottom:14px">';
+    h += unlinked.map(function(r){
+      return '<div class="list-item" data-act="trip-attach:'+t.id+':'+r.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+esc(platformDef(r.platform).label)+' · '+hhmm(r.ts)+' 記帳</div><div class="li-sub">車資 '+fmtMoney(r.revenue||0)+'</div></div><div class="li-amt num" style="color:var(--accent)">連結</div></div>';
+    }).join('')+'</div>';
+  }
+  h += '<div class="btn-row" style="gap:8px"><button class="btn btn-danger" style="flex:1" data-act="trip-delete:'+t.id+'">刪除這趟</button><button class="btn btn-ghost" style="flex:1" data-act="close-modal">稍後再填</button></div>';
+  openModal(h);
+}
+function tripChoiceHtml(existing){
+  if(existing && existing.tripId){
+    var m = (existing.pickup && existing.dropoff) ? Math.round((existing.dropoff.ts-existing.pickup.ts)/60000) : null;
+    return '<div class="form-row"><label>行程</label><div style="font-size:13px;display:flex;justify-content:space-between;align-items:center;gap:8px"><span>🚕 '+hhmm(existing.pickup.ts)+' → '+(existing.dropoff?hhmm(existing.dropoff.ts):'?')+(m!=null?(' · '+m+' 分鐘'):'')+'</span><a data-act="unlink-trip:'+existing.id+'" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">取消連結</a></div></div>';
+  }
+  var opts = [];
+  (state.pendingTrips||[]).slice().reverse().slice(0,3).forEach(function(t){ opts.push({id:t.id, label:tripLabel(t)}); });
+  if(state.activeTrip) opts.push({id:state.activeTrip.id, label:hhmm(state.activeTrip.pickup.ts)+' 上車中(存檔時一併下車)'});
+  if(!opts.length) return '';
+  var def = 'none';
+  if(pendingIncomeTripId) def = pendingIncomeTripId;
+  else if(!existing){
+    var last = (state.pendingTrips||[]).slice(-1)[0];
+    if(last && Date.now()-last.dropoff.ts < 60*60000) def = last.id;
+    else if(state.activeTrip) def = state.activeTrip.id;
+  }
+  opts.push({id:'none', label:'不連行程'});
+  var h = '<div class="form-row"><label>連到行程</label><div class="chip-row">';
+  opts.forEach(function(o){ h += '<button type="button" class="chip-opt'+(o.id===def?' selected':'')+'" data-act="trip-pick:'+o.id+'">'+esc(o.label)+'</button>'; });
+  h += '</div><input type="hidden" id="f-trip-link" value="'+def+'"></div>';
+  return h;
+}
+function applyTripChoiceOnSave(rec){
+  var el = document.getElementById('f-trip-link');
+  var choice = el ? el.value : 'none';
+  if(!choice || choice==='none') return;
+  var t = findPendingTrip(choice);
+  if(t){ attachTripToRecord(t, rec); return; }
+  if(state.activeTrip && state.activeTrip.id===choice){
+    var a = state.activeTrip;
+    a.dropoff = {ts:Date.now()};
+    state.activeTrip = null;
+    rec.tripId = a.id; rec.pickup = a.pickup; rec.dropoff = a.dropoff;
+    setTimeout(function(){ captureFor(a.id, 'dropoff'); }, 0);
+  }
+}
+function tripSheetCols(r){
+  var p = r.pickup||{}, d = r.dropoff||{};
+  var mins = (r.pickup && r.dropoff) ? Math.round((d.ts-p.ts)/6000)/10 : '';
+  return [p.ts?fmtTsSec(p.ts):'', p.lat!=null?p.lat:'', p.lng!=null?p.lng:'', p.acc!=null?p.acc:'',
+          d.ts?fmtTsSec(d.ts):'', d.lat!=null?d.lat:'', d.lng!=null?d.lng:'', d.acc!=null?d.acc:'', mins];
+}
+function fmtTsSec(ts){ var d=new Date(ts); return toDateStr(d)+' '+pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds()); }
+var TRIP_SHEET_HEADER = ['上車時間','上車緯度','上車經度','上車定位誤差(m)','下車時間','下車緯度','下車經度','下車定位誤差(m)','行程分鐘'];
+
 /* ---------- rendering shell ---------- */
 function renderAll(){
   document.querySelectorAll('.nav-btn').forEach(function(b){ b.classList.toggle('active', b.dataset.act==='tab:'+currentTab); });
@@ -1167,6 +1364,9 @@ function renderEntry(){
   todayRecs.forEach(function(r){ platformTotals[r.platform]=(platformTotals[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
 
   var h = tabWarningHtml();
+  if(state.syncUrl && cloudAuthStatus==='bad'){
+    h += '<div class="card" style="border-color:var(--expense);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 雲端密碼不對,資料沒有同步到雲端</b><br>手機裡的帳都還在。請到右上角設定確認「雲端密碼」,改好後會自動補送。</div>';
+  }
   var nowCal = toDateStr(new Date());
   if(nowCal!==t){
     h += '<div class="card" style="margin-bottom:12px;padding:10px 14px;font-size:12.5px;line-height:1.6;color:var(--text-muted)">🌙 現在已過午夜,'+pad(dayCutoffHour())+':00 以前記的帳、打的下班卡,都算在 <b style="color:var(--text)">'+t.slice(5).replace('-','/')+'</b> 這個營業日。</div>';
@@ -1176,6 +1376,7 @@ function renderEntry(){
   h += '<div class="stat-tile"><div class="lbl">今日車資(未扣手續費)</div><div class="val num">'+fmtMoney(gross.total)+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">今日支出</div><div class="val expense num">'+fmtMoney(exp)+'</div></div>';
   h += '</div></div>';
+  h += tripCardHtml();
   var todayFlow = cashSummary(todayRecs);
   if(todayRecs.length){
     h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">'+
@@ -1728,7 +1929,7 @@ function updateIncomePreview(){
     '<div class="stat-tile"><div class="lbl">實收</div><div class="val income num">'+fmtMoney(total)+'</div></div>'+
     '</div>';
 }
-function closeModal(){ document.getElementById('modalRoot').innerHTML=''; renderAll(); }
+function closeModal(){ pendingIncomeTripId = null; document.getElementById('modalRoot').innerHTML=''; renderAll(); }
 
 function chipRowHtml(groupId, options, selectedDefault){
   var h = '<div class="chip-row" data-group="'+groupId+'">';
@@ -1800,6 +2001,7 @@ function openIncomeModal(key, editId){
     h += '<div id="incomePreview" style="margin-bottom:12px"></div>';
     h += buildIncomeForm(key, existing);
   }
+  if(!def.tipOnly) h += tripChoiceHtml(existing);
   h += '<div class="form-row"><label>備註(選填)</label><input id="f-note" type="text" placeholder="" value="'+esc((existing&&existing.note)||'')+'"></div>';
   h += '<div class="btn-row">';
   if(existing) h += '<button class="btn btn-danger" data-act="del-income-close:'+existing.id+'">刪除這筆</button>';
@@ -1831,6 +2033,8 @@ function saveIncome(key, editId){
   var ma = grab('f-markup-amount'); rec.markupAmount = (ma!=null && ma!=='') ? +ma : undefined;
   var mm = grab('f-markup-multiplier'); rec.markupMultiplier = (mm!=null && mm!=='') ? +mm : undefined;
   if(def.subPlatformOptions) rec.subPlatform = grab('f-subplatform');
+  if(!def.tipOnly) applyTripChoiceOnSave(rec);
+  pendingIncomeTripId = null;
   if(!existing) state.records.push(rec);
   save(); closeModal(); renderAll();
 }
@@ -1968,6 +2172,10 @@ function openSettingsModal(){
     [0,1,2,3,4,5,6,7,8].map(function(hh){ return '<option value="'+hh+'"'+(hh===cutoffNow?' selected':'')+'>'+(hh===0?'午夜 00:00(不跨夜)':('凌晨 '+pad(hh)+':00'))+'</option>'; }).join('')+
     '</select></div>';
   h += '<div class="form-row" style="margin-top:6px"><label>Google Sheet 同步網址</label><input id="f-sync-url" type="text" placeholder="https://script.google.com/macros/s/.../exec" value="'+esc(state.syncUrl||'')+'"></div>';
+  h += '<div class="form-row"><label>雲端密碼(要跟 Apps Script 指令碼屬性 TAXI_KEY 一樣)</label><input id="f-cloud-key" type="password" autocomplete="off" placeholder="尚未設定" value="'+esc(getCloudKey())+'">'+
+    '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);margin-top:6px;font-weight:400"><input type="checkbox" id="f-cloud-key-show" style="width:16px;height:16px">顯示密碼</label>'+
+    '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px"><span id="cloudAuthLine" style="font-size:12px;color:var(--text-muted)">'+cloudStatusText()+'</span><button class="btn btn-ghost" style="flex:none;width:auto;padding:7px 12px;font-size:12px" data-act="test-cloud">測試雲端連線</button></div>'+
+    '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5">密碼只存在這支手機,不會寫進網頁原始碼,也不會放進雲端備份。換手機時要重新輸入。</div></div>';
 
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-settings">儲存設定</button></div>';
   h += '<div style="height:10px"></div>';
@@ -2049,6 +2257,7 @@ function openCloudRestoreModal(){
   openModal(h);
   cloudGet({action:'list'}).then(function(res){
     var el = document.getElementById('restoreList'); if(!el) return;
+    if(res && res.error==='unauthorized'){ el.textContent = '雲端密碼不對,請到設定確認「雲端密碼」跟 Apps Script 的 TAXI_KEY 一樣。'; return; }
     if(!res || !res.ok || !res.versions){ el.textContent = '讀取失敗:Apps Script 可能還是舊版,請先更新並重新部署。'; return; }
     if(!res.versions.length){ el.textContent = '雲端還沒有任何備份。'; return; }
     lastCloudVersions = res.versions;
@@ -2176,6 +2385,9 @@ function saveSettings(){
   state.dayCutoffHour = +document.getElementById('f-day-cutoff').value;
   var prevSyncUrl = state.syncUrl;
   state.syncUrl = document.getElementById('f-sync-url').value.trim();
+  var keyBefore = getCloudKey();
+  setCloudKey(document.getElementById('f-cloud-key').value.trim());
+  if(getCloudKey()!==keyBefore || state.syncUrl!==prevSyncUrl){ state.lastCloudPushOk = 0; setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(); }); }, 300); }
   save(); closeModal(); renderAll();
   if(state.syncUrl && state.syncUrl!==prevSyncUrl && !hasMeaningfulData()){
     if(confirm('這個瀏覽器目前沒有任何記帳資料。要從雲端還原之前的資料嗎?')) openCloudRestoreModal();
@@ -2303,6 +2515,46 @@ document.addEventListener('click', function(e){
     if(statusEl) statusEl.textContent = '已送出全部資料('+state.records.length+' 筆收入、'+state.expenses.length+' 筆支出),約 10 秒後可按「從雲端還原」查看最新備份時間確認。';
   }
   else if(cmd==='open-restore'){ openCloudRestoreModal(); }
+  else if(cmd==='test-cloud'){
+    var tcLine = document.getElementById('cloudAuthLine');
+    var urlEl = document.getElementById('f-sync-url'), keyEl = document.getElementById('f-cloud-key');
+    if(urlEl && urlEl.value.trim()) state.syncUrl = urlEl.value.trim();
+    if(keyEl) setCloudKey(keyEl.value.trim());
+    if(tcLine) tcLine.textContent = '檢查中…';
+    cloudAuthCheck(function(){ var l=document.getElementById('cloudAuthLine'); if(l) l.textContent = cloudStatusText(); });
+  }
+  else if(cmd==='trip-start'){ tripStart(); }
+  else if(cmd==='trip-end'){ tripEnd(); }
+  else if(cmd==='trip-cancel'){ if(confirm('取消這趟上車紀錄?')){ state.activeTrip=null; save(); renderAll(); } }
+  else if(cmd==='open-trip-link'){ openTripLinkModal(arg); }
+  else if(cmd==='trip-new-income'){
+    var tni = arg.split(':');
+    pendingIncomeTripId = tni[0];
+    openIncomeModal(tni[1]);
+  }
+  else if(cmd==='trip-attach'){
+    var tat = arg.split(':');
+    var tTrip = findPendingTrip(tat[0]);
+    var tRec = state.records.filter(function(r){ return r.id===tat[1]; })[0];
+    if(tTrip && tRec){ attachTripToRecord(tTrip, tRec); save(); closeModal(); renderAll(); showToast('已連結到這筆收入'); }
+  }
+  else if(cmd==='trip-delete'){
+    if(confirm('刪除這趟上下車紀錄?(不會刪到任何收入)')){ state.pendingTrips=(state.pendingTrips||[]).filter(function(x){ return x.id!==arg; }); save(); closeModal(); renderAll(); }
+  }
+  else if(cmd==='trip-pick'){
+    var tpEl = document.getElementById('f-trip-link');
+    if(tpEl) tpEl.value = arg;
+    Array.prototype.forEach.call(t.parentNode.querySelectorAll('.chip-opt'), function(b){ b.classList.toggle('selected', b===t); });
+  }
+  else if(cmd==='unlink-trip'){
+    var ur = state.records.filter(function(r){ return r.id===arg; })[0];
+    if(ur && ur.tripId && confirm('取消這筆收入和行程的連結?行程會回到「已下車、還沒記車資」清單。')){
+      state.pendingTrips = state.pendingTrips||[];
+      state.pendingTrips.push({id:ur.tripId, pickup:ur.pickup, dropoff:ur.dropoff});
+      delete ur.tripId; delete ur.pickup; delete ur.dropoff;
+      save(); closeModal(); renderAll();
+    }
+  }
   else if(cmd==='open-payout'){ openPayoutModal(arg); }
   else if(cmd==='save-payout'){ savePayout(arg); }
   else if(cmd==='del-payout'){ state.payouts=(state.payouts||[]).filter(function(p){ return p.batch!==arg; }); save(); closeModal(); renderAll(); }
@@ -2363,6 +2615,7 @@ document.addEventListener('input', function(e){
   }
 });
 document.addEventListener('change', function(e){
+  if(e.target.id==='f-cloud-key-show'){ var ck=document.getElementById('f-cloud-key'); if(ck) ck.type = e.target.checked ? 'text' : 'password'; return; }
   if(e.target.matches('[data-km-input]')){
     dm(todayStr()).km = e.target.value===''? null : +e.target.value;
     save();
@@ -2390,7 +2643,7 @@ document.addEventListener('change', function(e){
 });
 
 renderAll();
-setTimeout(cloudSyncIfBehind, 2000);
+setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(); }); }, 1500);
 var _staleShiftDate = findStaleOpenShiftDate();
 if(_staleShiftDate){ openStaleShiftModal(_staleShiftDate); }
 else { var _missingKmDate = findMissingKmDate(); if(_missingKmDate) openMissingKmModal(_missingKmDate); }
