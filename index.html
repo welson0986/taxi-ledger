@@ -282,7 +282,7 @@ body{
 <div id="modalRoot"></div>
 
 <script>
-(function(){
+function __taxiMain(){
 'use strict';
 
 var STORAGE_KEY = 'taxi_ledger_v2';
@@ -451,23 +451,97 @@ function defaultState(){
     pendingTrips:[]
   };
 }
+var IDB_MIGRATED_FLAG = 'taxi_ledger_idb';
+// After moving to IndexedDB, localStorage keeps a frozen copy from the move; reading it alone would show stale data
+var storageStale = false;
 function load(){
   try{
-    var raw = localStorage.getItem(STORAGE_KEY);
+    var raw = null;
+    if(__BOOT.state!=null) raw = __BOOT.state;
+    else {
+      raw = localStorage.getItem(STORAGE_KEY);
+      try{ if(raw && localStorage.getItem(IDB_MIGRATED_FLAG)) storageStale = true; }catch(e){}
+    }
     if(!raw) return defaultState();
-    var s = JSON.parse(raw);
+    var s = unpackState(JSON.parse(raw));
     var d = defaultState();
     for(var k in d){ if(!(k in s)) s[k]=d[k]; }
     return s;
   }catch(e){ return defaultState(); }
 }
 var FEE_DEFAULTS = {tdc:15,yoxiCash:10,yoxiCreditExtra:2,linego:19.5,metroFlat:25,metroCredit:3,metroEnterprise:6,uber:25,boltFlat:20,boltPct:10,boltThreshold:15,boltThresholdEnabled:true};
+// Each record keeps the fee rules in force when it was entered. Identical rule sets are written once
+// in feeTable and records point at them with feesRef; in memory every record still has r.fees.
+function packState(st){
+  var table = [], idx = {};
+  var recs = (st.records||[]).map(function(r){
+    if(!r.fees) return r;
+    var k = JSON.stringify(r.fees);
+    if(!(k in idx)){ idx[k] = table.length; table.push(r.fees); }
+    var c = {}; for(var f in r){ if(f!=='fees') c[f] = r[f]; }
+    c.feesRef = idx[k];
+    return c;
+  });
+  var out = {}; for(var k2 in st){ out[k2] = st[k2]; }
+  out.records = recs; out.feeTable = table;
+  return JSON.stringify(out);
+}
+function unpackState(s){
+  if(s && Array.isArray(s.feeTable) && Array.isArray(s.records)){
+    var objs = s.feeTable;
+    s.records.forEach(function(r){ if(r.feesRef!=null){ r.fees = objs[r.feesRef]; delete r.feesRef; } });
+  }
+  if(s) delete s.feeTable;
+  return s;
+}
 var state = load();
-if(stampMissingFeeSnapshots()){ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){} }
+var saveFailed = false, saveFailAlerted = false;
+if(storageStale || __BOOT.idbError && (function(){ try{ return !!localStorage.getItem(IDB_MIGRATED_FLAG); }catch(e){ return false; } })()){
+  // never push a stale copy over the cloud
+  storageStale = true;
+}
+function onSaveOk(){ if(saveFailed){ saveFailed = false; saveFailAlerted = false; if(typeof renderAll==='function') renderAll(); } }
+function onSaveFail(){
+  var wasOk = !saveFailed;
+  saveFailed = true;
+  if(!saveFailAlerted){
+    saveFailAlerted = true;
+    setTimeout(function(){ alert('⚠️ 這筆資料沒有存進手機!\n\n請先不要關閉記帳本,馬上按記帳頁上方紅框裡的「立即存成備份檔」,先把資料存下來。'); }, 50);
+  }
+  if(wasOk && typeof renderAll==='function') setTimeout(renderAll, 0);
+}
+function writeStore(){
+  if(storageStale) return;
+  var str;
+  try{ str = packState(state); }catch(e){ onSaveFail(); return; }
+  if(__BOOT.idb){
+    try{
+      var tx = __BOOT.idb.transaction('kv','readwrite');
+      tx.objectStore('kv').put(str, 'state');
+      tx.oncomplete = function(){
+        onSaveOk();
+        try{ if(!localStorage.getItem(IDB_MIGRATED_FLAG)) localStorage.setItem(IDB_MIGRATED_FLAG, '1'); }catch(e){}
+      };
+      tx.onerror = tx.onabort = function(){ onSaveFail(); };
+    }catch(e){ onSaveFail(); }
+    return;
+  }
+  try{ localStorage.setItem(STORAGE_KEY, str); onSaveOk(); }catch(e){ onSaveFail(); }
+}
+// first start on this version: copy the old localStorage data into IndexedDB
+if(__BOOT.idb && __BOOT.state==null && !storageStale){ writeStore(); }
+if(stampMissingFeeSnapshots()) writeStore();
+try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){}
 function save(){
   state.lastChangeAt = Date.now();
-  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+  writeStore();
   scheduleCloudSync();
+}
+function dataSizeChars(){ try{ return packState(state).length; }catch(e){ return 0; } }
+function saveFailBannerHtml(){
+  if(storageStale) return '<div class="card" style="border-color:var(--expense);background:var(--expense-soft);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 這次沒有讀到最新的資料</b><br>手機的資料庫暫時打不開,畫面上可能是舊資料。<b>請先不要記帳</b>,把記帳本完全關掉(從多工畫面滑掉)再重新打開。這段期間不會同步到雲端,雲端資料是安全的。重開後還是這樣的話,請到 ⚙️ 設定用「從雲端還原」或「匯入還原」拿回資料。</div>';
+  if(!saveFailed) return '';
+  return '<div class="card" style="border-color:var(--expense);background:var(--expense-soft);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 最新的資料沒有存進手機</b><br>手機存放空間可能滿了。請先不要關閉記帳本,按下面按鈕先把資料存成檔案。'+(state.syncUrl?'雲端同步仍會繼續送出。':'')+'<div style="margin-top:8px"><button class="btn btn-primary" data-act="export-file">立即存成備份檔</button></div></div>';
 }
 function dm(dateStr){
   var m = state.dailyMeta[dateStr];
@@ -685,8 +759,8 @@ function buildCloudSnapshot(){
   });
   var daily = Object.keys(state.dailyMeta).sort().map(function(d){
     var m = state.dailyMeta[d];
-    return [d, m.km!=null?m.km:'', +((m.workedMs||0)/3600000).toFixed(2), +((m.breakMs||0)/3600000).toFixed(2)];
-  }).filter(function(row){ return row[1]!=='' || row[2]>0 || row[3]>0; });
+    return [d, m.km!=null?m.km:'', +((m.workedMs||0)/3600000).toFixed(2), +((m.breakMs||0)/3600000).toFixed(2), m.toilet||0];
+  }).filter(function(row){ return row[1]!=='' || row[2]>0 || row[3]>0 || row[4]>0; });
   var fixed = [];
   var first = dataFirstDate();
   if(state.fixedCosts.length && first){
@@ -700,7 +774,7 @@ function buildCloudSnapshot(){
     kind:'snapshot', income:income, expense:expense, daily:daily, fixed:fixed,
     incomeExtraHeader:TRIP_SHEET_HEADER, incomeExtra:recs.map(tripSheetCols),
     incomeCount:state.records.length, expenseCount:state.expenses.length,
-    state: JSON.stringify(state)
+    state: packState(state)
   };
 }
 function hasMeaningfulData(){
@@ -718,7 +792,7 @@ function cloudAuthCheck(after){
     else if(res && res.error==='unauthorized') cloudAuthStatus = 'bad';
     else if(res && res.ok) cloudAuthStatus = 'open';
     else cloudAuthStatus = 'unreachable';
-    if(cloudAuthStatus==='bad'){ state.lastCloudPushOk = 0; try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){} }
+    if(cloudAuthStatus==='bad'){ state.lastCloudPushOk = 0; writeStore(); }
     if(prev==='bad' && cloudAuthStatus==='ok'){ state.lastCloudPushOk = 0; cloudSyncIfBehind(); }
     if(currentTab==='entry' && !document.getElementById('modalBody')) renderAll();
     if(after) after();
@@ -734,7 +808,7 @@ function cloudStatusText(){
   }[cloudAuthStatus] || '';
 }
 function pushCloudSnapshot(){
-  if(!state.syncUrl || cloudSyncSuspended || !hasMeaningfulData()) return false;
+  if(!state.syncUrl || cloudSyncSuspended || storageStale || !hasMeaningfulData()) return false;
   try{
     var snap = buildCloudSnapshot();
     snap.key = getCloudKey();
@@ -745,7 +819,7 @@ function pushCloudSnapshot(){
     }).then(function(){
       if(cloudAuthStatus==='bad') return;
       state.lastCloudPushOk = Date.now();
-      try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+      writeStore();
     }).catch(function(){});
     return true;
   }catch(e){ return false; }
@@ -753,7 +827,7 @@ function pushCloudSnapshot(){
 function scheduleCloudSync(){
   if(!state.syncUrl) return;
   if(cloudSyncTimer) clearTimeout(cloudSyncTimer);
-  cloudSyncTimer = setTimeout(function(){ cloudSyncTimer=null; pushCloudSnapshot(); }, 3000);
+  cloudSyncTimer = setTimeout(function(){ cloudSyncTimer=null; pushCloudSnapshot(); }, 30000);
 }
 function cloudSyncIfBehind(){
   if(!state.syncUrl || !hasMeaningfulData()) return;
@@ -867,7 +941,7 @@ function totalBreakHoursInRange(from,to){
   });
   return t;
 }
-function workingDaysInRange(from,to){
+function workingDayListInRange(from,to){
   var days = {};
   state.records.forEach(function(r){ if(inRange(r.date,from,to)) days[r.date]=true; });
   Object.keys(state.dailyMeta).forEach(function(d){
@@ -876,7 +950,21 @@ function workingDaysInRange(from,to){
       if((m.workedMs && m.workedMs>0) || m.activeShiftStart) days[d]=true;
     }
   });
-  return Object.keys(days).length;
+  return Object.keys(days).sort();
+}
+function workingDaysInRange(from,to){ return workingDayListInRange(from,to).length; }
+// Only working days on/after the first day the counter was used count, so days before the feature existed don't read as "0 次"
+function toiletStatsInRange(from,to){
+  var tracked = Object.keys(state.dailyMeta).filter(function(d){ return state.dailyMeta[d].toilet!=null; }).sort();
+  var since = tracked[0] || null;
+  var out = {since:since, days:0, total:0, zeroDays:0, hours:0};
+  if(!since) return out;
+  workingDayListInRange(since>from?since:from, to).forEach(function(d){
+    var c = (state.dailyMeta[d] && state.dailyMeta[d].toilet) || 0;
+    out.days++; out.total += c; if(!c) out.zeroDays++;
+    out.hours += totalHoursInRange(d,d) + totalBreakHoursInRange(d,d);
+  });
+  return out;
 }
 function fuelStatsInRange(from,to){
   var liters=0, cost=0;
@@ -936,12 +1024,18 @@ function monthRange(m){
 var WEEKDAY_NAMES = ['一','二','三','四','五','六','日'];
 var PAYOUT_DEFAULTS = {
   uber:{collect:'platform', schedule:'weekly', weekday:3, days:2, cashFeeFromPayout:true},
-  bolt:{collect:'platform', schedule:'unset', weekday:3, days:2, cashFeeFromPayout:true},
+  bolt:{collect:'platform', schedule:'weekly', weekday:4, days:2, cashFeeFromPayout:true},
   tdc:{collect:'platform', schedule:'tplus', weekday:3, days:2, cashFeeFromPayout:true},
   metro:{collect:'platform', schedule:'unset', weekday:3, days:2, cashFeeFromPayout:true},
   yoxi:{collect:'platform', schedule:'unset', weekday:3, days:2, cashFeeFromPayout:true},
   linego:{collect:'platform', schedule:'unset', weekday:3, days:2, cashFeeFromPayout:true}
 };
+// one-time: BOLT pays weekly on Thursday; earlier saves of 撥款設定 stored it as unset
+if(!state.boltPayoutThuSet){
+  var boltOv = (state.payoutSettings||{}).bolt;
+  if(boltOv && boltOv.schedule==='unset'){ boltOv.schedule = 'weekly'; boltOv.weekday = 4; }
+  state.boltPayoutThuSet = true;
+}
 function payoutCfg(key){
   var base = PAYOUT_DEFAULTS[key] || {collect:'cash', schedule:'none', weekday:3, days:2, cashFeeFromPayout:true};
   var ov = (state.payoutSettings||{})[key] || {};
@@ -1182,32 +1276,43 @@ function geoCapture(cb){
     else cb(null, '這次抓不到位置(可能訊號不好),這趟只記時間,記帳照常。');
   }, {enableHighAccuracy:true, timeout:10000, maximumAge:15000});
 }
-function applyTripLoc(tripId, which, loc){
+function applyTripLoc(tripId, which, loc, ts){
   if(!loc) return;
-  function setOn(pt){ if(pt){ pt.lat=loc.lat; pt.lng=loc.lng; pt.acc=loc.acc; } }
+  // ts guards against a late fix landing on a dropoff that was undone and pressed again
+  function setOn(pt){ if(pt && (ts==null || pt.ts===ts)){ pt.lat=loc.lat; pt.lng=loc.lng; pt.acc=loc.acc; } }
   if(state.activeTrip && state.activeTrip.id===tripId) setOn(state.activeTrip[which]);
   (state.pendingTrips||[]).forEach(function(t){ if(t.id===tripId) setOn(t[which]); });
   state.records.forEach(function(r){ if(r.tripId===tripId) setOn(r[which]); });
   save();
 }
-function captureFor(tripId, which){
+function captureFor(tripId, which, ts, note){
   state.geoAsked = true;
   geoCapture(function(loc, msg){
     if(loc){
-      applyTripLoc(tripId, which, loc);
-      showToast((which==='pickup'?'上車':'下車')+'位置已記錄(誤差約 '+loc.acc+' 公尺)');
+      applyTripLoc(tripId, which, loc, ts);
+      showToast((which==='pickup'?'上車':'下車')+'位置已記錄(誤差約 '+loc.acc+' 公尺)'+(note||''), note?5000:3500);
     } else {
-      showToast(msg, 7000);
+      showToast(msg+(note||''), 7000);
     }
   });
 }
 function tripStart(){
   if(state.activeTrip) return;
-  var t = {id:uid(), pickup:{ts:Date.now()}};
+  var now = Date.now(), note = '';
+  // a fare means the shift is running: clock in or end the break so hours aren't lost
+  var sm = dm(todayStr());
+  if(!sm.activeShiftStart && !findStaleOpenShiftDate()){
+    sm.activeShiftStart = now; sm.segmentStart = now; sm.onBreak = false;
+    note = '(忘了打上班卡,已自動幫你打卡)';
+  } else if(sm.onBreak && sm.breakStart){
+    sm.breakMs += (now-sm.breakStart); sm.breakStart = null; sm.onBreak = false; sm.segmentStart = now;
+    note = '(休息已自動結束)';
+  }
+  var t = {id:uid(), pickup:{ts:now}};
   state.activeTrip = t;
   save(); renderAll();
-  showToast('已記錄上車時間,定位中…');
-  captureFor(t.id, 'pickup');
+  showToast('已記錄上車時間,定位中…'+note, note?5000:3500);
+  captureFor(t.id, 'pickup', null, note);
 }
 function tripEnd(){
   var t = state.activeTrip; if(!t) return;
@@ -1216,8 +1321,17 @@ function tripEnd(){
   state.pendingTrips = state.pendingTrips || [];
   state.pendingTrips.push(t);
   save(); renderAll();
-  captureFor(t.id, 'dropoff');
+  captureFor(t.id, 'dropoff', t.dropoff.ts);
   openTripLinkModal(t.id);
+}
+function tripResume(tripId){
+  if(state.activeTrip){ alert('現在已經有一趟載客中,要先處理那一趟才能恢復。'); return; }
+  var t = findPendingTrip(tripId); if(!t) return;
+  delete t.dropoff;
+  state.pendingTrips = (state.pendingTrips||[]).filter(function(x){ return x.id!==t.id; });
+  state.activeTrip = t;
+  save(); closeModal(); renderAll();
+  showToast('已恢復成載客中,真正下車時再按「下車」', 4500);
 }
 function findPendingTrip(id){ return (state.pendingTrips||[]).filter(function(t){ return t.id===id; })[0]; }
 function attachTripToRecord(t, rec){
@@ -1267,6 +1381,7 @@ function openTripLinkModal(tripId){
     }).join('')+'</div>';
   }
   h += '<div class="btn-row" style="gap:8px"><button class="btn btn-danger" style="flex:1" data-act="trip-delete:'+t.id+'">刪除這趟</button><button class="btn btn-ghost" style="flex:1" data-act="close-modal">稍後再填</button></div>';
+  if(!state.activeTrip) h += '<div style="text-align:center;margin-top:12px"><a data-act="trip-resume:'+t.id+'" style="font-size:12.5px;color:var(--text-muted);cursor:pointer;text-decoration:underline">下車按錯了?恢復成載客中</a></div>';
   openModal(h);
 }
 function tripChoiceHtml(existing){
@@ -1363,7 +1478,7 @@ function renderEntry(){
   var platformTotals = {};
   todayRecs.forEach(function(r){ platformTotals[r.platform]=(platformTotals[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
 
-  var h = tabWarningHtml();
+  var h = saveFailBannerHtml() + tabWarningHtml() + backupReminderHtml();
   if(state.syncUrl && cloudAuthStatus==='bad'){
     h += '<div class="card" style="border-color:var(--expense);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 雲端密碼不對,資料沒有同步到雲端</b><br>手機裡的帳都還在。請到右上角設定確認「雲端密碼」,改好後會自動補送。</div>';
   }
@@ -1377,6 +1492,7 @@ function renderEntry(){
   h += '<div class="stat-tile"><div class="lbl">今日支出</div><div class="val expense num">'+fmtMoney(exp)+'</div></div>';
   h += '</div></div>';
   h += tripCardHtml();
+  h += trafficCardHtml();
   var todayFlow = cashSummary(todayRecs);
   if(todayRecs.length){
     h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">'+
@@ -1436,6 +1552,11 @@ function renderEntry(){
   h += '<div class="daily-row"><span class="l">今日里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(meta.km!=null?meta.km:'')+'" placeholder="0.0" data-km-input></div>';
   h += '<div class="daily-row"><span class="l">工時(已扣休息)</span><div style="display:flex;align-items:center;gap:10px"><span class="hours-badge">'+esc(hoursLabel)+'</span>'+shiftBtn+'</div></div>';
   h += breakRow;
+  var stepBtn = 'width:38px;height:38px;border-radius:50%;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-size:20px;font-weight:700;line-height:1;cursor:pointer;font-family:inherit;padding:0';
+  h += '<div class="daily-row"><span class="l">🚻 上廁所</span><div style="display:flex;align-items:center;gap:12px">'+
+       '<button style="'+stepBtn+'" data-act="toilet:-1" aria-label="減一次">−</button>'+
+       '<span class="num" style="min-width:44px;text-align:center;font-size:17px;font-weight:800">'+(meta.toilet||0)+' 次</span>'+
+       '<button style="'+stepBtn+'" data-act="toilet:1" aria-label="加一次">+</button></div></div>';
   h += '</div></div>';
 
   if(todayRecs.length || todayExps.length){
@@ -1539,7 +1660,8 @@ function renderHistory(){
     '<div class="daily-row"><span class="l">'+selectedDay+' 里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(histMeta.km!=null?histMeta.km:'')+'" placeholder="0.0" data-km-input-date="'+selectedDay+'"></div>'+
     '<div class="daily-row"><span class="l">'+selectedDay+' 工時(小時)</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.workedMs||0)/3600000).toFixed(2)+'" placeholder="0.00" data-hours-input-date="'+selectedDay+'"></div>'+
     '<div class="daily-row"><span class="l">'+selectedDay+' 休息時間(小時)</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.breakMs||0)/3600000).toFixed(2)+'" placeholder="0.00" data-break-input-date="'+selectedDay+'"></div>'+
-    '<div style="font-size:11px;color:var(--text-muted);line-height:1.5">補記或修改過往的工時/休息時間,直接改數字就會覆蓋掉原本打卡累積的時數。</div>'+
+    '<div class="daily-row"><span class="l">'+selectedDay+' 🚻 上廁所(次)</span><input class="km-input" type="number" step="1" min="0" inputmode="numeric" value="'+(histMeta.toilet!=null?histMeta.toilet:'')+'" placeholder="0" data-toilet-input-date="'+selectedDay+'"></div>'+
+    '<div style="font-size:11px;color:var(--text-muted);line-height:1.5">補記或修改過往的工時/休息時間/上廁所次數,直接改數字就會覆蓋掉原本的紀錄。</div>'+
     '</div></div>';
 
   h += '<div class="section"><div class="section-title">'+selectedDay+' 明細</div><div class="card">'+renderDayList(selectedDay)+'</div></div>';
@@ -1859,6 +1981,21 @@ function renderAnalytics(){
   h += '<div class="stat-tile"><div class="lbl">總休息時間</div><div class="val num">'+fmtNum(breakHours,2)+' 小時</div></div>';
   h += '</div></div></div>';
 
+  var ts = toiletStatsInRange(range.from, range.to);
+  h += '<div class="section"><div class="section-title">🚻 健康:上廁所</div><div class="card">';
+  if(!ts.days){
+    h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">'+(ts.since?'這段期間沒有營業日的上廁所紀錄。':'還沒有紀錄。在記帳頁「今日行車」按 + 記錄上廁所次數,這裡就會開始統計。')+'</div>';
+  } else {
+    h += '<div class="summary-row" style="grid-template-columns:1fr 1fr">';
+    h += '<div class="stat-tile"><div class="lbl">總上廁所次數</div><div class="val num">'+ts.total+' 次</div></div>';
+    h += '<div class="stat-tile"><div class="lbl">平均每日上廁所</div><div class="val num">'+fmtNum(ts.total/ts.days,2)+' 次</div></div>';
+    h += '<div class="stat-tile"><div class="lbl">平均多久上一次</div><div class="val num">'+(ts.total>0?'每 '+fmtNum(ts.hours/ts.total,2)+' 小時':'—')+'</div></div>';
+    h += '<div class="stat-tile"><div class="lbl">整天沒上廁所</div><div class="val num'+(ts.zeroDays?' expense':'')+'">'+ts.zeroDays+' 天</div></div>';
+    h += '</div>';
+    h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">從 '+ts.since+' 開始記錄,只算這之後的營業日(共 '+ts.days+' 天)。「多久上一次」用工時加休息時間計算。</div>';
+  }
+  h += '</div></div>';
+
   if(platformList.length){
     h += '<div class="section"><div class="section-title">平台佔比(實收)</div><div class="card"><div class="donut-legend">';
     platformList.forEach(function(p,i){
@@ -1867,6 +2004,7 @@ function renderAnalytics(){
     h += '</div></div></div>';
   }
   h += platformEfficiencyHtml(recs);
+  h += tripInsightsHtml(range);
 
   if(sub.length){
     lastSubBreakdown = sub;
@@ -1888,6 +2026,283 @@ function renderAnalytics(){
   }
 
   return h;
+}
+
+/* ---------- trip-based analytics: occupancy, empty gaps, ride length, pickup hotspots ---------- */
+var EMPTY_GAP_CAP_MIN = 120; // gaps longer than this are treated as breaks, not waiting for a fare
+function tripMin(p, d){ return (d.ts-p.ts)/60000; }
+function straightKm(p, d){
+  if(p.lat==null || p.lng==null || d.lat==null || d.lng==null) return null;
+  var R = 6371, rad = Math.PI/180;
+  var dLat = (d.lat-p.lat)*rad, dLng = (d.lng-p.lng)*rad;
+  var a = Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(p.lat*rad)*Math.cos(d.lat*rad)*Math.sin(dLng/2)*Math.sin(dLng/2);
+  return 2*R*Math.asin(Math.sqrt(a));
+}
+function shareBarHtml(title, counts, labels, colors){
+  var tot = counts.reduce(function(a,b){ return a+b; },0); if(!tot) return '';
+  var h = '<div style="font-size:12.5px;font-weight:700;margin:14px 0 6px">'+title+'</div>';
+  h += '<div style="display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--surface-sunken)">'+counts.map(function(c,i){ return c?'<div style="width:'+(c/tot*100).toFixed(1)+'%;background:'+colors[i]+'"></div>':''; }).join('')+'</div>';
+  h += '<div style="display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap;font-size:11.5px;color:var(--text-muted);margin-top:6px">'+counts.map(function(c,i){ return '<span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:'+colors[i]+';margin-right:4px"></span>'+labels[i]+' '+Math.round(c/tot*100)+'%('+c+')</span>'; }).join('')+'</div>';
+  return h;
+}
+function timedTripsByDay(from, to){
+  var days = {};
+  function add(o){
+    if(!o.pickup || !o.dropoff || !o.pickup.ts || !o.dropoff.ts) return;
+    var d = businessDayOf(o.pickup.ts); if(!inRange(d,from,to)) return;
+    (days[d] = days[d] || []).push(o);
+  }
+  state.records.forEach(function(r){ if(r.tripId) add({rec:r, pickup:r.pickup, dropoff:r.dropoff}); });
+  (state.pendingTrips||[]).forEach(function(t){ add({rec:null, pickup:t.pickup, dropoff:t.dropoff}); });
+  Object.keys(days).forEach(function(d){ days[d].sort(function(a,b){ return a.pickup.ts-b.pickup.ts; }); });
+  return days;
+}
+function tripInsightsHtml(range){
+  var days = timedTripsByDay(range.from, range.to);
+  var dayKeys = Object.keys(days).sort();
+  if(!dayKeys.length){
+    return '<div class="section"><div class="section-title">🚕 載客效率(上下車紀錄)</div><div class="card"><div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">這段期間還沒有上下車紀錄。載客時按記帳頁的「上車」「下車」,這裡就會算出載客率、空車時間、搭車長短和上車熱區。</div></div></div>';
+  }
+  var n=0, occMin=0, gaps=[], plat={}, buckets=[0,0,0], kmBuckets=[0,0,0], kmSum=0, kmN=0;
+  var fullOcc=0, fullWork=0, fullDays=0;
+  dayKeys.forEach(function(d){
+    var list = days[d], dayOcc = 0;
+    list.forEach(function(o,i){
+      var m = tripMin(o.pickup,o.dropoff); if(m<0) return;
+      n++; occMin += m; dayOcc += m;
+      var rm = Math.round(m); buckets[rm<=15?0:(rm<=34?1:2)]++;
+      var km = straightKm(o.pickup, o.dropoff);
+      if(km!=null){ kmBuckets[km<3?0:(km<12?1:2)]++; kmSum += km; kmN++; }
+      if(i>0){
+        var g = (o.pickup.ts - list[i-1].dropoff.ts)/60000;
+        if(g>=0 && g<=EMPTY_GAP_CAP_MIN){
+          gaps.push(g);
+          if(o.rec){
+            var k = o.rec.platform;
+            if(!plat[k]) plat[k] = {label:platformDef(k).label, sum:0, cnt:0};
+            plat[k].sum += g; plat[k].cnt++;
+          }
+        }
+      }
+    });
+    // occupancy only on days where every fare was recorded with 上車/下車, otherwise it reads too low
+    var dayRecs = state.records.filter(function(r){ return r.date===d && !platformDef(r.platform).tipOnly; });
+    var allTimed = dayRecs.length>0 && dayRecs.every(function(r){ return r.tripId && r.pickup && r.dropoff; });
+    var wh = totalHoursInRange(d,d);
+    if(allTimed && wh>0){ fullOcc += dayOcc; fullWork += wh*60; fullDays++; }
+  });
+  var avgGap = gaps.length ? gaps.reduce(function(a,b){return a+b;},0)/gaps.length : null;
+  var h = '<div class="section"><div class="section-title">🚕 載客效率(上下車紀錄)</div><div class="card">';
+  h += '<div class="summary-row" style="grid-template-columns:1fr 1fr">';
+  h += '<div class="stat-tile"><div class="lbl">載客率</div><div class="val num">'+(fullWork>0?fmtNum(fullOcc/fullWork*100,1)+'%':'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">平均空車等待</div><div class="val num">'+(avgGap!=null?fmtNum(avgGap,1)+' 分':'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">平均每趟載客</div><div class="val num">'+fmtNum(occMin/n,1)+' 分</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">有紀錄的趟數</div><div class="val num">'+n+' 趟</div></div>';
+  h += '</div>';
+  var bc = ['var(--accent)','var(--income)','#4472C4'];
+  h += shareBarHtml('搭車長短比例(依時間)', buckets, ['短程 15 分內','中程 16–34 分','長程 35 分以上'], bc);
+  h += shareBarHtml('搭車長短比例(依距離)', kmBuckets, ['短程 3 公里內','中程 3–12 公里','長程 12 公里以上'], bc);
+  if(kmN) h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px">平均每趟直線距離 '+fmtNum(kmSum/kmN,1)+' 公里(實際路程大約再多 2~4 成)</div>';
+  var pl = Object.keys(plat).map(function(k){ var p=plat[k]; p.avg=p.sum/p.cnt; return p; }).sort(function(a,b){ return a.avg-b.avg; });
+  if(pl.length){
+    h += '<div style="font-size:12.5px;font-weight:700;margin:14px 0 2px">各平台接到單前的空車時間(越短越好)</div>';
+    h += pl.map(function(p){ return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(p.label)+'</div><div class="li-sub">'+p.cnt+' 次</div></div><div class="li-amt num">'+fmtNum(p.avg,1)+' 分</div></div>'; }).join('');
+  }
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">載客率=載客時間÷工時,只算整天每趟都有按上下車的日子('+fullDays+' 天)。空車時間=上一趟下車到下一趟上車,超過 '+EMPTY_GAP_CAP_MIN+' 分鐘的視為休息不列入,每天第一趟也不算。距離是上下車兩點的直線距離,上下車都有抓到位置的趟次才算。</div>';
+  h += '</div></div>';
+  h += hotspotHtml(days, dayKeys);
+  return h;
+}
+function hotspotHtml(days, dayKeys){
+  var cells = {};
+  dayKeys.forEach(function(d){
+    days[d].forEach(function(o){
+      var p = o.pickup; if(p.lat==null || p.lng==null) return;
+      var key = (Math.round(p.lat*100)/100).toFixed(2)+','+(Math.round(p.lng*100)/100).toFixed(2);
+      var c = cells[key] || (cells[key] = {n:0, lat:0, lng:0, min:0, fareN:0, fare:0});
+      c.n++; c.lat += p.lat; c.lng += p.lng; c.min += tripMin(o.pickup,o.dropoff);
+      if(o.rec){ c.fareN++; c.fare += computeNetRevenue(o.rec)+(+o.rec.tip||0); }
+    });
+  });
+  var list = Object.keys(cells).map(function(k){ return cells[k]; }).sort(function(a,b){ return b.n-a.n; }).slice(0,6);
+  if(!list.length) return '';
+  var h = '<div class="section"><div class="section-title">📍 上車熱區(前 6 名)</div><div class="card">';
+  h += list.map(function(c,i){
+    var lat = (c.lat/c.n).toFixed(4), lng = (c.lng/c.n).toFixed(4);
+    return '<div class="list-item"><div class="li-body"><div class="li-title">熱區 '+(i+1)+' · '+c.n+' 趟</div><div class="li-sub">平均載客 '+fmtNum(c.min/c.n,1)+' 分'+(c.fareN?' · 平均實收 '+fmtMoney(c.fare/c.fareN):'')+'</div></div>'+
+      '<a class="li-amt" style="color:var(--accent);font-size:13px;text-decoration:none" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query='+lat+','+lng+'">看地圖 ›</a></div>';
+  }).join('');
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">以上車位置約 1 公里見方分區統計。點「看地圖」會用 Google 地圖打開那一區的中心點。</div>';
+  h += '</div></div>';
+  return h;
+}
+
+/* ---------- live traffic: open Google Maps with the traffic layer ---------- */
+var TRAFFIC_SPOTS_DEFAULT = [
+  {name:'大巨蛋', lat:25.0441, lng:121.5600},
+  {name:'信義區101', lat:25.0339, lng:121.5645},
+  {name:'台北車站', lat:25.0478, lng:121.5170},
+  {name:'西門町', lat:25.0422, lng:121.5079},
+  {name:'南京中山商圈', lat:25.0525, lng:121.5215}
+];
+function trafficSpots(){ return state.trafficSpots || TRAFFIC_SPOTS_DEFAULT.slice(); }
+function trafficUrl(lat, lng){
+  var u = 'https://www.google.com/maps/@?api=1&map_action=map&layer=traffic&zoom=14';
+  return (lat!=null && lng!=null) ? u+'&center='+lat+','+lng : u;
+}
+function trafficCardHtml(){
+  var h = '<div class="section"><div class="card" style="padding:12px 14px">';
+  h += '<button class="btn btn-ghost" style="width:100%;font-weight:700" data-act="traffic-here">🚦 看即時路況(我附近)</button>';
+  var spots = trafficSpots();
+  if(spots.length){
+    h += '<div class="chip-row" style="margin-top:10px">'+spots.map(function(s){
+      return '<a class="chip-opt" style="text-decoration:none" target="_blank" rel="noopener" href="'+trafficUrl(s.lat,s.lng)+'">'+esc(s.name)+'</a>';
+    }).join('')+'</div>';
+  }
+  h += '<div style="text-align:right;margin-top:8px"><a data-act="traffic-spots" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">編輯常用地點</a></div>';
+  h += '</div></div>';
+  return h;
+}
+function openTrafficHere(){
+  // open the window inside the tap so iOS doesn't block it, then point it at the map once GPS answers
+  var w = null;
+  try{ w = window.open('about:blank', '_blank'); }catch(e){}
+  geoCapture(function(loc){
+    var url = loc ? trafficUrl(loc.lat, loc.lng) : trafficUrl();
+    if(!loc) showToast('抓不到目前位置,先打開路況地圖,請自己滑到要看的地方。', 5000);
+    if(w && !w.closed) w.location.href = url;
+    else window.open(url, '_blank');
+  });
+}
+function parseLatLng(s){
+  var m = String(s||'').match(/(-?\d+(?:\.\d+)?)\s*[,，]\s*(-?\d+(?:\.\d+)?)/);
+  if(!m) return null;
+  var lat = +m[1], lng = +m[2];
+  if(Math.abs(lat)>90 || Math.abs(lng)>180) return null;
+  return {lat:+lat.toFixed(5), lng:+lng.toFixed(5)};
+}
+function openTrafficSpotsModal(){
+  var spots = trafficSpots();
+  var h = '<div class="modal-title">常用路況地點<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div class="card" style="margin-bottom:14px">';
+  h += spots.length ? spots.map(function(s,i){
+    return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(s.name)+'</div><div class="li-sub">'+s.lat+', '+s.lng+'</div></div>'+
+      '<div style="display:flex;gap:6px">'+(i>0?'<button class="btn btn-ghost" style="width:auto;padding:6px 10px" data-act="traffic-spot-up:'+i+'">↑</button>':'')+
+      '<button class="btn btn-ghost" style="width:auto;padding:6px 10px;color:var(--expense)" data-act="traffic-spot-del:'+i+'">刪除</button></div></div>';
+  }).join('') : '<div style="font-size:12.5px;color:var(--text-muted);padding:6px 0">目前沒有常用地點。</div>';
+  h += '</div>';
+  h += '<div class="section-title" style="margin-bottom:8px">新增地點</div>';
+  h += '<div class="form-row"><label>名稱</label><input id="f-spot-name" type="text" maxlength="12" placeholder="例如:林口長庚"></div>';
+  h += '<div class="form-row"><label>座標</label><input id="f-spot-ll" type="text" placeholder="例如:25.0613, 121.3680">'+
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:6px"><span style="font-size:11px;color:var(--text-muted);line-height:1.5">在 Google 地圖長按那個地點,最上方會出現座標,複製貼上即可。人在現場也可以直接按右邊。</span>'+
+    '<button class="btn btn-ghost" style="flex:none;width:auto;padding:7px 10px;font-size:12px" data-act="traffic-spot-here">用目前位置</button></div></div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="traffic-spot-add">新增</button></div>';
+  if(state.trafficSpots) h += '<div style="text-align:center;margin-top:12px"><a data-act="traffic-spot-reset" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">恢復預設地點</a></div>';
+  openModal(h);
+}
+
+/* ---------- file share/download + yearly report ---------- */
+function shareOrDownloadFile(filename, text, mime){
+  var blob = new Blob([text], {type:mime});
+  var file = null;
+  try{ file = new File([blob], filename, {type:mime}); }catch(e){}
+  if(file && navigator.canShare && navigator.canShare({files:[file]})){
+    return navigator.share({files:[file], title:filename}).then(function(){ return true; }, function(err){
+      if(err && err.name==='AbortError') return false;
+      downloadBlob(filename, blob);
+      return true;
+    });
+  }
+  downloadBlob(filename, blob);
+  return Promise.resolve(true);
+}
+/* ---------- backup reminder for people without cloud sync ---------- */
+var BACKUP_REMIND_DAYS = 7;
+function markExported(){ state.lastExportAt = Date.now(); save(); }
+function backupReminderDue(){
+  if(state.syncUrl || !hasMeaningfulData()) return false;
+  var now = Date.now();
+  if(state.backupSnoozeUntil && now < state.backupSnoozeUntil) return false;
+  var since = state.lastExportAt;
+  if(!since){
+    var first = dataFirstDate();
+    since = first ? new Date(first+'T00:00:00').getTime() : now;
+  }
+  return now - since >= BACKUP_REMIND_DAYS*86400000;
+}
+function backupReminderHtml(){
+  if(!backupReminderDue()) return '';
+  var days = state.lastExportAt ? Math.floor((Date.now()-state.lastExportAt)/86400000) : null;
+  return '<div class="card" style="border-color:var(--accent);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6">'+
+    '<b style="color:var(--accent)">💾 '+(days!=null?'已經 '+days+' 天沒有存備份檔了':'還沒有存過備份檔')+'</b><br>你的帳只存在這支手機,手機遺失或壞掉就拿不回來。按下面按鈕存到 LINE Keep、Google 雲端硬碟或 iCloud。'+
+    '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" style="flex:2" data-act="export-file">立即存成備份檔</button><button class="btn btn-ghost" style="flex:1" data-act="backup-snooze">明天再提醒</button></div></div>';
+}
+function downloadBlob(filename, blob){
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+}
+function csvCell(v){ v = (v==null?'':String(v)); return /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; }
+function yearReportData(year){
+  var rows = [];
+  for(var mo=1; mo<=12; mo++){
+    var from = year+'-'+pad(mo)+'-01', to = year+'-'+pad(mo)+'-'+pad(new Date(year,mo,0).getDate());
+    var recs = recordsInRange(from,to), exps = expensesInRange(from,to);
+    var g = sumIncome(recs), nt = sumNetIncome(recs);
+    var byCat = {}; CATS.forEach(function(c){ byCat[c.key]=0; });
+    exps.forEach(function(e){ byCat[e.category] = (byCat[e.category]||0) + (+e.amount||0); });
+    var fix = fixedTotalForRange(from,to);
+    rows.push({month:year+'-'+pad(mo), trips:recs.filter(function(r){ return !platformDef(r.platform).tipOnly; }).length,
+      gross:g.rev, tip:g.tip, fee:g.total-nt.total, net:nt.total, byCat:byCat, varExp:sumExpense(exps), fixed:fix,
+      profit:nt.total-sumExpense(exps)-fix, km:totalKmInRange(from,to), hours:totalHoursInRange(from,to), days:workingDaysInRange(from,to)});
+  }
+  var plat = {};
+  recordsInRange(year+'-01-01', year+'-12-31').forEach(function(r){
+    var k = r.platform, p = plat[k] || (plat[k] = {label:platformDef(k).label, trips:0, gross:0, fee:0, net:0});
+    if(!platformDef(k).tipOnly) p.trips++;
+    var gr = computeGrossRevenue(r)+(+r.tip||0), ne = computeNetRevenue(r)+(+r.tip||0);
+    p.gross += gr; p.net += ne; p.fee += gr-ne;
+  });
+  return {rows:rows, plat:Object.keys(plat).map(function(k){ return plat[k]; }).sort(function(a,b){ return b.net-a.net; })};
+}
+function yearReportCsv(year){
+  var d = yearReportData(year), r2 = function(x){ return Math.round(x); };
+  var head = ['月份','營業天數','趟數','車資','小費','平台手續費','實收'].concat(CATS.map(function(c){ return '支出-'+c.label; })).concat(['變動支出合計','固定成本攤提','淨利','里程km','工時(小時)']);
+  var lines = [head];
+  var tot = null;
+  d.rows.forEach(function(r){
+    var line = [r.month, r.days, r.trips, r2(r.gross), r2(r.tip), r2(r.fee), r2(r.net)].concat(CATS.map(function(c){ return r2(r.byCat[c.key]||0); })).concat([r2(r.varExp), r2(r.fixed), r2(r.profit), +r.km.toFixed(1), +r.hours.toFixed(2)]);
+    lines.push(line);
+    tot = tot ? tot.map(function(v,i){ return i===0?v:+(v+line[i]).toFixed(2); }) : ['全年合計'].concat(line.slice(1));
+  });
+  lines.push(tot);
+  lines.push([]);
+  lines.push(['平台','趟數','車資(含小費)','平台手續費','實收']);
+  d.plat.forEach(function(p){ lines.push([p.label, p.trips, r2(p.gross), r2(p.fee), r2(p.net)]); });
+  return '﻿'+lines.map(function(l){ return l.map(csvCell).join(','); }).join('\r\n');
+}
+function openYearReportModal(year){
+  var first = dataFirstDate(), cy = +todayStr().slice(0,4);
+  var fy = first ? +first.slice(0,4) : cy;
+  year = +year || cy;
+  var d = yearReportData(year);
+  var sum = function(f){ return d.rows.reduce(function(a,r){ return a+f(r); },0); };
+  var h = '<div class="modal-title">年度報表<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div class="chip-row" style="margin-bottom:12px">';
+  for(var y=cy; y>=fy; y--) h += '<button type="button" class="chip-opt'+(y===year?' selected':'')+'" data-act="year-report:'+y+'">'+y+' 年</button>';
+  h += '</div>';
+  h += '<div class="summary-row" style="grid-template-columns:1fr 1fr;margin-bottom:12px">'+
+    '<div class="stat-tile"><div class="lbl">全年實收</div><div class="val income num">'+fmtMoney(sum(function(r){return r.net;}))+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">全年平台手續費</div><div class="val expense num">'+fmtMoney(sum(function(r){return r.fee;}))+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">全年支出(含固定)</div><div class="val expense num">'+fmtMoney(sum(function(r){return r.varExp+r.fixed;}))+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">全年淨利</div><div class="val num">'+fmtMoney(sum(function(r){return r.profit;}))+'</div></div></div>';
+  h += '<div class="card" style="margin-bottom:12px">'+d.rows.filter(function(r){ return r.trips||r.varExp||r.days; }).map(function(r){
+    return '<div class="list-item"><div class="li-body"><div class="li-title">'+r.month+'</div><div class="li-sub">'+r.trips+' 趟 · 支出 '+fmtMoney(r.varExp+r.fixed)+'</div></div><div class="li-amt num">'+fmtMoney(r.profit)+'</div></div>';
+  }).join('')+'</div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="year-report-csv:'+year+'">下載 / 分享 Excel 表(CSV)</button></div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">表格有每個月的車資、手續費、實收、各類支出、固定成本、淨利、里程、工時,最後是各平台全年合計。可用 Excel、Numbers 或 Google 試算表打開。右邊數字是當月淨利。</div>';
+  openModal(h);
 }
 
 /* ---------- MODALS ---------- */
@@ -2184,12 +2599,20 @@ function openSettingsModal(){
   h += '<div id="syncStatus" style="font-size:12px;color:var(--text-muted);margin-top:8px;text-align:center"></div>';
   h += '<div style="height:14px"></div>';
 
+  var dsz = dataSizeChars(), dmb = dsz/1048576, bigStore = !!__BOOT.idb, dpct = bigStore ? 0 : Math.min(100, dsz/(2.5*1048576)*100);
+  h += '<div class="form-row" style="margin-top:6px"><label>資料用量</label>'+
+    '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px"><span>目前資料約 <b class="num">'+(dmb<0.1?fmtNum(dsz/1024,0)+' KB':fmtNum(dmb,2)+' MB')+'</b>(收入 '+state.records.length+' 筆、支出 '+state.expenses.length+' 筆)</span>'+(bigStore?'':'<span class="num" style="color:'+(dpct>=80?'var(--expense)':'var(--text-muted)')+'">'+Math.round(dpct)+'%</span>')+'</div>'+
+    (bigStore?'':'<div class="progress-bar"><div class="progress-fill" style="width:'+dpct.toFixed(1)+'%'+(dpct>=80?';background:var(--expense)':'')+'"></div></div>')+
+    '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">'+(bigStore?'存在手機的大容量資料庫(IndexedDB),不受 5 MB 限制。':'這支手機的瀏覽器不支援大容量資料庫,百分比以保守估計的上限 2.5 MB 計算。')+(saveFailed?'<b style="color:var(--expense)">最近一次存檔失敗,請立刻匯出備份檔。</b>':(dpct>=60?'<b style="color:var(--expense)">已經用掉不少,要盡快換成更大的存放空間。</b>':''))+'</div></div>';
   h += '<div class="form-row" style="margin-top:6px"><label>資料備份與還原(兩台裝置或兩個瀏覽器資料對不起來時使用)</label></div>';
   h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="open-export">匯出備份</button><button class="btn btn-ghost" style="flex:1" data-act="open-import">匯入還原</button></div>';
   h += '<div style="height:14px"></div>';
+  h += '<div class="form-row" style="margin-top:6px"><label>報表</label></div>';
+  h += '<div class="btn-row"><button class="btn btn-ghost" data-act="year-report">📊 年度報表(可匯出 Excel)</button></div>';
+  h += '<div style="height:14px"></div>';
 
   h += '<div class="btn-row"><button class="btn btn-danger" data-act="reset-all">清除所有資料</button></div>';
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.6">資料儲存在這支手機的瀏覽器裡。設定 Google Sheet 網址後,每次新增、修改、刪除都會在幾秒後自動把完整資料同步到雲端(表單會整份更新,不會重複,刪除也會同步),雲端另外保留最近 60 次完整備份,換手機或資料不見時可以用「從雲端還原」拿回來。</div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.6">資料儲存在這支手機的瀏覽器裡。設定 Google Sheet 網址後,每次新增、修改、刪除後停 30 秒(或打下班卡、切出記帳本時)會自動把完整資料同步到雲端(表單會整份更新,不會重複,刪除也會同步),雲端另外保留最近 60 次、90 天內每天一份、24 個月內每月一份完整備份(Apps Script v5 起存在 Google 雲端硬碟),換手機或資料不見時可以用「從雲端還原」拿回來。</div>';
   openModal(h);
   wirePlatformDrag();
 }
@@ -2227,11 +2650,13 @@ function wirePlatformDrag(){
   });
 }
 function openExportModal(){
-  var json = JSON.stringify(state);
+  var json = packState(state);
   var h = '<div class="modal-title">匯出備份<button class="close" data-act="close-modal">✕</button></div>';
-  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">按下面「複製」把下方文字整段複製起來,傳給自己(例如 LINE 傳給自己或用備忘錄),再到另一個瀏覽器/裝置的「匯入還原」貼上即可。</div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6"><b>建議用「存成備份檔」</b>:會跳出分享選單,可以存到 LINE Keep、Google 雲端硬碟、iCloud 或「檔案」。要還原時到「匯入還原」選這個檔案。</div>';
+  h += '<div class="btn-row" style="margin-bottom:12px"><button class="btn btn-primary" data-act="export-file">存成備份檔</button></div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;line-height:1.6">或複製下面整段文字貼到備忘錄(資料多時文字很長,LINE 訊息可能貼不下)。</div>';
   h += '<textarea id="exportText" readonly style="width:100%;height:160px;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface-sunken);color:var(--text);box-sizing:border-box" onclick="this.focus();this.select()">'+esc(json)+'</textarea>';
-  h += '<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary" data-act="copy-export">複製到剪貼簿</button></div>';
+  h += '<div class="btn-row" style="margin-top:10px"><button class="btn btn-ghost" data-act="copy-export">複製文字</button></div>';
   h += '<div id="exportCopyStatus" style="font-size:12px;color:var(--text-muted);margin-top:8px;text-align:center"></div>';
   openModal(h);
 }
@@ -2240,7 +2665,7 @@ function copyExportText(){
   var statusEl = document.getElementById('exportCopyStatus');
   if(!ta) return;
   ta.focus(); ta.select();
-  function ok(){ if(statusEl) statusEl.textContent = '已複製!'; }
+  function ok(){ if(statusEl) statusEl.textContent = '已複製!'; markExported(); }
   function fail(){ if(statusEl) statusEl.textContent = '自動複製失敗,請手動長按文字選取後複製。'; }
   if(navigator.clipboard && navigator.clipboard.writeText){
     navigator.clipboard.writeText(ta.value).then(ok, fail);
@@ -2252,7 +2677,7 @@ var lastCloudVersions = [];
 function openCloudRestoreModal(){
   if(!state.syncUrl){ alert('請先在設定填入 Google Sheet 同步網址,並按「儲存設定」。'); return; }
   var h = '<div class="modal-title">從雲端還原<button class="close" data-act="close-modal">✕</button></div>';
-  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">雲端會保留最近 60 次的完整備份。選一個時間點,就會用那份備份<b style="color:var(--expense)">覆蓋這個瀏覽器目前的所有資料</b>。</div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">雲端會保留最近 60 次、過去 90 天每天最後一次、過去 24 個月每月最後一次的完整備份。選一個時間點,就會用那份備份<b style="color:var(--expense)">覆蓋這個瀏覽器目前的所有資料</b>。</div>';
   h += '<div id="restoreList" style="font-size:13px;color:var(--text-muted)">讀取雲端備份中…</div>';
   openModal(h);
   cloudGet({action:'list'}).then(function(res){
@@ -2276,13 +2701,14 @@ function doCloudRestore(i){
   if(el) el.textContent = '下載備份中…';
   cloudGet({action:'get', time:v.time}).then(function(res){
     if(!res || !res.ok || !res.state) throw new Error('empty');
-    var parsed = JSON.parse(res.state);
+    var parsed = unpackState(JSON.parse(res.state));
     if(!parsed || !Array.isArray(parsed.records)) throw new Error('bad');
     var d = defaultState();
     for(var k in d){ if(!(k in parsed)) parsed[k]=d[k]; }
     parsed.syncUrl = state.syncUrl;
     state = parsed;
     stampMissingFeeSnapshots();
+    storageStale = false;
     save(); closeModal(); renderAll();
     alert('已從雲端還原(收入 '+state.records.length+' 筆、支出 '+state.expenses.length+' 筆)。');
   }).catch(function(){
@@ -2302,7 +2728,9 @@ function tabWarningHtml(){
 }
 function openImportModal(){
   var h = '<div class="modal-title">匯入還原<button class="close" data-act="close-modal">✕</button></div>';
-  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">把之前「匯出備份」複製的整段文字貼在下面,按還原。<b style="color:var(--expense)">注意:這會覆蓋掉目前這個瀏覽器裡的所有資料</b>,請確認來源沒錯再按。</div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">選擇之前存的備份檔,或把複製的整段文字貼在下面,再按還原。<b style="color:var(--expense)">注意:這會覆蓋掉目前這個瀏覽器裡的所有資料</b>,請確認來源沒錯再按。</div>';
+  h += '<label class="btn btn-ghost" style="display:block;text-align:center;margin-bottom:10px;cursor:pointer">選擇備份檔<input type="file" id="importFile" accept=".json,.txt,application/json,text/plain" style="display:none"></label>';
+  h += '<div id="importFileName" style="font-size:12px;color:var(--text-muted);margin:-4px 0 8px;text-align:center"></div>';
   h += '<textarea id="importText" placeholder="貼上備份文字…" style="width:100%;height:160px;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface-sunken);color:var(--text);box-sizing:border-box"></textarea>';
   h += '<div class="btn-row" style="margin-top:10px"><button class="btn btn-danger" data-act="do-import">還原這份資料</button></div>';
   openModal(h);
@@ -2311,13 +2739,14 @@ function doImportData(){
   var ta = document.getElementById('importText');
   if(!ta || !ta.value.trim()){ alert('請先貼上備份文字。'); return; }
   var parsed;
-  try{ parsed = JSON.parse(ta.value.trim()); }catch(err){ alert('這段文字看起來不是有效的備份資料,請確認有整段複製完整。'); return; }
+  try{ parsed = unpackState(JSON.parse(ta.value.trim())); }catch(err){ alert('這段文字看起來不是有效的備份資料,請確認有整段複製完整。'); return; }
   if(!parsed || typeof parsed!=='object' || !Array.isArray(parsed.records)){ alert('這段文字看起來不是有效的備份資料。'); return; }
   if(!confirm('確定要用這份備份覆蓋掉目前的所有資料嗎?此動作無法復原。')) return;
   var d = defaultState();
   for(var k in d){ if(!(k in parsed)) parsed[k]=d[k]; }
   state = parsed;
   stampMissingFeeSnapshots();
+  storageStale = false;
   save(); closeModal(); renderAll();
   alert('資料已還原。');
 }
@@ -2463,7 +2892,7 @@ document.addEventListener('click', function(e){
     if(m2.onBreak && m2.breakStart){ m2.breakMs += (Date.now()-m2.breakStart); m2.breakStart=null; m2.onBreak=false; }
     if(m2.segmentStart){ m2.workedMs += (Date.now()-m2.segmentStart); m2.segmentStart=null; }
     m2.activeShiftStart=null;
-    save(); renderAll();
+    save(); flushCloudSync(); renderAll();
   }
   else if(cmd==='break-start'){
     var m3 = dm(todayStr());
@@ -2478,6 +2907,11 @@ document.addEventListener('click', function(e){
       m4.breakMs += (Date.now()-m4.breakStart); m4.breakStart=null; m4.onBreak=false; m4.segmentStart=Date.now();
       save(); renderAll();
     }
+  }
+  else if(cmd==='toilet'){
+    var mt = dm(todayStr());
+    mt.toilet = Math.max(0, (mt.toilet||0) + (+arg));
+    save(); renderAll();
   }
   else if(cmd==='month'){ uiMonth.setMonth(uiMonth.getMonth()+(+arg)); renderAll(); }
   else if(cmd==='day'){ var dObj=new Date(analyticsDay+'T00:00:00'); dObj.setDate(dObj.getDate()+(+arg)); analyticsDay=toDateStr(dObj); renderAll(); }
@@ -2525,6 +2959,36 @@ document.addEventListener('click', function(e){
   }
   else if(cmd==='trip-start'){ tripStart(); }
   else if(cmd==='trip-end'){ tripEnd(); }
+  else if(cmd==='trip-resume'){ tripResume(arg); }
+  else if(cmd==='traffic-here'){ openTrafficHere(); }
+  else if(cmd==='traffic-spots'){ openTrafficSpotsModal(); }
+  else if(cmd==='traffic-spot-del'){
+    var sd = trafficSpots();
+    if(sd[+arg] && confirm('刪除「'+sd[+arg].name+'」?')){ sd.splice(+arg,1); state.trafficSpots = sd; save(); openTrafficSpotsModal(); }
+  }
+  else if(cmd==='traffic-spot-up'){
+    var su = trafficSpots(), si = +arg;
+    if(si>0){ var tmp = su[si-1]; su[si-1] = su[si]; su[si] = tmp; state.trafficSpots = su; save(); openTrafficSpotsModal(); }
+  }
+  else if(cmd==='traffic-spot-here'){
+    var llEl = document.getElementById('f-spot-ll');
+    if(llEl) llEl.value = '定位中…';
+    geoCapture(function(loc, msg){
+      var e2 = document.getElementById('f-spot-ll'); if(!e2) return;
+      e2.value = loc ? (loc.lat+', '+loc.lng) : '';
+      if(!loc) alert(msg);
+    });
+  }
+  else if(cmd==='traffic-spot-add'){
+    var nm = (document.getElementById('f-spot-name').value||'').trim();
+    var ll = parseLatLng(document.getElementById('f-spot-ll').value);
+    if(!nm){ alert('請輸入地點名稱。'); return; }
+    if(!ll){ alert('座標格式不對,請貼上像「25.0613, 121.3680」這樣的兩個數字。'); return; }
+    var sa = trafficSpots(); sa.push({name:nm, lat:ll.lat, lng:ll.lng}); state.trafficSpots = sa; save(); openTrafficSpotsModal();
+  }
+  else if(cmd==='traffic-spot-reset'){
+    if(confirm('恢復成預設的 5 個地點?你自己加的地點會被移除。')){ delete state.trafficSpots; save(); openTrafficSpotsModal(); }
+  }
   else if(cmd==='trip-cancel'){ if(confirm('取消這趟上車紀錄?')){ state.activeTrip=null; save(); renderAll(); } }
   else if(cmd==='open-trip-link'){ openTripLinkModal(arg); }
   else if(cmd==='trip-new-income'){
@@ -2569,12 +3033,21 @@ document.addEventListener('click', function(e){
     alert('已將 '+afFrom+' 起的 '+afN+' 筆記錄改用新手續費。');
   }
   else if(cmd==='do-restore'){ doCloudRestore(+arg); }
+  else if(cmd==='backup-snooze'){ state.backupSnoozeUntil = Date.now()+86400000; save(); renderAll(); }
   else if(cmd==='dismiss-tab-warning'){
     try{ sessionStorage.setItem('hideTabWarning','1'); }catch(err){}
     renderAll();
   }
   else if(cmd==='open-export'){ openExportModal(); }
   else if(cmd==='copy-export'){ copyExportText(); }
+  else if(cmd==='export-file'){
+    var stamp = todayStr().replace(/-/g,'');
+    shareOrDownloadFile('跑車人生備份_'+stamp+'.json', packState(state), 'application/json').then(function(done){
+      if(done){ markExported(); renderAll(); showToast('備份檔已交給分享選單,記得選好存放位置。'); }
+    });
+  }
+  else if(cmd==='year-report'){ openYearReportModal(arg); }
+  else if(cmd==='year-report-csv'){ shareOrDownloadFile('跑車人生_'+arg+'年度報表.csv', yearReportCsv(+arg), 'text/csv'); }
   else if(cmd==='open-import'){ openImportModal(); }
   else if(cmd==='do-import'){ doImportData(); }
   else if(cmd==='reset-all'){
@@ -2637,6 +3110,20 @@ document.addEventListener('change', function(e){
     mb.breakMs = Math.max(0, (e.target.value===''?0:+e.target.value)*3600000);
     save();
   }
+  else if(e.target.id==='importFile'){
+    var f = e.target.files && e.target.files[0]; if(!f) return;
+    var fr = new FileReader();
+    fr.onload = function(){
+      var ta = document.getElementById('importText'); if(ta) ta.value = String(fr.result||'');
+      var fn = document.getElementById('importFileName'); if(fn) fn.textContent = '已讀取:'+f.name+',確認後按下方「還原這份資料」';
+    };
+    fr.readAsText(f);
+  }
+  else if(e.target.matches('[data-toilet-input-date]')){
+    var tdm = dm(e.target.getAttribute('data-toilet-input-date'));
+    tdm.toilet = Math.max(0, Math.round(e.target.value===''?0:+e.target.value));
+    save();
+  }
   else if(e.target.id==='dayPicker'){ if(e.target.value){ analyticsDay = e.target.value; renderAll(); } }
   else if(e.target.id==='customFrom'){ if(e.target.value){ customFrom = e.target.value; renderAll(); } }
   else if(e.target.id==='customTo'){ if(e.target.value){ customTo = e.target.value; renderAll(); } }
@@ -2647,6 +3134,28 @@ setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(); }); }, 15
 var _staleShiftDate = findStaleOpenShiftDate();
 if(_staleShiftDate){ openStaleShiftModal(_staleShiftDate); }
 else { var _missingKmDate = findMissingKmDate(); if(_missingKmDate) openMissingKmModal(_missingKmDate); }
+}
+// Load saved data from IndexedDB (large storage) first, then start the app with it.
+// If IndexedDB is unavailable the app falls back to localStorage like before.
+var __BOOT = {state:null, idb:null, idbError:false};
+(function(){
+  var started = false;
+  function go(){ if(started) return; started = true; __taxiMain(); }
+  if(!window.indexedDB){ go(); return; }
+  try{
+    var req = indexedDB.open('taxi_ledger', 1);
+    req.onupgradeneeded = function(){ req.result.createObjectStore('kv'); };
+    req.onsuccess = function(){
+      var db = req.result;
+      try{
+        var g = db.transaction('kv','readonly').objectStore('kv').get('state');
+        g.onsuccess = function(){ __BOOT.idb = db; __BOOT.state = (typeof g.result==='string') ? g.result : null; go(); };
+        g.onerror = function(){ __BOOT.idbError = true; go(); };
+      }catch(e){ __BOOT.idbError = true; go(); }
+    };
+    req.onerror = function(){ __BOOT.idbError = true; go(); };
+    req.onblocked = function(){ __BOOT.idbError = true; go(); };
+  }catch(e){ __BOOT.idbError = true; go(); }
 })();
 </script>
 
