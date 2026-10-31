@@ -2163,15 +2163,30 @@ function trafficCardHtml(){
   h += '</div></div>';
   return h;
 }
+// iOS home-screen apps can't redirect a window opened before GPS answers (it stays blank),
+// so locate first, then swap the button for a plain link the driver taps
 function openTrafficHere(){
-  // open the window inside the tap so iOS doesn't block it, then point it at the map once GPS answers
-  var w = null;
-  try{ w = window.open('about:blank', '_blank'); }catch(e){}
+  var btn = document.querySelector('[data-act="traffic-here"]'); if(!btn) return;
+  var label = btn.textContent;
+  btn.disabled = true; btn.textContent = '📍 定位中…';
   geoCapture(function(loc){
-    var url = loc ? trafficUrl(loc.lat, loc.lng) : trafficUrl();
-    if(!loc) showToast('抓不到目前位置,先打開路況地圖,請自己滑到要看的地方。', 5000);
-    if(w && !w.closed) w.location.href = url;
-    else window.open(url, '_blank');
+    var cur = document.querySelector('[data-act="traffic-here"]'); if(!cur) return;
+    var a = document.createElement('a');
+    a.href = loc ? trafficUrl(loc.lat, loc.lng) : trafficUrl();
+    a.target = '_blank'; a.rel = 'noopener';
+    a.className = 'btn btn-primary';
+    a.style.cssText = 'display:block;width:100%;text-align:center;font-weight:700;text-decoration:none;box-sizing:border-box';
+    a.textContent = loc ? '✅ 定位好了,點這裡打開路況' : '抓不到位置,點這裡打開路況地圖';
+    cur.parentNode.replaceChild(a, cur);
+    function restore(){
+      if(!a.parentNode) return;
+      var b = document.createElement('button');
+      b.className = 'btn btn-ghost'; b.style.cssText = 'width:100%;font-weight:700';
+      b.setAttribute('data-act', 'traffic-here'); b.textContent = label;
+      a.parentNode.replaceChild(b, a);
+    }
+    a.addEventListener('click', function(){ setTimeout(restore, 800); });
+    setTimeout(restore, 60000);
   });
 }
 function parseLatLng(s){
