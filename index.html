@@ -2139,15 +2139,15 @@ function hotspotHtml(days, dayKeys){
 
 /* ---------- live traffic: open Google Maps with the traffic layer ---------- */
 var TRAFFIC_SPOTS_DEFAULT = [
-  {name:'大巨蛋', lat:25.0441, lng:121.5600},
-  {name:'信義區101', lat:25.0339, lng:121.5645},
-  {name:'台北車站', lat:25.0478, lng:121.5170},
-  {name:'西門町', lat:25.0422, lng:121.5079},
-  {name:'南京中山商圈', lat:25.0525, lng:121.5215}
+  {name:'大巨蛋', lat:25.0424, lng:121.5595},
+  {name:'ATT 4 FUN', lat:25.0354, lng:121.5660},
+  {name:'台北車站', lat:25.0475, lng:121.5162},   // 西三門接送區
+  {name:'西門町', lat:25.0443, lng:121.5057},     // 峨眉立體停車場
+  {name:'南京中山商圈', lat:25.0525, lng:121.5209} // 新光三越台北南西店
 ];
 function trafficSpots(){ return state.trafficSpots || TRAFFIC_SPOTS_DEFAULT.slice(); }
 function trafficUrl(lat, lng){
-  var u = 'https://www.google.com/maps/@?api=1&map_action=map&layer=traffic&zoom=14';
+  var u = 'https://www.google.com/maps/@?api=1&map_action=map&layer=traffic&zoom=16';
   return (lat!=null && lng!=null) ? u+'&center='+lat+','+lng : u;
 }
 function trafficCardHtml(){
