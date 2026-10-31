@@ -242,6 +242,8 @@ body{
 .plat-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)}
 .plat-row:last-child{border-bottom:none}
 .plat-row.dragging{opacity:.4}
+.ord-btns{display:flex;flex-direction:column;gap:2px;flex:none}
+.ord-btn{width:26px;height:20px;padding:0;border:1px solid var(--border);border-radius:5px;background:var(--surface-sunken);color:var(--text);font-size:11px;line-height:1;cursor:pointer;font-family:inherit}
 .plat-drag-handle{cursor:grab;touch-action:none;color:var(--text-muted);font-size:16px;padding:4px 6px;flex:none;user-select:none}
 
 .tag-list{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
@@ -292,6 +294,8 @@ var CATS = [
   {key:'toll',label:'E-Tag',icon:'🛣️'},
   {key:'wash',label:'洗車打蠟',icon:'🧽'},
   {key:'ticket',label:'罰單',icon:'🚫'},
+  {key:'repair',label:'保養維修',icon:'🔧'},
+  {key:'charge',label:'充電費',icon:'🔌'},
   {key:'other',label:'其他',icon:'📝'}
 ];
 var DOW = ['一','二','三','四','五','六','日'];
@@ -428,7 +432,29 @@ function esc(s){
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
   });
 }
-function catInfo(key){ for(var i=0;i<CATS.length;i++){ if(CATS[i].key===key) return CATS[i]; } return CATS[5]; }
+function allCats(){
+  var ov = state.catOverrides || {};
+  var list = CATS.map(function(c){
+    var o = ov[c.key] || {};
+    return {key:c.key, label:o.label||c.label, icon:o.icon||c.icon, hidden:!!o.hidden};
+  });
+  (state.customCats||[]).forEach(function(c){ list.push({key:c.key, label:c.label, icon:c.icon||'🧾', hidden:!!c.hidden, custom:true}); });
+  var order = state.catOrder || [];
+  var base = list.map(function(c){ return c.key; }).filter(function(k){ return k!=='other'; }).concat(['other']);
+  return list.slice().sort(function(a,b){
+    var ia = order.indexOf(a.key), ib = order.indexOf(b.key);
+    // categories added after the person last reordered keep their default spot relative to each other, after the ordered ones
+    if(ia<0) ia = 1000 + base.indexOf(a.key);
+    if(ib<0) ib = 1000 + base.indexOf(b.key);
+    return ia-ib;
+  });
+}
+function visibleCats(){ return allCats().filter(function(c){ return !c.hidden; }); }
+function catInfo(key){
+  var all = allCats();
+  for(var i=0;i<all.length;i++){ if(all[i].key===key) return all[i]; }
+  return all.filter(function(c){ return c.key==='other'; })[0] || {key:'other', label:'其他', icon:'📝'};
+}
 
 function defaultState(){
   return {
@@ -1524,9 +1550,9 @@ function renderEntry(){
   h += '</div></div>';
 
   h += '<div class="section"><div class="section-title">支出</div><div class="expense-grid">';
-  CATS.forEach(function(c){
+  visibleCats().forEach(function(c){
     h += '<div class="expense-chip" data-act="open-expense:'+c.key+'">'+
-         '<div class="eic">'+c.icon+'</div><div class="ename">'+c.label+'</div></div>';
+         '<div class="eic">'+esc(c.icon)+'</div><div class="ename">'+esc(c.label)+'</div></div>';
   });
   h += '</div></div>';
 
@@ -1672,8 +1698,8 @@ function renderHistory(){
   });
   h += '</div></div>';
   h += '<div class="section"><div class="section-title">幫 '+selectedDay+' 補記支出</div><div class="expense-grid">';
-  CATS.forEach(function(c){
-    h += '<div class="expense-chip" data-act="open-expense:'+c.key+'"><div class="eic">'+c.icon+'</div><div class="ename">'+c.label+'</div></div>';
+  visibleCats().forEach(function(c){
+    h += '<div class="expense-chip" data-act="open-expense:'+c.key+'"><div class="eic">'+esc(c.icon)+'</div><div class="ename">'+esc(c.label)+'</div></div>';
   });
   h += '</div></div>';
   return h;
@@ -1701,9 +1727,9 @@ function renderExpenseTab(){
 
   if(Object.keys(byCat).length){
     h += '<div class="section"><div class="section-title">分類佔比</div><div class="card"><div class="donut-legend">';
-    CATS.forEach(function(c){
+    allCats().forEach(function(c){
       if(!byCat[c.key]) return;
-      h += '<div class="legend-row"><span class="legend-dot" style="background:var(--expense)"></span><span class="lname">'+c.icon+' '+c.label+'</span><span class="lval num">'+fmtMoney(byCat[c.key])+'</span></div>';
+      h += '<div class="legend-row"><span class="legend-dot" style="background:var(--expense)"></span><span class="lname">'+esc(c.icon)+' '+esc(c.label)+'</span><span class="lval num">'+fmtMoney(byCat[c.key])+'</span></div>';
     });
     h += '</div></div></div>';
   }
@@ -2202,7 +2228,7 @@ function openTrafficSpotsModal(){
   h += '<div class="card" style="margin-bottom:14px">';
   h += spots.length ? spots.map(function(s,i){
     return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(s.name)+'</div><div class="li-sub">'+s.lat+', '+s.lng+'</div></div>'+
-      '<div style="display:flex;gap:6px">'+(i>0?'<button class="btn btn-ghost" style="width:auto;padding:6px 10px" data-act="traffic-spot-up:'+i+'">↑</button>':'')+
+      '<div style="display:flex;gap:6px">'+(i>0?'<button class="btn btn-ghost" style="width:auto;padding:6px 10px" data-act="traffic-spot-up:'+i+'">↑</button>':'')+(i<spots.length-1?'<button class="btn btn-ghost" style="width:auto;padding:6px 10px" data-act="traffic-spot-down:'+i+'">↓</button>':'')+
       '<button class="btn btn-ghost" style="width:auto;padding:6px 10px;color:var(--expense)" data-act="traffic-spot-del:'+i+'">刪除</button></div></div>';
   }).join('') : '<div style="font-size:12.5px;color:var(--text-muted);padding:6px 0">目前沒有常用地點。</div>';
   h += '</div>';
@@ -2265,7 +2291,7 @@ function yearReportData(year){
     var from = year+'-'+pad(mo)+'-01', to = year+'-'+pad(mo)+'-'+pad(new Date(year,mo,0).getDate());
     var recs = recordsInRange(from,to), exps = expensesInRange(from,to);
     var g = sumIncome(recs), nt = sumNetIncome(recs);
-    var byCat = {}; CATS.forEach(function(c){ byCat[c.key]=0; });
+    var byCat = {}; allCats().forEach(function(c){ byCat[c.key]=0; });
     exps.forEach(function(e){ byCat[e.category] = (byCat[e.category]||0) + (+e.amount||0); });
     var fix = fixedTotalForRange(from,to);
     rows.push({month:year+'-'+pad(mo), trips:recs.filter(function(r){ return !platformDef(r.platform).tipOnly; }).length,
@@ -2283,11 +2309,11 @@ function yearReportData(year){
 }
 function yearReportCsv(year){
   var d = yearReportData(year), r2 = function(x){ return Math.round(x); };
-  var head = ['月份','營業天數','趟數','車資','小費','平台手續費','實收'].concat(CATS.map(function(c){ return '支出-'+c.label; })).concat(['變動支出合計','固定成本攤提','淨利','里程km','工時(小時)']);
+  var head = ['月份','營業天數','趟數','車資','小費','平台手續費','實收'].concat(allCats().map(function(c){ return '支出-'+c.label; })).concat(['變動支出合計','固定成本攤提','淨利','里程km','工時(小時)']);
   var lines = [head];
   var tot = null;
   d.rows.forEach(function(r){
-    var line = [r.month, r.days, r.trips, r2(r.gross), r2(r.tip), r2(r.fee), r2(r.net)].concat(CATS.map(function(c){ return r2(r.byCat[c.key]||0); })).concat([r2(r.varExp), r2(r.fixed), r2(r.profit), +r.km.toFixed(1), +r.hours.toFixed(2)]);
+    var line = [r.month, r.days, r.trips, r2(r.gross), r2(r.tip), r2(r.fee), r2(r.net)].concat(allCats().map(function(c){ return r2(r.byCat[c.key]||0); })).concat([r2(r.varExp), r2(r.fixed), r2(r.profit), +r.km.toFixed(1), +r.hours.toFixed(2)]);
     lines.push(line);
     tot = tot ? tot.map(function(v,i){ return i===0?v:+(v+line[i]).toFixed(2); }) : ['全年合計'].concat(line.slice(1));
   });
@@ -2474,7 +2500,7 @@ function openExpenseModal(catKey, editId){
   var existing = editId ? state.expenses.filter(function(e){return e.id===editId;})[0] : null;
   var forDate = existing ? existing.date : currentEntryDate();
   var dateNote = forDate!==todayStr() ? (' · '+forDate) : '';
-  var h = '<div class="modal-title">'+ci.icon+' '+ci.label+esc(dateNote)+'<button class="close" data-act="close-modal">✕</button></div>';
+  var h = '<div class="modal-title">'+esc(ci.icon)+' '+esc(ci.label)+esc(dateNote)+'<button class="close" data-act="close-modal">✕</button></div>';
   if(catKey==='fuel'){
     h += '<div class="form-grid2">';
     h += '<div class="form-row"><label>公升數</label><input class="num-input" id="f-liters" type="number" min="0" step="0.1" placeholder="0.0" inputmode="decimal" value="'+((existing&&existing.liters)||'')+'"></div>';
@@ -2577,11 +2603,11 @@ function openSettingsModal(){
   h += '</div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:-4px;margin-bottom:12px">達標當週,全部趟次都會改用上面「達標後%」計算。</div>';
 
-  h += '<div class="form-row" style="margin-top:6px"><label>平台管理(拖曳左邊排序,可改名/隱藏/新增)</label></div>';
+  h += '<div class="form-row" style="margin-top:6px"><label>平台管理(用 ▲▼ 排序,可改名/隱藏/新增)</label></div>';
   h += '<div id="platOrderList">';
   allPlatforms().forEach(function(p){
     h += '<div class="plat-row" data-key="'+p.key+'">'+
-      '<span class="plat-drag-handle">☰</span>'+
+      orderBtnsHtml('platOrderList', p.key)+
       '<input type="text" id="f-plat-icon-'+p.key+'" value="'+esc(p.icon||'🚘')+'" maxlength="4" style="width:32px;flex:none;text-align:center;background:var(--surface-sunken);border:1px solid var(--border);border-radius:8px;padding:6px 2px;font-size:14px;color:var(--text)">'+
       '<input type="color" id="f-plat-color-'+p.key+'" value="'+(p.color||'#8A8272')+'" style="width:28px;height:28px;flex:none;padding:0;border:1px solid var(--border);border-radius:7px;background:none">'+
       '<input type="text" id="f-plat-name-'+p.key+'" value="'+esc(p.label)+'" style="flex:1;min-width:0;background:var(--surface-sunken);border:1px solid var(--border);border-radius:8px;padding:7px 9px;font-size:13px;color:var(--text)">'+
@@ -2591,6 +2617,19 @@ function openSettingsModal(){
   });
   h += '</div>';
   h += '<div style="height:8px"></div><button class="add-fixed-btn" data-act="open-newplatform">+ 新增平台</button><div style="height:14px"></div>';
+
+  h += '<div class="form-row" style="margin-top:6px"><label>支出項目管理(用 ▲▼ 排序,可改名/隱藏/新增)</label></div>';
+  h += '<div id="catOrderList">';
+  allCats().forEach(function(c){
+    h += '<div class="plat-row" data-key="'+c.key+'">'+orderBtnsHtml('catOrderList', c.key)+
+      '<input type="text" id="f-cat-icon-'+c.key+'" value="'+esc(c.icon)+'" maxlength="4" style="width:32px;flex:none;text-align:center;background:var(--surface-sunken);border:1px solid var(--border);border-radius:8px;padding:6px 2px;font-size:14px;color:var(--text)">'+
+      '<input type="text" id="f-cat-name-'+c.key+'" value="'+esc(c.label)+'" maxlength="12" style="flex:1;min-width:0;background:var(--surface-sunken);border:1px solid var(--border);border-radius:8px;padding:7px 9px;font-size:13px;color:var(--text)">'+
+      '<label style="display:flex;align-items:center;gap:3px;font-size:10.5px;color:var(--text-muted);white-space:nowrap"><input type="checkbox" id="f-cat-hidden-'+c.key+'" '+(c.hidden?'checked':'')+'>隱藏</label>'+
+      (c.custom ? '<button class="li-del" data-act="del-cat:'+c.key+'">✕</button>' : '')+
+      '</div>';
+  });
+  h += '</div>';
+  h += '<div style="height:8px"></div><button class="add-fixed-btn" data-act="open-newcat">+ 新增支出項目</button><div style="height:14px"></div>';
 
   h += '<div class="form-row" style="margin-top:6px"><label>收入目標(依實收計算)</label>';
   h += '<div class="form-grid2" style="margin-bottom:8px"><div><span style="font-size:11px;color:var(--text-muted)">每日</span><input class="num-input" id="f-target-daily" type="number" min="0" value="'+(state.targets.daily||'')+'"></div>'+
@@ -2807,9 +2846,64 @@ function savePlatformSettings(){
     }
   });
 }
+function orderBtnsHtml(listId, key){
+  return '<span class="ord-btns"><button type="button" class="ord-btn" data-act="move-row:'+listId+':'+key+':-1" aria-label="往上">▲</button><button type="button" class="ord-btn" data-act="move-row:'+listId+':'+key+':1" aria-label="往下">▼</button></span>';
+}
+// moves the row in place so names typed but not yet saved stay in their boxes
+function moveRow(listId, key, dir){
+  var list = document.getElementById(listId); if(!list) return;
+  var rows = Array.prototype.slice.call(list.children);
+  var i = -1; rows.forEach(function(r,j){ if(r.getAttribute('data-key')===key) i = j; });
+  var k = i + dir; if(i<0 || k<0 || k>=rows.length) return;
+  if(dir<0) list.insertBefore(rows[i], rows[k]); else list.insertBefore(rows[k], rows[i]);
+  var keys = Array.prototype.slice.call(list.children).map(function(r){ return r.getAttribute('data-key'); });
+  if(listId==='platOrderList') state.platformOrder = keys;
+  else if(listId==='catOrderList') state.catOrder = keys;
+  save();
+  rows[i].scrollIntoView({block:'nearest'});
+}
+function saveCatSettings(){
+  var list = document.getElementById('catOrderList');
+  if(list) state.catOrder = Array.prototype.slice.call(list.children).map(function(r){ return r.getAttribute('data-key'); });
+  state.catOverrides = state.catOverrides || {};
+  allCats().forEach(function(c){
+    var nameEl = document.getElementById('f-cat-name-'+c.key), hiddenEl = document.getElementById('f-cat-hidden-'+c.key), iconEl = document.getElementById('f-cat-icon-'+c.key);
+    if(!nameEl || !hiddenEl) return;
+    var name = nameEl.value.trim() || c.label, icon = (iconEl && iconEl.value.trim()) || c.icon, hidden = hiddenEl.checked;
+    if(c.custom){
+      var cc = (state.customCats||[]).filter(function(x){ return x.key===c.key; })[0];
+      if(cc){ cc.label = name; cc.icon = icon; cc.hidden = hidden; }
+    } else {
+      state.catOverrides[c.key] = {label:name, icon:icon, hidden:hidden};
+    }
+  });
+}
+function openNewCatModal(){
+  var h = '<div class="modal-title">新增支出項目<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div class="form-grid2" style="grid-template-columns:70px 1fr"><div class="form-row"><label>圖示</label><input id="f-newcat-icon" type="text" maxlength="4" value="🧾" style="text-align:center"></div>'+
+    '<div class="form-row"><label>名稱</label><input id="f-newcat-name" type="text" maxlength="12" placeholder="例如:餐費、手機網路費"></div></div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-newcat">新增</button></div>';
+  openModal(h);
+  setTimeout(function(){ var el=document.getElementById('f-newcat-name'); if(el) el.focus(); }, 50);
+}
+function saveNewCat(){
+  var name = document.getElementById('f-newcat-name').value.trim();
+  var icon = document.getElementById('f-newcat-icon').value.trim() || '🧾';
+  if(!name){ alert('請輸入項目名稱。'); return; }
+  state.customCats = state.customCats || [];
+  var cc = {key:'cat_'+uid(), label:name, icon:icon, hidden:false};
+  state.customCats.push(cc);
+  if(state.catOrder){
+    // new item goes just before 其他
+    var oi = state.catOrder.indexOf('other');
+    if(oi<0) state.catOrder.push(cc.key); else state.catOrder.splice(oi, 0, cc.key);
+  }
+  save(); openSettingsModal();
+}
 function saveSettings(){
   var feesBefore = JSON.stringify(resolvedFeeRules());
   savePlatformSettings();
+  saveCatSettings();
   state.targets.daily = +document.getElementById('f-target-daily').value || 0;
   state.targets.weekly = +document.getElementById('f-target-weekly').value || 0;
   state.targets.monthly = +document.getElementById('f-target-monthly').value || 0;
@@ -2953,6 +3047,18 @@ document.addEventListener('click', function(e){
   else if(cmd==='open-settings'){ openSettingsModal(); }
   else if(cmd==='open-newplatform'){ openNewPlatformModal(); }
   else if(cmd==='save-newplatform'){ saveNewPlatform(); }
+  else if(cmd==='move-row'){ var mr = arg.split(':'); moveRow(mr[0], mr[1], +mr[2]); }
+  else if(cmd==='open-newcat'){ openNewCatModal(); }
+  else if(cmd==='save-newcat'){ saveNewCat(); }
+  else if(cmd==='del-cat'){
+    var usedN = state.expenses.filter(function(e){ return e.category===arg; }).length;
+    if(usedN){ alert('這個項目已經有 '+usedN+' 筆支出,不能刪除。不想再看到可以勾「隱藏」,以前的紀錄會保留。'); return; }
+    if(confirm('刪除「'+catInfo(arg).label+'」這個支出項目?')){
+      state.customCats = (state.customCats||[]).filter(function(c){ return c.key!==arg; });
+      if(state.catOrder) state.catOrder = state.catOrder.filter(function(k){ return k!==arg; });
+      save(); openSettingsModal();
+    }
+  }
   else if(cmd==='del-platform'){ state.customPlatforms = state.customPlatforms.filter(function(c){return c.key!==arg;}); save(); openSettingsModal(); }
   else if(cmd==='save-settings'){ saveSettings(); }
   else if(cmd==='sync-all'){
@@ -2984,6 +3090,10 @@ document.addEventListener('click', function(e){
   else if(cmd==='traffic-spot-up'){
     var su = trafficSpots(), si = +arg;
     if(si>0){ var tmp = su[si-1]; su[si-1] = su[si]; su[si] = tmp; state.trafficSpots = su; save(); openTrafficSpotsModal(); }
+  }
+  else if(cmd==='traffic-spot-down'){
+    var sdn = trafficSpots(), sdi = +arg;
+    if(sdi < sdn.length-1){ var tmp2 = sdn[sdi+1]; sdn[sdi+1] = sdn[sdi]; sdn[sdi] = tmp2; state.trafficSpots = sdn; save(); openTrafficSpotsModal(); }
   }
   else if(cmd==='traffic-spot-here'){
     var llEl = document.getElementById('f-spot-ll');
