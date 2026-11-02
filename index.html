@@ -454,6 +454,9 @@ function fmtNum(n,d){
   if(n==null||isNaN(n)) return '-';
   return (+n).toLocaleString('zh-Hant-TW',{minimumFractionDigits:d||0,maximumFractionDigits:d||0});
 }
+// BOLT pays each trip to the cent and adds the cents up, so totals are only rounded for display
+function round2(n){ return Math.round(n*100+1e-9)/100; }
+function fmtMoneyFor(platform, n){ return platform==='bolt' ? fmtMoney2(n) : fmtMoney(n); }
 function fmtMoney2(n){
   n = +n||0;
   var neg = n<0; n=Math.abs(n);
@@ -720,10 +723,10 @@ function computeNetRevenue(r){
       var weekCount = boltWeekTripCount(r.date);
       if(weekCount>=threshold){
         var pctB = fees.boltPct!=null?fees.boltPct:10;
-        return gross*(1-pctB/100);
+        return round2(gross*(1-pctB/100));
       }
     }
-    return gross*(1-flatB/100);
+    return round2(gross*(1-flatB/100));
   }
   if(r.platform==='tdc'){
     var pct = fees.tdc!=null?fees.tdc:15;
@@ -1708,15 +1711,16 @@ function renderEntry(){
   if(nowCal!==t){
     h += '<div class="card" style="margin-bottom:12px;padding:10px 14px;font-size:12.5px;line-height:1.6;color:var(--text-muted)">🌙 現在已過午夜,'+pad(dayCutoffHour())+':00 以前記的帳、打的下班卡,都算在 <b style="color:var(--text)">'+t.slice(5).replace('-','/')+'</b> 這個營業日。</div>';
   }
-  h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr 1fr">';
+  h += '<div class="section"><div class="summary-row" style="grid-template-columns:'+(uiShow('grossTile')?'1fr 1fr 1fr':'1fr 1fr')+'">';
   h += '<div class="stat-tile"><div class="lbl">今日實收(含小費)</div><div class="val income num">'+fmtMoney(net.total)+'</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">今日車資(未扣手續費)</div><div class="val num">'+fmtMoney(gross.total)+'</div></div>';
+  if(uiShow('grossTile')) h += '<div class="stat-tile"><div class="lbl">今日車資(未扣手續費)</div><div class="val num">'+fmtMoney(gross.total)+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">今日支出</div><div class="val expense num">'+fmtMoney(exp)+'</div></div>';
   h += '</div></div>';
-  h += tripCardHtml();
-  h += trafficCardHtml();
+  // an unfinished trip stays visible even after the buttons are switched off
+  if(uiShow('trips') || state.activeTrip || (state.pendingTrips||[]).length || state.pendingAccept) h += tripCardHtml();
+  if(uiShow('traffic')) h += trafficCardHtml();
   var todayFlow = cashSummary(todayRecs);
-  if(todayRecs.length){
+  if(todayRecs.length && uiShow('cashFlow')){
     h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">'+
       '<div class="stat-tile"><div class="lbl">今日現金收入(應在身上)</div><div class="val num">'+fmtMoney(todayFlow.cash)+'</div></div>'+
       '<div class="stat-tile"><div class="lbl">今日非現金單(待撥款)</div><div class="val num">'+fmtMoney(todayFlow.noncash)+'</div></div>'+
@@ -1725,7 +1729,7 @@ function renderEntry(){
       (todayFlow.feeSeparate>0?'<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px">另外要繳給車隊的現金單手續費:'+fmtMoney(todayFlow.feeSeparate)+'</div>':'')+'</div>';
   }
   var dailyTarget = (state.targets&&state.targets.daily)||0;
-  if(dailyTarget>0){
+  if(dailyTarget>0 && uiShow('todayTarget')){
     var tPct = Math.min(100, Math.round(net.total/dailyTarget*100));
     var tLeft = dailyTarget-net.total;
     h += '<div class="section"><div class="card"><div class="progress-wrap">'+
@@ -1775,7 +1779,7 @@ function renderEntry(){
   h += '<div class="daily-row"><span class="l">工時(已扣休息)</span><div style="display:flex;align-items:center;gap:10px"><span class="hours-badge">'+esc(hoursLabel)+'</span>'+shiftBtn+'</div></div>';
   h += breakRow;
   var stepBtn = 'width:38px;height:38px;border-radius:50%;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-size:20px;font-weight:700;line-height:1;cursor:pointer;font-family:inherit;padding:0';
-  h += '<div class="daily-row"><span class="l">🚻 上廁所</span><div style="display:flex;align-items:center;gap:12px">'+
+  if(uiShow('toilet')) h += '<div class="daily-row"><span class="l">🚻 上廁所</span><div style="display:flex;align-items:center;gap:12px">'+
        '<button style="'+stepBtn+'" data-act="toilet:-1" aria-label="減一次">−</button>'+
        '<span class="num" style="min-width:44px;text-align:center;font-size:17px;font-weight:800">'+(meta.toilet||0)+' 次</span>'+
        '<button style="'+stepBtn+'" data-act="toilet:1" aria-label="加一次">+</button></div></div>';
@@ -1810,7 +1814,7 @@ function renderDayList(dateStr){
     h += '<div class="list-item">'+
       '<div class="li-icon" style="background:var(--income-soft);color:var(--income)">🚕</div>'+
       '<div class="li-body" data-act="edit-income:'+r.id+'" style="cursor:pointer"><div class="li-title">'+esc(platformDef(r.platform).label)+'</div><div class="li-sub">'+subLine+'</div></div>'+
-      '<div class="li-amt income num">+'+fmtMoney(amt)+'</div>'+
+      '<div class="li-amt income num">+'+fmtMoneyFor(r.platform, amt)+'</div>'+
       '<button class="li-del" data-act="del-income:'+r.id+'">✕</button></div>';
   });
   exps.forEach(function(e){
@@ -1882,7 +1886,7 @@ function renderHistory(){
     '<div class="daily-row"><span class="l">'+selectedDay+' 里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(histMeta.km!=null?histMeta.km:'')+'" placeholder="0.0" data-km-input-date="'+selectedDay+'"></div>'+
     '<div class="daily-row"><span class="l">'+selectedDay+' 工時(小時)</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.workedMs||0)/3600000).toFixed(2)+'" placeholder="0.00" data-hours-input-date="'+selectedDay+'"></div>'+
     '<div class="daily-row"><span class="l">'+selectedDay+' 休息時間(小時)</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.breakMs||0)/3600000).toFixed(2)+'" placeholder="0.00" data-break-input-date="'+selectedDay+'"></div>'+
-    '<div class="daily-row"><span class="l">'+selectedDay+' 🚻 上廁所(次)</span><input class="km-input" type="number" step="1" min="0" inputmode="numeric" value="'+(histMeta.toilet!=null?histMeta.toilet:'')+'" placeholder="0" data-toilet-input-date="'+selectedDay+'"></div>'+
+    (uiShow('toilet') ? '<div class="daily-row"><span class="l">'+selectedDay+' 🚻 上廁所(次)</span><input class="km-input" type="number" step="1" min="0" inputmode="numeric" value="'+(histMeta.toilet!=null?histMeta.toilet:'')+'" placeholder="0" data-toilet-input-date="'+selectedDay+'"></div>' : '')+
     '<div style="font-size:11px;color:var(--text-muted);line-height:1.5">補記或修改過往的工時/休息時間/上廁所次數,直接改數字就會覆蓋掉原本的紀錄。</div>'+
     '</div></div>';
 
@@ -2092,11 +2096,13 @@ function patternsHtml(recs){
     if(businessDayOf(r.ts)!==r.date){ skipped++; return; }
     hourSum[d.getHours()] += computeNetRevenue(r)+(+r.tip||0); hourCnt[d.getHours()]++;
   });
+  if(uiShow('timeslot')){
   h += '<div style="font-size:13px;font-weight:700;margin:4px 0 6px">時段(依記帳時間)</div>';
   h += barChartHtml('hour', hourSum.map(function(v,i){
     return {value:v, axis:(i%3===0?String(i):''), tip:pad(i)+':00–'+pad(i)+':59 · '+hourCnt[i]+' 趟 · 實收 '+fmtMoney(v)};
   }), '還沒有可分析的時段資料。');
-  if(skipped) h += '<div style="font-size:10.5px;color:var(--text-muted);margin:4px 0 0">有 '+skipped+' 筆是事後補記的(記帳時間不是當天),不列入時段分析。</div>';
+  }
+  if(skipped && uiShow('timeslot')) h += '<div style="font-size:10.5px;color:var(--text-muted);margin:4px 0 0">有 '+skipped+' 筆是事後補記的(記帳時間不是當天),不列入時段分析。</div>';
 
   var wd = ['一','二','三','四','五','六','日'];
   var byWd = avgBy(function(d){ return (new Date(d+'T00:00:00').getDay()+6)%7; }, [0,1,2,3,4,5,6]);
@@ -2105,6 +2111,7 @@ function patternsHtml(recs){
     return {value:x.avg, axis:wd[x.key], tip:'週'+wd[x.key]+' · 平均 '+fmtMoney(x.avg)+' / 天('+x.n+' 天)'};
   }), '');
 
+  if(uiShow('dom')){
   var dom = []; for(var i=1;i<=31;i++) dom.push(i);
   var byDom = avgBy(function(d){ return +d.slice(8,10); }, dom);
   h += '<div style="font-size:13px;font-weight:700;margin:14px 0 6px">每月幾號(平均每個出車日實收)</div>';
@@ -2116,6 +2123,7 @@ function patternsHtml(recs){
     ['上旬(1–10)','中旬(11–20)','下旬(21–月底)'].map(function(n,i){
       return '<div class="stat-tile"><div class="lbl">'+n+'</div><div class="val num" style="font-size:15px">'+(thirds[i].n?fmtMoney(thirds[i].avg):'—')+'</div></div>';
     }).join('')+'</div>';
+  }
 
   var months = {}; days.forEach(function(d){ months[d.slice(0,7)]=true; });
   if(Object.keys(months).length>=2){
@@ -2184,9 +2192,11 @@ function renderAnalytics(){
     h += '<div style="text-align:center;font-size:12.5px;color:var(--text-muted);margin:-4px 0 12px">全部資料:'+range.from+' ~ '+range.to+'</div>';
   }
 
-  h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr 1fr">';
-  h += '<div class="stat-tile"><div class="lbl">總車資</div><div class="val num">'+fmtMoney(gross.total)+'</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">平台手續費</div><div class="val expense num">'+fmtMoney(feeTotal)+'</div></div>';
+  h += '<div class="section"><div class="summary-row" style="grid-template-columns:'+(uiShow('grossFees')?'1fr 1fr 1fr':'1fr')+'">';
+  if(uiShow('grossFees')){
+    h += '<div class="stat-tile"><div class="lbl">總車資</div><div class="val num">'+fmtMoney(gross.total)+'</div></div>';
+    h += '<div class="stat-tile"><div class="lbl">平台手續費</div><div class="val expense num">'+fmtMoney(feeTotal)+'</div></div>';
+  }
   h += '<div class="stat-tile"><div class="lbl">實收</div><div class="val income num">'+fmtMoney(net.total)+'</div></div>';
   h += '</div></div>';
   h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
@@ -2202,6 +2212,7 @@ function renderAnalytics(){
   h += '<div class="stat-tile"><div class="lbl">平均每日休息時間</div><div class="val num">'+(workDays>0?fmtNum(breakHours/workDays,2)+' 小時':'—')+'</div></div>';
   h += '</div></div></div>';
 
+  if(uiShow('efficiency')){
   h += '<div class="section"><div class="section-title">效率指標</div><div class="card"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
   h += '<div class="stat-tile"><div class="lbl">實際時薪(已扣休息)</div><div class="val num">'+(hours>0?fmtMoney2(net.total/hours):'—')+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">總工時</div><div class="val num">'+fmtNum(hours,2)+' 小時</div></div>';
@@ -2216,7 +2227,9 @@ function renderAnalytics(){
   }
   h += '<div class="stat-tile"><div class="lbl">總休息時間</div><div class="val num">'+fmtNum(breakHours,2)+' 小時</div></div>';
   h += '</div></div></div>';
+  }
 
+  if(uiShow('health')){
   var ts = toiletStatsInRange(range.from, range.to);
   h += '<div class="section"><div class="section-title">🚻 健康:上廁所</div><div class="card">';
   if(!ts.days){
@@ -2231,6 +2244,7 @@ function renderAnalytics(){
     h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">從 '+ts.since+' 開始記錄,只算這之後的營業日(共 '+ts.days+' 天)。「多久上一次」用工時加休息時間計算。</div>';
   }
   h += '</div></div>';
+  }
 
   if(platformList.length){
     h += '<div class="section"><div class="section-title">平台佔比(實收)'+chartToggleHtml('plat')+'</div><div class="card">';
@@ -2238,9 +2252,9 @@ function renderAnalytics(){
     h += '</div></div>';
   }
   h += platformEfficiencyHtml(recs);
-  h += tripInsightsHtml(range);
+  if(uiShow('tripEff') || uiShow('hotspot')) h += tripInsightsHtml(range);
 
-  if(sub.length){
+  if(sub.length && uiShow('detail')){
     lastSubBreakdown = sub;
     h += '<div class="section"><div class="section-title">細項分析(趟次 / 實收)</div><div class="card">';
     h += sub.map(function(s,si){
@@ -2252,7 +2266,7 @@ function renderAnalytics(){
 
   var tg = state.targets;
   var targetVal = analyticsPeriod==='day'?tg.daily : analyticsPeriod==='week'?tg.weekly : analyticsPeriod==='month'?tg.monthly : 0;
-  if(targetVal>0){
+  if(targetVal>0 && uiShow('target')){
     var pct = Math.min(100, Math.round(net.total/targetVal*100));
     h += '<div class="section"><div class="section-title">目標進度(依實收計算)</div><div class="card"><div class="progress-wrap">'+
       '<div class="progress-lbl"><span class="p">'+fmtMoney(net.total)+' / '+fmtMoney(targetVal)+'</span><span class="v num">'+pct+'%</span></div>'+
@@ -2323,7 +2337,7 @@ function tripInsightsHtml(range){
   var days = timedTripsByDay(range.from, range.to);
   var dayKeys = Object.keys(days).sort();
   if(!dayKeys.length){
-    return '<div class="section"><div class="section-title">🚕 載客效率(上下車紀錄)</div><div class="card"><div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">這段期間還沒有上下車紀錄。載客時按記帳頁的「上車」「下車」,這裡就會算出載客率、空車時間、搭車長短和上車熱區。</div></div></div>';
+    return uiShow('tripEff') ? '<div class="section"><div class="section-title">🚕 載客效率(上下車紀錄)</div><div class="card"><div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">這段期間還沒有上下車紀錄。載客時按記帳頁的「上車」「下車」,這裡就會算出載客率、空車時間、搭車長短和上車熱區。</div></div></div>' : '';
   }
   var n=0, occMin=0, gaps=[], plat={}, buckets=[0,0,0], kmBuckets=[0,0,0], kmSum=0, kmN=0;
   var accN=0, waitN=0, waitSum=0, approachSum=0, apKmSum=0, apKmN=0, accPlat={};
@@ -2394,8 +2408,7 @@ function tripInsightsHtml(range){
   }
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">載客率=載客時間÷工時,只算整天每趟都有按上下車的日子('+fullDays+' 天)。空檔時間=上一趟下車到下一趟上車(包含等單、開去上車點、等客人),超過 '+EMPTY_GAP_CAP_MIN+' 分鐘的視為休息不列入,每天第一趟也不算。距離是上下車兩點的直線距離,上下車都有抓到位置的趟次才算。</div>';
   h += '</div></div>';
-  h += hotspotHtml(days, dayKeys);
-  return h;
+  return (uiShow('tripEff') ? h : '') + (uiShow('hotspot') ? hotspotHtml(days, dayKeys) : '');
 }
 var hotspotSlot = 'all';
 var HOT_SLOTS = [['all','全部'],['day','白天 6–18'],['eve','晚上 18–24'],['late','深夜 0–6']];
@@ -2718,7 +2731,7 @@ function updateIncomePreview(){
   el.innerHTML = '<div class="summary-row" style="grid-template-columns:1fr 1fr 1fr">'+
     '<div class="stat-tile"><div class="lbl">車資</div><div class="val num">'+fmtMoney(gross)+'</div></div>'+
     '<div class="stat-tile"><div class="lbl">抽成</div><div class="val expense num">'+(fee>0.5?fmtMoney(fee):'—')+'</div></div>'+
-    '<div class="stat-tile"><div class="lbl">實收</div><div class="val income num">'+fmtMoney(total)+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">實收</div><div class="val income num">'+fmtMoneyFor(currentIncomeModalKey, total)+'</div></div>'+
     '</div>';
 }
 function closeModal(){ pendingIncomeTripId = null; document.getElementById('modalRoot').innerHTML=''; renderAll(); }
@@ -2736,26 +2749,29 @@ function chipRowHtml(groupId, options, selectedDefault){
 function buildIncomeForm(key, existing){
   var def = platformDef(key);
   var h = '';
-  if(def.subtypeOptions){
+  // a switched-off field is either left out (saved value kept) or kept hidden with its default so fees still compute
+  function off(k, html){ return uiOn(k) ? html : '<div hidden>'+html+'</div>'; }
+  if(def.subtypeOptions && uiOn('subtype')){
     var stOpts = def.subtypeOptions.slice();
     if(existing && existing.subtype && stOpts.indexOf(existing.subtype)<0) stOpts.push(existing.subtype);
     h += '<div class="form-row"><label>車種/屬性</label>'+chipRowHtml('subtype', stOpts, (existing&&existing.subtype)||stOpts[0])+'</div>';
   }
   if(def.fareTypeOptions){
-    h += '<div class="form-row"><label>計價方式</label>'+chipRowHtml('fareType', def.fareTypeOptions, (existing&&existing.fareType)||def.fareTypeOptions[0])+'</div>';
+    h += off('fareType', '<div class="form-row"><label>計價方式</label>'+chipRowHtml('fareType', def.fareTypeOptions, (existing&&existing.fareType)||def.fareTypeOptions[0])+'</div>');
   }
   if(def.discountOptions){
-    h += '<div class="form-row"><label>優惠派別</label>'+chipRowHtml('discountTier', def.discountOptions, (existing&&existing.discountTier)||def.discountOptions[0])+'</div>';
+    h += off('discount', '<div class="form-row"><label>優惠派別</label>'+chipRowHtml('discountTier', def.discountOptions, (existing&&existing.discountTier)||def.discountOptions[0])+'</div>');
   }
   var curFareType = (existing&&existing.fareType) || (def.fareTypeOptions&&def.fareTypeOptions[0]);
   var meterLike = curFareType==='跳表' || curFareType==='固定價' || (!def.fareTypeOptions);
   var estLike = curFareType==='預估車資';
   var stationLike = curFareType==='據點叫車';
   if(def.paymentOptions){
-    var curPayment = (existing&&existing.payment)||def.paymentOptions[0];
-    h += '<div class="form-row" id="sec-meterExtra"'+(meterLike?'':' hidden')+'><label>付款方式</label>'+chipRowHtml('payment', def.paymentOptions, curPayment)+'</div>';
+    var payDefault = (!uiOn('payment') && state.uiPayDefault==='card' && def.paymentOptions.indexOf('信用卡')>=0) ? '信用卡' : def.paymentOptions[0];
+    var curPayment = (existing&&existing.payment)||payDefault;
+    h += off('payment', '<div class="form-row" id="sec-meterExtra"'+(meterLike?'':' hidden')+'><label>付款方式</label>'+chipRowHtml('payment', def.paymentOptions, curPayment)+'</div>');
     if(def.enterpriseDiscountOptions){
-      h += '<div class="form-row" id="sec-yoxi-enterprise-discount"'+(curPayment==='企業簽單'?'':' hidden')+'><label>優惠折數</label>'+chipRowHtml('enterpriseDiscount', def.enterpriseDiscountOptions, (existing&&existing.enterpriseDiscount)||def.enterpriseDiscountOptions[0])+'</div>';
+      h += off(uiOn('payment')?'discount':'payment', '<div class="form-row" id="sec-yoxi-enterprise-discount"'+(curPayment==='企業簽單'?'':' hidden')+'><label>優惠折數</label>'+chipRowHtml('enterpriseDiscount', def.enterpriseDiscountOptions, (existing&&existing.enterpriseDiscount)||def.enterpriseDiscountOptions[0])+'</div>');
     }
   }
   if(def.hasStationFee){
@@ -2764,7 +2780,7 @@ function buildIncomeForm(key, existing){
   if(def.estimateTypeOptions || def.estimateHasMarkupAmount || def.estimateHasMarkupMultiplier){
     h += '<div id="sec-estimateExtra"'+(estLike?'':' hidden')+'>';
     if(def.estimateTypeOptions){ h += '<div class="form-row"><label>多元類型</label>'+chipRowHtml('estimateType', def.estimateTypeOptions, (existing&&existing.estimateType)||def.estimateTypeOptions[0])+'</div>'; }
-    if(def.estimateHasMarkupAmount||def.estimateHasMarkupMultiplier){
+    if((def.estimateHasMarkupAmount||def.estimateHasMarkupMultiplier) && uiOn('markup')){
       h += '<div class="form-grid2">';
       if(def.estimateHasMarkupAmount) h += '<div class="form-row"><label>加成金額(選填)</label><input class="num-input" id="f-markup-amount" type="number" min="0" step="1" placeholder="0" value="'+((existing&&existing.markupAmount)||'')+'"></div>';
       if(def.estimateHasMarkupMultiplier) h += '<div class="form-row"><label>加成倍率(選填)</label><input class="num-input" id="f-markup-multiplier" type="number" min="0" step="0.1" placeholder="1.0" value="'+((existing&&existing.markupMultiplier)||'')+'"></div>';
@@ -2772,9 +2788,9 @@ function buildIncomeForm(key, existing){
     }
     h += '</div>';
   }
-  if(def.hasMarkupAmount) h += '<div class="form-row"><label>加成金額(選填)</label><input class="num-input" id="f-markup-amount" type="number" min="0" step="1" placeholder="0" value="'+((existing&&existing.markupAmount)||'')+'"></div>';
-  if(def.hasMarkupMultiplier) h += '<div class="form-row"><label>加成倍率(選填,例如 1.2)</label><input class="num-input" id="f-markup-multiplier" type="number" min="0" step="0.1" placeholder="1.0" value="'+((existing&&existing.markupMultiplier)||'')+'"></div>';
-  if(def.markupPercent) h += '<div class="form-row"><label>加成 %(選填,App 顯示 70% 就填 70)</label><input class="num-input" id="f-markup-percent" type="number" min="0" step="1" inputmode="numeric" placeholder="0" value="'+((existing&&existing.markupPercent)||'')+'"></div>';
+  if(def.hasMarkupAmount && uiOn('markup')) h += '<div class="form-row"><label>加成金額(選填)</label><input class="num-input" id="f-markup-amount" type="number" min="0" step="1" placeholder="0" value="'+((existing&&existing.markupAmount)||'')+'"></div>';
+  if(def.hasMarkupMultiplier && uiOn('markup')) h += '<div class="form-row"><label>加成倍率(選填,例如 1.2)</label><input class="num-input" id="f-markup-multiplier" type="number" min="0" step="0.1" placeholder="1.0" value="'+((existing&&existing.markupMultiplier)||'')+'"></div>';
+  if(def.markupPercent && uiOn('markup')) h += '<div class="form-row"><label>加成 %(選填,App 顯示 70% 就填 70)</label><input class="num-input" id="f-markup-percent" type="number" min="0" step="1" inputmode="numeric" placeholder="0" value="'+((existing&&existing.markupPercent)||'')+'"></div>';
   if(def.subPlatformOptions){
     h += '<div class="form-row"><label>預約單屬於哪個平台</label><select id="f-subplatform">'+def.subPlatformOptions.map(function(o){return '<option value="'+esc(o)+'"'+((existing&&existing.subPlatform===o)?' selected':'')+'>'+esc(o)+'</option>';}).join('')+'</select></div>';
   }
@@ -2803,12 +2819,12 @@ function openIncomeModal(key, editId){
   } else {
     var revLabel = (key==='uber') ? 'App 顯示金額(已扣手續費的實收)' : (key==='bolt' ? '車資金額(未扣手續費)' : '車資金額');
     h += '<div class="form-row"><label>'+revLabel+'</label><input class="num-input" id="f-revenue" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.revenue)||'')+'"></div>';
-    h += '<div class="form-row"><label>小費(選填)</label><input class="num-input" id="f-tip" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.tip)||'')+'"></div>';
+    if(uiOn('tip')) h += '<div class="form-row"><label>小費(選填)</label><input class="num-input" id="f-tip" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.tip)||'')+'"></div>';
     h += '<div id="incomePreview" style="margin-bottom:12px"></div>';
     h += buildIncomeForm(key, existing);
   }
   if(!def.tipOnly) h += tripChoiceHtml(existing);
-  h += '<div class="form-row"><label>備註(選填)</label><input id="f-note" type="text" placeholder="" value="'+esc((existing&&existing.note)||'')+'"></div>';
+  if(uiOn('note')) h += '<div class="form-row"><label>備註(選填)</label><input id="f-note" type="text" placeholder="" value="'+esc((existing&&existing.note)||'')+'"></div>';
   h += '<div class="btn-row">';
   if(existing) h += '<button class="btn btn-danger" data-act="del-income-close:'+existing.id+'">刪除這筆</button>';
   h += '<button class="btn btn-primary" data-act="save-income:'+key+(existing?(':'+existing.id):'')+'">儲存</button></div>';
@@ -2822,11 +2838,11 @@ var DUP_WINDOW_MS = 2*60000;
 function saveIncome(key, editId){
   var def = platformDef(key);
   function grab(id){ var el=document.getElementById(id); return el? el.value : null; }
-  var revenue = +grab('f-revenue') || 0;
-  var tip = +grab('f-tip') || 0;
-  var note = (grab('f-note')||'').trim();
-  if(revenue<=0 && tip<=0){ closeModal(); return; }
   var existing = editId ? state.records.filter(function(r){return r.id===editId;})[0] : null;
+  var revenue = +grab('f-revenue') || 0;
+  var tip = grab('f-tip')!=null ? (+grab('f-tip') || 0) : ((existing && +existing.tip) || 0);
+  var note = grab('f-note')!=null ? grab('f-note').trim() : ((existing && existing.note) || '');
+  if(revenue<=0 && tip<=0){ closeModal(); return; }
   if(!existing){
     // a double tap on 儲存 or the same fare entered twice shows up as an identical record moments apart
     var dupAgo = Date.now() - DUP_WINDOW_MS;
@@ -2835,7 +2851,7 @@ function saveIncome(key, editId){
   }
   var rec = existing || {id:uid(), date:currentEntryDate(), ts:Date.now(), platform:key, fees:resolvedFeeRules()};
   rec.revenue = revenue; rec.tip = tip; rec.note = note;
-  if(def.subtypeOptions) rec.subtype = grab('chip-subtype');
+  if(def.subtypeOptions && grab('chip-subtype')!=null) rec.subtype = grab('chip-subtype');
   if(def.fareTypeOptions) rec.fareType = grab('chip-fareType');
   if(def.discountOptions) rec.discountTier = grab('chip-discountTier');
   var meterLike = !def.fareTypeOptions || rec.fareType==='跳表' || rec.fareType==='固定價';
@@ -2843,7 +2859,7 @@ function saveIncome(key, editId){
   if(def.enterpriseDiscountOptions && rec.payment==='企業簽單') rec.enterpriseDiscount = grab('chip-enterpriseDiscount'); else if(def.enterpriseDiscountOptions) rec.enterpriseDiscount = undefined;
   if(def.hasStationFee && rec.fareType==='據點叫車'){ var sf=grab('f-station-fee'); rec.stationFee = (sf!=null && sf!=='') ? +sf : undefined; } else if(def.hasStationFee) rec.stationFee = undefined;
   if(def.estimateTypeOptions && rec.fareType==='預估車資') rec.estimateType = grab('chip-estimateType'); else if(def.estimateTypeOptions) rec.estimateType = undefined;
-  var ma = grab('f-markup-amount'); rec.markupAmount = (ma!=null && ma!=='') ? +ma : undefined;
+  var ma = grab('f-markup-amount'); if(ma!=null) rec.markupAmount = ma!=='' ? +ma : undefined;
   // a field that is not on this form leaves the old value alone (LINE GO records from before the switch to %)
   var mm = grab('f-markup-multiplier'); if(mm!=null) rec.markupMultiplier = mm!=='' ? +mm : undefined;
   var mp = grab('f-markup-percent'); if(mp!=null) rec.markupPercent = mp!=='' ? +mp : undefined;
@@ -3019,9 +3035,79 @@ function wireFeePlatToggle(){
     if(cb && blk) cb.addEventListener('change', function(){ blk.hidden = cb.checked; });
   });
 }
+/* ---------- 顯示模式與功能開關 ---------- */
+var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['markup','加成(金額/倍率/%)'],['tip','小費'],['note','備註']];
+var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['toilet','🚻 上廁所次數']];
+var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['efficiency','效率指標'],['health','健康(上廁所)'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['dom','每月幾號'],['target','目標進度']];
+var UI_SIMPLE_OFF = ['subtype','fareType','payment','discount','markup','grossTile','trips','traffic','cashFlow','toilet','grossFees','health','tripEff','hotspot','detail','dom'];
+function uiOn(k){ return !state.ui || state.ui[k]!==false; }
+// sections that only have data when another feature is on
+function uiShow(k){
+  if(k==='tripEff' || k==='hotspot') return uiOn(k) && uiOn('trips');
+  if(k==='health') return uiOn(k) && uiOn('toilet');
+  return uiOn(k);
+}
+function uiPreset(mode){
+  var ui = {};
+  UI_FIELDS.concat(UI_ENTRY, UI_ANALYSIS).forEach(function(x){ ui[x[0]] = mode!=='simple' || UI_SIMPLE_OFF.indexOf(x[0])<0; });
+  return ui;
+}
+function uiModeOf(ui){
+  var keys = UI_FIELDS.concat(UI_ENTRY, UI_ANALYSIS).map(function(x){ return x[0]; });
+  function same(p){ return keys.every(function(k){ return (ui[k]!==false)===(p[k]!==false); }); }
+  return same(uiPreset('simple')) ? 'simple' : same(uiPreset('full')) ? 'full' : 'custom';
+}
+function applyTheme(){
+  var t = state.theme;
+  if(t==='light' || t==='dark') document.documentElement.setAttribute('data-theme', t);
+  else document.documentElement.removeAttribute('data-theme');
+}
+function uiSettingsHtml(){
+  var mode = uiModeOf(state.ui||{});
+  var cb = 'display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text);margin:0 0 7px';
+  function group(title, list){
+    return '<div style="font-size:12px;font-weight:700;color:var(--text-muted);margin:10px 0 6px">'+title+'</div>'+
+      list.map(function(x){ return '<label style="'+cb+'"><input type="checkbox" id="f-ui-'+x[0]+'" style="width:17px;height:17px;flex:none"'+(uiOn(x[0])?' checked':'')+'>'+esc(x[1])+'</label>'; }).join('');
+  }
+  var h = '<div class="form-row"><label>🧩 顯示模式與功能開關</label></div>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-4px 0 8px;line-height:1.6">用不到的功能可以關掉,畫面會更簡單。<b>關掉不會刪資料</b>,之後再打開就回來了。目前:<b id="uiModeLbl">'+({simple:'🟢 簡單記帳',full:'🔵 完整分析',custom:'自訂'})[mode]+'</b></div>';
+  h += '<div class="btn-row" style="margin-bottom:6px"><button class="btn" data-act="ui-preset:simple">🟢 一鍵切換:簡單記帳</button><button class="btn" data-act="ui-preset:full">🔵 一鍵切換:完整分析</button></div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:4px">簡單記帳 = 點平台、打金額、儲存;完整分析 = 全部功能都打開。按完還可以在下面一項一項調整。</div>';
+  h += group('記收入時要填的欄位', UI_FIELDS);
+  h += '<div class="form-row" style="margin:2px 0 8px"><label style="font-size:11.5px">關掉「付款方式」時,台灣大、大都會、YOXI 的單當作</label><select id="f-ui-paydefault">'+
+    '<option value="cash"'+(state.uiPayDefault!=='card'?' selected':'')+'>現金(錢在身上)</option>'+
+    '<option value="card"'+(state.uiPayDefault==='card'?' selected':'')+'>信用卡(等平台撥款)</option></select></div>';
+  h += group('記帳頁要顯示的', UI_ENTRY);
+  h += group('分析頁要顯示的', UI_ANALYSIS);
+  h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin:2px 0 6px">「載客效率」「上車熱區」要開「上車/下車按鈕」才有資料;「健康」要開「上廁所次數」。</div>';
+  h += '<div class="form-row" style="margin-top:10px"><label>🌓 外觀</label><select id="f-theme">'+
+    '<option value="auto"'+(state.theme!=='light'&&state.theme!=='dark'?' selected':'')+'>跟著手機設定</option>'+
+    '<option value="light"'+(state.theme==='light'?' selected':'')+'>淺色</option>'+
+    '<option value="dark"'+(state.theme==='dark'?' selected':'')+'>深色</option></select></div>';
+  h += '<div style="height:10px"></div>';
+  return h;
+}
+function saveUiSettings(){
+  var ui = {};
+  UI_FIELDS.concat(UI_ENTRY, UI_ANALYSIS).forEach(function(x){ var el = document.getElementById('f-ui-'+x[0]); ui[x[0]] = el ? el.checked : uiOn(x[0]); });
+  state.ui = ui;
+  state.uiMode = uiModeOf(ui);
+  state.uiPayDefault = document.getElementById('f-ui-paydefault').value;
+  state.theme = document.getElementById('f-theme').value;
+  applyTheme();
+}
+function openModeChooser(){
+  var big = 'display:block;width:100%;text-align:left;padding:14px 16px;margin-bottom:10px;border-radius:14px;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-family:inherit;cursor:pointer;line-height:1.6';
+  var h = '<div class="modal-title">歡迎使用 🚕</div>';
+  h += '<div style="font-size:13px;line-height:1.7;margin-bottom:12px">你想怎麼記帳?之後隨時可以在右上角 ⚙️ 改。</div>';
+  h += '<button style="'+big+'" data-act="ui-choose:simple"><b style="font-size:15px">🟢 簡單記帳</b><br><span style="font-size:12px;color:var(--text-muted)">只記每個平台跑了多少錢。點平台 → 打金額 → 儲存,其他都不用選。</span></button>';
+  h += '<button style="'+big+'" data-act="ui-choose:full"><b style="font-size:15px">🔵 完整分析</b><br><span style="font-size:12px;color:var(--text-muted)">記車種、付款方式、上下車時間,分析時薪、熱區、載客率。</span></button>';
+  openModal(h);
+}
 function openSettingsModal(){
   var fr = state.feeRules;
   var h = '<div class="modal-title">設定<button class="close" data-act="close-modal">✕</button></div>';
+  h += uiSettingsHtml();
   h += feeSettingsHtml(fr);
 
   h += '<div class="form-row" style="margin-top:6px"><label>平台管理(用 ▲▼ 排序,可改名/隱藏/新增)</label></div>';
@@ -3116,11 +3202,12 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.02b';
+var APP_VERSION = '2026.11.03';
 var WHATS_NEW = [
-  '💰 手續費設定:台灣大、大都會、YOXI、LINE GO 都可以填「每單扣 $」和「抽 %」,小黃也適用(沒有的留空)',
-  '🙈 隱藏的平台,手續費設定也一起隱藏,版面更清爽',
-  '🚗 大都會婦派/海派/鑽派/超派改用 173 官網的級距算法(滿 100、200、300 折數不同,優惠以 5 元為單位,上限 $300)'
+  '🧩 可以自己關掉用不到的功能:記收入要填的欄位、記帳頁、分析頁的區塊都能開關(⚙️ 最上面)',
+  '🟢 一鍵切換「簡單記帳」:點平台、打金額、儲存就好;想看完整分析隨時切回「🔵 完整分析」',
+  '🌓 外觀可以選淺色、深色,或跟著手機設定',
+  '⚡ BOLT 實收算到小數點兩位,跟 App 一樣用每趟的小數加總'
 ];
 function maybeShowWhatsNew(){
   if(state.seenVersion===APP_VERSION) return;
@@ -3139,12 +3226,8 @@ function aboutHtml(){
   var h = '<div class="card" style="margin-top:18px;padding:14px 16px"><div style="font-size:15px;font-weight:700;margin-bottom:12px">關於跑車人生</div>';
   h += para('🆓 免費使用', '本記帳本完全免費,不需註冊帳號。');
   h += para('🔒 你的帳,只有你看得到', '所有紀錄只存在你自己的手機裡,製作者和其他使用者都看不到。設定雲端備份的話,資料也是存到你自己的 Google 帳號。<br>為了保護你的資料,建議手機設定螢幕鎖,並定期備份。');
-  h += para('💬 建議與問題回報', '有任何建議或使用上的問題,歡迎來信或私訊:<br>'+
-    '✉️ <a style="'+link+'" href="mailto:ridewithwelson@gmail.com">ridewithwelson@gmail.com</a><br>'+
-    '<a style="'+link+'" target="_blank" rel="noopener" href="https://www.facebook.com/ridewithwelson/">Facebook</a> · '+
-    '<a style="'+link+'" target="_blank" rel="noopener" href="https://www.instagram.com/ridewithwelson/">Instagram</a> · '+
-    '<a style="'+link+'" target="_blank" rel="noopener" href="https://www.threads.com/@ridewithwelson">Threads</a><br>'+
-    '或在 FB、IG、Threads 搜尋「ridewithwelson」');
+  h += para('💬 建議與問題回報', '有任何建議或使用上的問題,歡迎來信:<br>'+
+    '✉️ <a style="'+link+'" href="mailto:ridewithwelson@gmail.com">ridewithwelson@gmail.com</a>');
   h += para('ℹ️ 版本資訊', '版本:'+APP_VERSION+'<br>製作者:Welson 威爾森<br>© 2026 Welson 版權所有');
   return h+'</div>';
 }
@@ -3397,6 +3480,7 @@ function saveNewCat(){
 }
 function saveSettings(){
   var feesBefore = JSON.stringify(resolvedFeeRules());
+  saveUiSettings();
   savePlatformSettings();
   saveCatSettings();
   state.targets.daily = +document.getElementById('f-target-daily').value || 0;
@@ -3706,6 +3790,14 @@ document.addEventListener('click', function(e){
   else if(cmd==='reset-all'){
     if(confirm('確定要清除所有記帳資料嗎?此動作無法復原。')){ state=defaultState(); save(); closeModal(); renderAll(); }
   }
+  else if(cmd==='ui-preset'){
+    var pr = uiPreset(arg);
+    Object.keys(pr).forEach(function(k){ var el = document.getElementById('f-ui-'+k); if(el) el.checked = pr[k]; });
+    var ml = document.getElementById('uiModeLbl'); if(ml) ml.textContent = arg==='simple' ? '🟢 簡單記帳(按最下面「儲存設定」才會生效)' : '🔵 完整分析(按最下面「儲存設定」才會生效)';
+  }
+  else if(cmd==='ui-choose'){
+    state.ui = uiPreset(arg); state.uiMode = arg; save(); closeModal(); renderAll();
+  }
   else if(cmd==='chip'){
     var gv0 = arg.indexOf(':');
     var groupId = gv0>=0 ? arg.slice(0,gv0) : arg;
@@ -3782,11 +3874,13 @@ document.addEventListener('change', function(e){
   else if(e.target.id==='customTo'){ if(e.target.value){ customTo = e.target.value; renderAll(); } }
 });
 
+applyTheme();
 renderAll();
 setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(); }); }, 1500);
 var _staleShiftDate = findStaleOpenShiftDate();
 if(_staleShiftDate){ openStaleShiftModal(_staleShiftDate); }
-else { var _missingKmDate = findMissingKmDate(); if(_missingKmDate) openMissingKmModal(_missingKmDate); else maybeShowWhatsNew(); }
+else if(!state.uiMode && !hasMeaningfulData()){ state.seenVersion = APP_VERSION; openModeChooser(); }
+else { if(!state.uiMode){ state.uiMode = uiModeOf(state.ui||{}); save(); } var _missingKmDate = findMissingKmDate(); if(_missingKmDate) openMissingKmModal(_missingKmDate); else maybeShowWhatsNew(); }
 }
 // Load saved data from IndexedDB (large storage) first, then start the app with it.
 // If IndexedDB is unavailable the app falls back to localStorage like before.
