@@ -625,6 +625,7 @@ function dm(dateStr){
   return m;
 }
 function findStaleOpenShiftDate(){
+  if(!uiOn('shift')) return null;
   var today = todayStr();
   var dates = Object.keys(state.dailyMeta).filter(function(d){
     return d!==today && state.dailyMeta[d].activeShiftStart;
@@ -646,6 +647,7 @@ function finalizeStaleShift(dateStr, endTs){
  
 }
 function findMissingKmDate(){
+  if(!uiOn('km')) return null;
   var today = todayStr(), limit = addDays(today,-7), cands = {};
   state.records.forEach(function(r){ if(r.date<today && r.date>=limit) cands[r.date]=true; });
   Object.keys(state.dailyMeta).forEach(function(d){ if(d<today && d>=limit && state.dailyMeta[d].workedMs>0) cands[d]=true; });
@@ -916,7 +918,7 @@ window.addEventListener('online', function(){ setTimeout(cloudSyncIfBehind, 1500
 function flushCloudSync(){
   if(cloudSyncTimer){ clearTimeout(cloudSyncTimer); cloudSyncTimer=null; pushCloudSnapshot(); }
 }
-document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='hidden') flushCloudSync(); else statPing(); });
+document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='hidden') flushCloudSync(); else { statPing(); hotSharePush(); } });
 
 /* ---------- 匿名使用人數統計 ----------
    once per calendar day: a random device id, date, version, mode, phone OS. Never any amounts, platforms or locations.
@@ -1510,6 +1512,7 @@ function captureFor(tripId, which, ts, note){
 }
 // a fare means the shift is running: clock in or end the break so hours aren't lost
 function ensureShiftRunning(now){
+  if(!uiOn('shift')) return '';
   var sm = dm(todayStr());
   if(!sm.activeShiftStart && !findStaleOpenShiftDate()){
     sm.activeShiftStart = now; sm.segmentStart = now; sm.onBreak = false;
@@ -1669,6 +1672,8 @@ var TRIP_SHEET_HEADER = ['上車時間','上車緯度','上車經度','上車定
 
 /* ---------- rendering shell ---------- */
 function renderAll(){
+  if(currentTab==='payout' && !uiShow('payoutTab')) currentTab = 'entry';
+  var payNav = document.querySelector('.nav-btn[data-act="tab:payout"]'); if(payNav) payNav.style.display = uiShow('payoutTab') ? '' : 'none';
   document.querySelectorAll('.nav-btn').forEach(function(b){ b.classList.toggle('active', b.dataset.act==='tab:'+currentTab); });
   renderPayoutBadge();
   renderTopbar();
@@ -1798,16 +1803,17 @@ function renderEntry(){
   }
   var hoursLabel = (meta.activeShiftStart? (meta.onBreak?'休息中 · ':'營運中 · '):'')+fmtNum(workedH,2)+' 小時';
 
-  h += '<div class="section"><div class="section-title">今日行車</div><div class="card daily-card">';
-  h += '<div class="daily-row"><span class="l">今日里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(meta.km!=null?meta.km:'')+'" placeholder="0.0" data-km-input></div>';
-  h += '<div class="daily-row"><span class="l">工時(已扣休息)</span><div style="display:flex;align-items:center;gap:10px"><span class="hours-badge">'+esc(hoursLabel)+'</span>'+shiftBtn+'</div></div>';
-  h += breakRow;
+  var showDaily = uiShow('km') || uiShow('shift') || uiShow('toilet');
+  if(showDaily) h += '<div class="section"><div class="section-title">今日行車</div><div class="card daily-card">';
+  if(uiShow('km')) h += '<div class="daily-row"><span class="l">今日里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(meta.km!=null?meta.km:'')+'" placeholder="0.0" data-km-input></div>';
+  if(uiShow('shift')) h += '<div class="daily-row"><span class="l">工時(已扣休息)</span><div style="display:flex;align-items:center;gap:10px"><span class="hours-badge">'+esc(hoursLabel)+'</span>'+shiftBtn+'</div></div>';
+  if(uiShow('shift')) h += breakRow;
   var stepBtn = 'width:38px;height:38px;border-radius:50%;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-size:20px;font-weight:700;line-height:1;cursor:pointer;font-family:inherit;padding:0';
   if(uiShow('toilet')) h += '<div class="daily-row"><span class="l">🚻 上廁所</span><div style="display:flex;align-items:center;gap:12px">'+
        '<button style="'+stepBtn+'" data-act="toilet:-1" aria-label="減一次">−</button>'+
        '<span class="num" style="min-width:44px;text-align:center;font-size:17px;font-weight:800">'+(meta.toilet||0)+' 次</span>'+
        '<button style="'+stepBtn+'" data-act="toilet:1" aria-label="加一次">+</button></div></div>';
-  h += '</div></div>';
+  if(showDaily) h += '</div></div>';
 
   if(todayRecs.length || todayExps.length){
     h += '<div class="section"><div class="section-title">今日明細</div><div class="card">';
@@ -1829,7 +1835,7 @@ function renderDayList(dateStr){
     var amt = net+(+r.tip||0);
     var desc = describeRecord(r);
     var parts = [];
-    if(desc) parts.push(esc(desc));
+    if(desc && uiShow('recDesc')) parts.push(esc(desc));
     if(grossEst) parts.push((r.platform==='bonus'?'金額 ':'車資 ')+fmtMoney(grossEst));
     if(fee>0.5) parts.push('抽成 '+fmtMoney(fee));
     if(r.tip) parts.push('小費 '+fmtMoney(r.tip));
@@ -1907,9 +1913,9 @@ function renderHistory(){
 
   var histMeta = dm(selectedDay);
   h += '<div class="section"><div class="card daily-card">'+
-    '<div class="daily-row"><span class="l">'+selectedDay+' 里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(histMeta.km!=null?histMeta.km:'')+'" placeholder="0.0" data-km-input-date="'+selectedDay+'"></div>'+
-    '<div class="daily-row"><span class="l">'+selectedDay+' 工時(小時)</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.workedMs||0)/3600000).toFixed(2)+'" placeholder="0.00" data-hours-input-date="'+selectedDay+'"></div>'+
-    '<div class="daily-row"><span class="l">'+selectedDay+' 休息時間(小時)</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.breakMs||0)/3600000).toFixed(2)+'" placeholder="0.00" data-break-input-date="'+selectedDay+'"></div>'+
+    (uiShow('km') ? '<div class="daily-row"><span class="l">'+selectedDay+' 里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(histMeta.km!=null?histMeta.km:'')+'" placeholder="0.0" data-km-input-date="'+selectedDay+'"></div>' : '')+
+    (uiShow('shift') ? '<div class="daily-row"><span class="l">'+selectedDay+' 工時(小時)</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.workedMs||0)/3600000).toFixed(2)+'" placeholder="0.00" data-hours-input-date="'+selectedDay+'"></div>' : '')+
+    (uiShow('shift') ? '<div class="daily-row"><span class="l">'+selectedDay+' 休息時間(小時)</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.breakMs||0)/3600000).toFixed(2)+'" placeholder="0.00" data-break-input-date="'+selectedDay+'"></div>' : '')+
     (uiShow('toilet') ? '<div class="daily-row"><span class="l">'+selectedDay+' 🚻 上廁所(次)</span><input class="km-input" type="number" step="1" min="0" inputmode="numeric" value="'+(histMeta.toilet!=null?histMeta.toilet:'')+'" placeholder="0" data-toilet-input-date="'+selectedDay+'"></div>' : '')+
     '<div style="font-size:11px;color:var(--text-muted);line-height:1.5">補記或修改過往的工時/休息時間/上廁所次數,直接改數字就會覆蓋掉原本的紀錄。</div>'+
     '</div></div>';
@@ -2129,11 +2135,13 @@ function patternsHtml(recs){
   if(skipped && uiShow('timeslot')) h += '<div style="font-size:10.5px;color:var(--text-muted);margin:4px 0 0">有 '+skipped+' 筆是事後補記的(記帳時間不是當天),不列入時段分析。</div>';
 
   var wd = ['一','二','三','四','五','六','日'];
+  if(uiShow('weekday')){
   var byWd = avgBy(function(d){ return (new Date(d+'T00:00:00').getDay()+6)%7; }, [0,1,2,3,4,5,6]);
   h += '<div style="font-size:13px;font-weight:700;margin:14px 0 6px">星期(平均每個出車日實收)</div>';
   h += barChartHtml('weekday', byWd.map(function(x){
     return {value:x.avg, axis:wd[x.key], tip:'週'+wd[x.key]+' · 平均 '+fmtMoney(x.avg)+' / 天('+x.n+' 天)'};
   }), '');
+  }
 
   if(uiShow('dom')){
   var dom = []; for(var i=1;i<=31;i++) dom.push(i);
@@ -2150,7 +2158,7 @@ function patternsHtml(recs){
   }
 
   var months = {}; days.forEach(function(d){ months[d.slice(0,7)]=true; });
-  if(Object.keys(months).length>=2){
+  if(Object.keys(months).length>=2 && uiShow('month')){
     var byMonth = avgBy(function(d){ return +d.slice(5,7); }, [1,2,3,4,5,6,7,8,9,10,11,12]);
     h += '<div style="font-size:13px;font-weight:700;margin:14px 0 6px">月份(平均每個出車日實收)</div>';
     h += barChartHtml('month', byMonth.map(function(x){
@@ -2227,14 +2235,16 @@ function renderAnalytics(){
   h += '<div class="stat-tile"><div class="lbl">總支出(含固定攤提)</div><div class="val expense num">'+fmtMoney(totalExp)+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">淨利</div><div class="val num">'+fmtMoney(profit)+'</div></div>';
   h += '</div></div>';
-  h += comparisonHtml(range);
+  if(uiShow('compare')) h += comparisonHtml(range);
 
+  if(uiShow('overview')){
   h += '<div class="section"><div class="section-title">本期概況</div><div class="card"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
   h += '<div class="stat-tile"><div class="lbl">營業天數</div><div class="val num">'+workDays+' 天</div></div>';
   h += '<div class="stat-tile"><div class="lbl">平均日實收</div><div class="val income num">'+(workDays>0?fmtMoney(net.total/workDays):'—')+'</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">平均每日工時</div><div class="val num">'+(workDays>0?fmtNum(hours/workDays,2)+' 小時':'—')+'</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">平均每日休息時間</div><div class="val num">'+(workDays>0?fmtNum(breakHours/workDays,2)+' 小時':'—')+'</div></div>';
+  if(uiShow('shift')) h += '<div class="stat-tile"><div class="lbl">平均每日工時</div><div class="val num">'+(workDays>0?fmtNum(hours/workDays,2)+' 小時':'—')+'</div></div>';
+  if(uiShow('shift')) h += '<div class="stat-tile"><div class="lbl">平均每日休息時間</div><div class="val num">'+(workDays>0?fmtNum(breakHours/workDays,2)+' 小時':'—')+'</div></div>';
   h += '</div></div></div>';
+  }
 
   if(uiShow('efficiency')){
   h += '<div class="section"><div class="section-title">效率指標</div><div class="card"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
@@ -2270,12 +2280,12 @@ function renderAnalytics(){
   h += '</div></div>';
   }
 
-  if(platformList.length){
+  if(platformList.length && uiShow('platShare')){
     h += '<div class="section"><div class="section-title">平台佔比(實收)'+chartToggleHtml('plat')+'</div><div class="card">';
     h += shareChartHtml('plat', platformList.map(function(p,i){ return {label:p.name, val:p.val, color:palette[i%palette.length]}; }), fmtMoney);
     h += '</div></div>';
   }
-  h += platformEfficiencyHtml(recs);
+  if(uiShow('platEff')) h += platformEfficiencyHtml(recs);
   if(uiShow('tripEff') || uiShow('hotspot')) h += tripInsightsHtml(range);
 
   if(sub.length && uiShow('detail')){
@@ -2286,7 +2296,7 @@ function renderAnalytics(){
     }).join('');
     h += '</div></div>';
   }
-  h += patternsHtml(recs);
+  if(uiShow('timeslot') || uiShow('weekday') || uiShow('dom') || uiShow('month')) h += patternsHtml(recs);
 
   var tg = state.targets;
   var targetVal = analyticsPeriod==='day'?tg.daily : analyticsPeriod==='week'?tg.weekly : analyticsPeriod==='month'?tg.monthly : 0;
@@ -2435,6 +2445,100 @@ function tripInsightsHtml(range){
   return (uiShow('tripEff') ? h : '') + (uiShow('hotspot') ? hotspotHtml(days, dayKeys) : '');
 }
 var hotspotSlot = 'all';
+/* ---------- 車友熱區:opt-in sharing of ~1 km pickup cells, shown back only where 3+ drivers overlap ---------- */
+var HOT_URL = 'https://script.google.com/macros/s/AKfycbyeHn97F3a2z9UtMt59DcyQQ_2WXDqzXrAhMSYelEEnUKg-wsLFRdOlQxL53-mlM08N/exec';  // the parameter can't be named sid: Google answers 400
+var hotSource = 'mine', friendHot = {};  // friendHot[slot] = {status:'loading'|'ok'|'err', data}
+function cellKeyOf(lat, lng){ return (Math.round(lat*100)/100).toFixed(2)+','+(Math.round(lng*100)/100).toFixed(2); }
+function shareIdOf(){
+  if(!state.shareId){
+    var a = new Uint32Array(3); (window.crypto||window.msCrypto).getRandomValues(a);
+    state.shareId = Array.prototype.map.call(a, function(n){ return n.toString(36); }).join('').slice(0,16);
+    save();
+  }
+  return state.shareId;
+}
+function isLocalHost(){ return /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname); }
+// sends each finished day once (up to 14 days back), only cell + time slot + trip count
+function hotSharePush(){
+  if(!HOT_URL || state.shareHot!==true || isLocalHost()) return;
+  var yest = addDays(todayStr(), -1);
+  var from = state.shareSentUntil ? addDays(state.shareSentUntil, 1) : addDays(yest, -13);
+  if(from > yest) return;
+  var days = timedTripsByDay(from, yest), sid = shareIdOf();
+  var jobs = Object.keys(days).sort().map(function(d){
+    var cells = {};
+    days[d].forEach(function(o){
+      var pk = o.pickup; if(pk.lat==null || pk.lng==null) return;
+      var k = cellKeyOf(pk.lat, pk.lng)+'|'+hourSlot(pk.ts);
+      cells[k] = (cells[k]||0)+1;
+    });
+    var x = Object.keys(cells).map(function(k){ return k+'|'+cells[k]; }).join(';');
+    var wd = (new Date(d+'T00:00:00').getDay()+6)%7+1;
+    return x ? (HOT_URL+'?action=put&who='+sid+'&d='+d+'&wd='+wd+'&x='+encodeURIComponent(x)) : null;
+  }).filter(Boolean);
+  var chain = Promise.resolve();
+  jobs.forEach(function(u){ chain = chain.then(function(){ return fetch(u, {cache:'no-store'}).then(function(r){ if(!r.ok) throw new Error('http'); }); }); });
+  chain.then(function(){ state.shareSentUntil = yest; save(); }, function(){});
+}
+// the driver's own busiest cell over the last 60 days is the centre of "我附近"
+function myHotCenter(){
+  var days = timedTripsByDay(addDays(todayStr(), -60), todayStr()), cnt = {}, best = null;
+  Object.keys(days).forEach(function(d){ days[d].forEach(function(o){
+    var pk = o.pickup; if(pk.lat==null || pk.lng==null) return;
+    var k = cellKeyOf(pk.lat, pk.lng); cnt[k] = (cnt[k]||0)+1;
+    if(!best || cnt[k] > cnt[best]) best = k;
+  }); });
+  return best ? best.split(',').map(Number) : null;
+}
+function loadFriendHot(slot){
+  var c = myHotCenter();
+  friendHot[slot] = {status:'loading'};
+  var u = HOT_URL+'?action=hot&who='+shareIdOf()+'&slot='+slot+(c?('&lat='+c[0]+'&lng='+c[1]):'');
+  fetch(u, {cache:'no-store'}).then(function(r){ return r.json(); }).then(function(j){
+    friendHot[slot] = j && j.ok ? {status:'ok', data:j} : {status:'err', error:(j&&j.error)||''};
+  }, function(){ friendHot[slot] = {status:'err'}; }).then(function(){ if(currentTab==='analytics') renderAll(); });
+}
+function friendHotHtml(){
+  var muted = 'font-size:12.5px;color:var(--text-muted);line-height:1.7;padding:6px 0';
+  if(state.shareHot!==true){
+    return '<div style="'+muted+'">分享你的上車熱區,就能看到附近車友都在哪裡上車。<br>只送約 1 公里一格的區域和時段,不送精確位置、金額、平台;有 3 位以上車友都上過車的地方才會顯示。</div>'+
+      '<div class="btn-row" style="margin-top:6px"><button class="btn btn-primary" data-act="share-hot-on">👍 同意分享,看車友熱區</button></div>';
+  }
+  var f = friendHot[hotspotSlot];
+  if(!f){ loadFriendHot(hotspotSlot); f = friendHot[hotspotSlot]; }
+  if(f.status==='loading') return '<div style="'+muted+'">讀取車友熱區中…</div>';
+  if(f.status==='err') return '<div style="'+muted+'">'+(f.error==='not_sharing'?'你的分享資料還沒送到(每天會送前一天的),明天再來看看。':'暫時讀不到車友熱區,請確認網路後')+' <a data-act="hot-reload" style="cursor:pointer;color:var(--accent)">重新讀取</a></div>';
+  var j = f.data, list = j.cells||[];
+  var h = '';
+  if(!list.length) h += '<div style="'+muted+'">附近還沒有 '+j.min+' 位以上車友都上過車的地點。一起用的車友越多,這裡就越準。</div>';
+  h += list.slice(0,6).map(function(c,i){
+    var lat = (+c.lat).toFixed(4), lng = (+c.lng).toFixed(4);
+    var name = hotspotName(c.k, lat, lng);
+    return '<div class="list-item"><div class="li-body"><div class="li-title">車友熱區 '+(i+1)+' · '+(name?esc(name):'<span style="color:var(--text-muted);font-weight:400">查詢地名中…</span>')+'</div>'+
+      '<div class="li-sub">'+c.drivers+' 位車友 · '+c.trips+' 趟</div></div>'+
+      '<a class="li-amt" style="color:var(--accent);font-size:13px;text-decoration:none;flex:none" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query='+lat+','+lng+'">看地圖 ›</a></div>';
+  }).join('');
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">範圍:你最常上車的地方方圓 '+j.radius+' 公里。只顯示 '+j.min+' 位以上車友都上過車的地點(約 1 公里一格),資料延遲 '+j.delay+' 天,看不到任何人的個人紀錄。依「幾位車友」排名。</div>';
+  return h;
+}
+function openShareHotAsk(){
+  var h = '<div class="modal-title">📍 一起做「車友熱區」?</div>';
+  h += '<div style="font-size:13px;line-height:1.75;margin-bottom:12px">分享你的上車熱區,就能在分析頁看到<b>附近車友都在哪裡上車</b>。</div>';
+  h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.75;margin-bottom:14px">'+
+    '・只送「約 1 公里一格的區域、日期、白天/晚上/深夜、趟數」<br>'+
+    '・<b>不送</b>精確位置、金額、平台、任何個人資料<br>'+
+    '・至少 3 位車友都上過車的地方才會顯示,看不到任何人的紀錄<br>'+
+    '・有分享的人才能看車友熱區<br>'+
+    '・隨時可以在 ⚙️ 取消</div>';
+  h += '<div class="btn-row"><button class="btn" data-act="share-hot-choose:no">先不要</button><button class="btn btn-primary" data-act="share-hot-choose:yes">👍 同意分享</button></div>';
+  openModal(h);
+}
+function maybeAskShareHot(){
+  if(!HOT_URL || state.shareHot!==undefined || !uiShow('trips')) return false;
+  if(!state.records.some(function(r){ return r.pickup && r.pickup.lat!=null; })) return false;
+  openShareHotAsk();
+  return true;
+}
 var HOT_SLOTS = [['all','全部'],['day','白天 6–18'],['eve','晚上 18–24'],['late','深夜 0–6']];
 function hourSlot(ts){ var hh = new Date(ts).getHours(); return hh<6 ? 'late' : (hh<18 ? 'day' : 'eve'); }
 /* area names from OpenStreetMap, looked up once per 1 km cell and kept in the ledger */
@@ -2491,7 +2595,9 @@ function hotspotHtml(days, dayKeys){
   if(!any) return '';
   var list = Object.keys(cells).map(function(k){ var c = cells[k]; c.key = k; return c; }).sort(function(a,b){ return b.n-a.n; }).slice(0,6);
   var h = '<div class="section"><div class="section-title">📍 上車熱區(前 6 名)</div><div class="card">';
+  if(HOT_URL) h += '<div class="segmented" style="margin-bottom:8px"><button class="'+(hotSource==='mine'?'active':'')+'" data-act="hot-src:mine">我的熱區</button><button class="'+(hotSource==='friends'?'active':'')+'" data-act="hot-src:friends">👥 車友熱區</button></div>';
   h += '<div class="segmented" style="margin-bottom:8px">'+HOT_SLOTS.map(function(s){ return '<button class="'+(hotspotSlot===s[0]?'active':'')+'" data-act="hot-slot:'+s[0]+'">'+s[1]+'</button>'; }).join('')+'</div>';
+  if(HOT_URL && hotSource==='friends') return h + friendHotHtml() + '</div></div>';
   if(!list.length) h += '<div style="font-size:12.5px;color:var(--text-muted);padding:8px 0">這段期間的這個時段沒有上車紀錄。</div>';
   h += list.map(function(c,i){
     var lat = (c.lat/c.n).toFixed(4), lng = (c.lng/c.n).toFixed(4);
@@ -2913,12 +3019,12 @@ function openExpenseModal(catKey, editId){
   var h = '<div class="modal-title">'+esc(ci.icon)+' '+esc(ci.label)+esc(dateNote)+'<button class="close" data-act="close-modal">✕</button></div>';
   if(catKey==='charge'){
     h += '<div class="form-grid2">';
-    h += '<div class="form-row"><label>度數(kWh,選填)</label><input class="num-input" id="f-kwh" type="number" min="0" step="0.1" placeholder="0.0" inputmode="decimal" value="'+((existing&&existing.kwh)||'')+'"></div>';
+    if(uiOn('fuelQty')) h += '<div class="form-row"><label>度數(kWh,選填)</label><input class="num-input" id="f-kwh" type="number" min="0" step="0.1" placeholder="0.0" inputmode="decimal" value="'+((existing&&existing.kwh)||'')+'"></div>';
     h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-amount" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.amount)||'')+'"></div>';
     h += '</div>';
   } else if(catKey==='fuel'){
     h += '<div class="form-grid2">';
-    h += '<div class="form-row"><label>公升數</label><input class="num-input" id="f-liters" type="number" min="0" step="0.1" placeholder="0.0" inputmode="decimal" value="'+((existing&&existing.liters)||'')+'"></div>';
+    if(uiOn('fuelQty')) h += '<div class="form-row"><label>公升數(選填)</label><input class="num-input" id="f-liters" type="number" min="0" step="0.1" placeholder="0.0" inputmode="decimal" value="'+((existing&&existing.liters)||'')+'"></div>';
     h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-amount" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.amount)||'')+'"></div>';
     h += '</div>';
   } else {
@@ -2926,7 +3032,7 @@ function openExpenseModal(catKey, editId){
   }
   var subs = catSubs(catKey).slice(), curSub = existing && existing.sub;
   if(curSub && subs.indexOf(curSub)<0) subs.push(curSub);
-  if(subs.length) h += '<div class="form-row"><label>細項(選填)</label>'+chipRowHtml('expsub', ['不指定'].concat(subs), curSub||'不指定')+'</div>';
+  if(subs.length && uiOn('expSub')) h += '<div class="form-row"><label>細項(選填)</label>'+chipRowHtml('expsub', ['不指定'].concat(subs), curSub||'不指定')+'</div>';
   h += '<div class="form-row"><label>備註(選填)</label><input id="f-note" type="text" placeholder="" value="'+esc((existing&&existing.note)||'')+'"></div>';
   h += '<div class="btn-row">';
   if(existing) h += '<button class="btn btn-danger" data-act="del-expense-close:'+existing.id+'">刪除這筆</button>';
@@ -2936,7 +3042,8 @@ function openExpenseModal(catKey, editId){
 }
 function saveExpense(catKey, editId){
   var amount = +document.getElementById('f-amount').value || 0;
-  var liters = catKey==='fuel' ? (+document.getElementById('f-liters').value || 0) : undefined;
+  var litersEl = document.getElementById('f-liters');
+  var liters = (catKey==='fuel' && litersEl) ? (+litersEl.value || 0) : undefined;
   var note = document.getElementById('f-note').value.trim();
   if(amount<=0){ closeModal(); return; }
   var existing = editId ? state.expenses.filter(function(e){return e.id===editId;})[0] : null;
@@ -3060,15 +3167,16 @@ function wireFeePlatToggle(){
   });
 }
 /* ---------- 顯示模式與功能開關 ---------- */
-var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['markup','加成(金額/倍率/%)'],['tip','小費'],['note','備註']];
-var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['toilet','🚻 上廁所次數']];
-var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['efficiency','效率指標'],['health','健康(上廁所)'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['dom','每月幾號'],['target','目標進度']];
-var UI_SIMPLE_OFF = ['subtype','fareType','payment','discount','markup','grossTile','trips','traffic','cashFlow','toilet','grossFees','health','tripEff','hotspot','detail','dom'];
+var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['markup','加成(金額/倍率/%)'],['tip','小費'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
+var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁']];
+var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度']];
+var UI_SIMPLE_OFF = ['subtype','fareType','payment','discount','markup','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
 function uiOn(k){ return !state.ui || state.ui[k]!==false; }
 // sections that only have data when another feature is on
 function uiShow(k){
   if(k==='tripEff' || k==='hotspot') return uiOn(k) && uiOn('trips');
   if(k==='health') return uiOn(k) && uiOn('toilet');
+  if(k==='efficiency') return uiOn(k) && (uiOn('shift') || uiOn('km'));
   return uiOn(k);
 }
 function uiPreset(mode){
@@ -3080,6 +3188,12 @@ function uiModeOf(ui){
   var keys = UI_FIELDS.concat(UI_ENTRY, UI_ANALYSIS).map(function(x){ return x[0]; });
   function same(p){ return keys.every(function(k){ return (ui[k]!==false)===(p[k]!==false); }); }
   return same(uiPreset('simple')) ? 'simple' : same(uiPreset('full')) ? 'full' : 'custom';
+}
+function uiModeLabel(ui){
+  var m = uiModeOf(ui);
+  if(m!=='custom') return ({simple:'🟢 簡單記帳',full:'🔵 完整分析'})[m];
+  var off = UI_FIELDS.concat(UI_ENTRY, UI_ANALYSIS).filter(function(x){ return ui[x[0]]===false; }).length;
+  return off > UI_SIMPLE_OFF.length/2 ? '🟢 簡單記帳 + 自選功能' : '🔵 完整分析(關掉部分功能)';
 }
 function applyTheme(){
   var t = state.theme;
@@ -3094,7 +3208,7 @@ function uiSettingsHtml(){
       list.map(function(x){ return '<label style="'+cb+'"><input type="checkbox" id="f-ui-'+x[0]+'" style="width:17px;height:17px;flex:none"'+(uiOn(x[0])?' checked':'')+'>'+esc(x[1])+'</label>'; }).join('');
   }
   var h = '<div class="form-row"><label>🧩 顯示模式與功能開關</label></div>';
-  h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-4px 0 8px;line-height:1.6">用不到的功能可以關掉,畫面會更簡單。<b>關掉不會刪資料</b>,之後再打開就回來了。目前:<b id="uiModeLbl">'+({simple:'🟢 簡單記帳',full:'🔵 完整分析',custom:'自訂'})[mode]+'</b></div>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-4px 0 8px;line-height:1.6">用不到的功能可以關掉,畫面會更簡單。<b>關掉不會刪資料</b>,之後再打開就回來了。目前:<b id="uiModeLbl">'+uiModeLabel(state.ui||{})+'</b></div>';
   h += '<div class="btn-row" style="margin-bottom:6px"><button class="btn" data-act="ui-preset:simple">🟢 一鍵切換:簡單記帳</button><button class="btn" data-act="ui-preset:full">🔵 一鍵切換:完整分析</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:4px">簡單記帳 = 點平台、打金額、儲存;完整分析 = 全部功能都打開。按完還可以在下面一項一項調整。</div>';
   h += group('記收入時要填的欄位', UI_FIELDS);
@@ -3103,7 +3217,7 @@ function uiSettingsHtml(){
     '<option value="card"'+(state.uiPayDefault==='card'?' selected':'')+'>信用卡(等平台撥款)</option></select></div>';
   h += group('記帳頁要顯示的', UI_ENTRY);
   h += group('分析頁要顯示的', UI_ANALYSIS);
-  h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin:2px 0 6px">「載客效率」「上車熱區」要開「上車/下車按鈕」才有資料;「健康」要開「上廁所次數」。</div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin:2px 0 6px">「載客效率」「上車熱區」要開「上車/下車按鈕」才有資料;「健康」要開「上廁所次數」;「效率指標」要開打卡或里程。<br>按了一鍵切換以後,還是可以在上面一項一項打開你想用的功能。</div>';
   h += '<div class="form-row" style="margin-top:10px"><label>🌓 外觀</label><select id="f-theme">'+
     '<option value="auto"'+(state.theme!=='light'&&state.theme!=='dark'?' selected':'')+'>跟著手機設定</option>'+
     '<option value="light"'+(state.theme==='light'?' selected':'')+'>淺色</option>'+
@@ -3128,6 +3242,33 @@ function openModeChooser(){
   h += '<button style="'+big+'" data-act="ui-choose:full"><b style="font-size:15px">🔵 完整分析</b><br><span style="font-size:12px;color:var(--text-muted)">記車種、付款方式、上下車時間,分析時薪、熱區、載客率。</span></button>';
   openModal(h);
 }
+/* ---------- icon picker: tap an icon box to choose instead of typing an emoji ---------- */
+var ICON_GROUPS = [
+  ['車輛', '🚕 🚖 🚗 🚙 🚘 🚐 🛻 🚌 🏎️ 🚓 🚑 ⚡ 🔋 🏍️ 🛵'],
+  ['叫車、乘客', '📱 📲 💬 📞 🙋 🙋🏻 👋 👋🏻 📅 🏢 ✈️ 🏨 🏥 🎫 🧳 👶 🐾 ♿'],
+  ['顏色標記', '🔵 🟢 🟡 🟠 🔴 🟣 ⚫ ⚪ 🟤 ⭐ 🌟 💎'],
+  ['支出', '⛽ 🔌 🅿️ 🛣️ 🧽 🔧 🛠️ 🛞 🚫 🏛️ 📝 🧾 💳 💵 🛡️ 📶 🍱 ☕ 🥤 🧻 🚿 🧴'],
+  ['其他', '💰 🎁 🏆 🎉 🌙 ☀️ ❤️ 📍 🗺️ 🔑 📊 🔔']
+];
+function toggleIconPicker(inputId){
+  var old = document.getElementById('iconPicker');
+  var same = old && old.getAttribute('data-for')===inputId;
+  if(old) old.remove();
+  if(same) return;
+  var input = document.getElementById(inputId); if(!input) return;
+  var anchor = input.closest('.plat-row') || input.closest('.form-grid2') || input.parentNode;
+  var btn = 'width:38px;height:38px;font-size:20px;border:1px solid var(--border);border-radius:9px;background:var(--surface);cursor:pointer;padding:0;font-family:inherit';
+  var h = ICON_GROUPS.map(function(g){
+    return '<div style="font-size:11px;font-weight:700;color:var(--text-muted);margin:6px 0 4px">'+g[0]+'</div><div style="display:flex;flex-wrap:wrap;gap:5px">'+
+      g[1].split(' ').map(function(e){ return '<button type="button" style="'+btn+'" data-act="icon-set:'+inputId+':'+e+'">'+e+'</button>'; }).join('')+'</div>';
+  }).join('');
+  h += '<div style="display:flex;gap:8px;margin-top:10px"><button type="button" class="btn" style="flex:1" data-act="icon-type:'+inputId+'">⌨️ 自己輸入</button><button type="button" class="btn" style="flex:1" data-act="icon-pick:'+inputId+'">關閉</button></div>';
+  var box = document.createElement('div');
+  box.id = 'iconPicker'; box.setAttribute('data-for', inputId);
+  box.style.cssText = 'background:var(--surface-sunken);border:1px solid var(--border);border-radius:12px;padding:8px 10px 10px;margin:4px 0 10px';
+  box.innerHTML = h;
+  anchor.parentNode.insertBefore(box, anchor.nextSibling);
+}
 function openSettingsModal(){
   var fr = state.feeRules;
   var h = '<div class="modal-title">設定<button class="close" data-act="close-modal">✕</button></div>';
@@ -3139,7 +3280,7 @@ function openSettingsModal(){
   allPlatforms().forEach(function(p){
     h += '<div class="plat-row" data-key="'+p.key+'">'+
       orderBtnsHtml('platOrderList', p.key)+
-      '<input type="text" id="f-plat-icon-'+p.key+'" value="'+esc(p.icon||'🚘')+'" maxlength="4" style="width:32px;flex:none;text-align:center;background:var(--surface-sunken);border:1px solid var(--border);border-radius:8px;padding:6px 2px;font-size:14px;color:var(--text)">'+
+      '<input type="text" id="f-plat-icon-'+p.key+'" readonly inputmode="none" data-act="icon-pick:f-plat-icon-'+p.key+'" value="'+esc(p.icon||'🚘')+'" maxlength="4" style="width:32px;flex:none;text-align:center;background:var(--surface-sunken);border:1px solid var(--border);border-radius:8px;padding:6px 2px;font-size:14px;color:var(--text)">'+
       '<input type="color" id="f-plat-color-'+p.key+'" value="'+(p.color||'#8A8272')+'" style="width:28px;height:28px;flex:none;padding:0;border:1px solid var(--border);border-radius:7px;background:none">'+
       '<input type="text" id="f-plat-name-'+p.key+'" value="'+esc(p.label)+'" style="flex:1;min-width:0;background:var(--surface-sunken);border:1px solid var(--border);border-radius:8px;padding:7px 9px;font-size:13px;color:var(--text)">'+
       '<label style="display:flex;align-items:center;gap:3px;font-size:10.5px;color:var(--text-muted);white-space:nowrap"><input type="checkbox" id="f-plat-hidden-'+p.key+'" '+(p.hidden?'checked':'')+'>隱藏</label>'+
@@ -3153,7 +3294,7 @@ function openSettingsModal(){
   h += '<div id="catOrderList">';
   allCats().forEach(function(c){
     h += '<div class="plat-row" data-key="'+c.key+'">'+orderBtnsHtml('catOrderList', c.key)+
-      '<input type="text" id="f-cat-icon-'+c.key+'" value="'+esc(c.icon)+'" maxlength="4" style="width:32px;flex:none;text-align:center;background:var(--surface-sunken);border:1px solid var(--border);border-radius:8px;padding:6px 2px;font-size:14px;color:var(--text)">'+
+      '<input type="text" id="f-cat-icon-'+c.key+'" readonly inputmode="none" data-act="icon-pick:f-cat-icon-'+c.key+'" value="'+esc(c.icon)+'" maxlength="4" style="width:32px;flex:none;text-align:center;background:var(--surface-sunken);border:1px solid var(--border);border-radius:8px;padding:6px 2px;font-size:14px;color:var(--text)">'+
       '<input type="text" id="f-cat-name-'+c.key+'" value="'+esc(c.label)+'" maxlength="12" style="flex:1;min-width:0;background:var(--surface-sunken);border:1px solid var(--border);border-radius:8px;padding:7px 9px;font-size:13px;color:var(--text)">'+
       '<label style="display:flex;align-items:center;gap:3px;font-size:10.5px;color:var(--text-muted);white-space:nowrap"><input type="checkbox" id="f-cat-hidden-'+c.key+'" '+(c.hidden?'checked':'')+'>隱藏</label>'+
       (c.custom ? '<button class="li-del" data-act="del-cat:'+c.key+'">✕</button>' : '')+
@@ -3194,6 +3335,7 @@ function openSettingsModal(){
     [0,1,2,3,4,5,6,7,8].map(function(hh){ return '<option value="'+hh+'"'+(hh===cutoffNow?' selected':'')+'>'+(hh===0?'午夜 00:00(不跨夜)':('凌晨 '+pad(hh)+':00'))+'</option>'; }).join('')+
     '</select></div>';
   h += '<div class="form-row" style="margin-top:6px"><label>進階:記錄接單時間</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-track-accept" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.trackAccept?' checked':'')+'>打開後,下車後的大按鈕會變成「📲 接到單了」。接單時按一下,客人上車再按「上車」,分析頁就能把空檔拆成「等單」和「接駁」兩段。不打開就跟原本一樣。</label></div>';
+  if(HOT_URL) h += '<div class="form-row"><label>分享上車熱區(車友熱區)</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-share-hot" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.shareHot===true?' checked':'')+'>分享你的上車熱區,就能在分析頁看「車友熱區」。只送約 1 公里一格的區域、日期、時段、趟數,<b>不送精確位置、金額、平台</b>;3 位以上車友都上過車的地方才會顯示。</label></div>';
   h += '<div class="form-row"><label>匿名使用人數統計</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-stat-on" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.statOptOut?'':' checked')+'>參與匿名統計,幫製作者知道有多少司機在用。每天只送一次:隨機編號、日期、版本、簡單/完整模式、手機系統。<b>不含任何金額、平台、位置或個人資料。</b></label></div>';
   h += '<div class="form-row" style="margin-top:6px"><label>Google Sheet 同步網址</label><input id="f-sync-url" type="text" placeholder="https://script.google.com/macros/s/.../exec" value="'+esc(state.syncUrl||'')+'"></div>';
   h += '<div class="form-row"><label>雲端密碼(要跟 Apps Script 指令碼屬性 TAXI_KEY 一樣)</label><input id="f-cloud-key" type="password" autocomplete="off" placeholder="尚未設定" value="'+esc(getCloudKey())+'">'+
@@ -3233,18 +3375,21 @@ var WHATS_NEW = [
   '🟢 一鍵切換「簡單記帳」:點平台、打金額、儲存就好;想看完整分析隨時切回「🔵 完整分析」',
   '🌓 外觀可以選淺色、深色,或跟著手機設定',
   '⚡ BOLT 實收算到小數點兩位,跟 App 一樣用每趟的小數加總',
-  '📊 新增匿名使用人數統計(不含任何帳目),不想參與可以在 ⚙️ 取消勾選'
+  '📊 新增匿名使用人數統計(不含任何帳目),不想參與可以在 ⚙️ 取消勾選',
+  '🎨 改圖示更方便:在設定裡點平台或支出項目的圖示,直接從清單挑',
+  '👥 新增「車友熱區」:同意分享的車友,可以在分析頁看附近車友都在哪裡上車(不含精確位置、金額)'
 ];
 function maybeShowWhatsNew(){
-  if(state.seenVersion===APP_VERSION) return;
+  if(state.seenVersion===APP_VERSION) return false;
   // brand-new users get the full guide from whoever shared the link, not a change list
-  if(!hasMeaningfulData()){ state.seenVersion = APP_VERSION; save(); return; }
+  if(!hasMeaningfulData()){ state.seenVersion = APP_VERSION; save(); return false; }
   var h = '<div class="modal-title">記帳本更新了 🎉<button class="close" data-act="close-modal">✕</button></div>';
   h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">版本 '+APP_VERSION+' · 你的資料都還在,不用重新設定</div>';
   h += '<div style="font-size:13px;line-height:1.7">'+WHATS_NEW.map(function(x){ return '<div style="margin-bottom:6px">'+esc(x)+'</div>'; }).join('')+'</div>';
   h += '<div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" data-act="close-modal">知道了</button></div>';
   state.seenVersion = APP_VERSION; save();
   openModal(h);
+  return true;
 }
 function aboutHtml(){
   var link = 'color:var(--accent);text-decoration:none;font-weight:700';
@@ -3253,6 +3398,7 @@ function aboutHtml(){
   h += para('🆓 免費使用', '本記帳本完全免費,不需註冊帳號。');
   h += para('🔒 你的帳,只有你看得到', '所有紀錄只存在你自己的手機裡,製作者和其他使用者都看不到。設定雲端備份的話,資料也是存到你自己的 Google 帳號。<br>為了保護你的資料,建議手機設定螢幕鎖,並定期備份。');
   h += para('📊 匿名使用人數統計', '為了知道有多少司機在用,記帳本每天會送出一次匿名資料:一組隨機編號、日期、版本、簡單/完整模式、手機系統(iPhone/安卓)。<br>不包含任何金額、平台、位置或個人資料,製作者也無法從編號知道你是誰。不想參與,可以在上面「匿名使用人數統計」取消勾選。');
+  h += para('📍 車友熱區', '同意分享的人,記帳本每天會送出前一天的「約 1 公里一格的上車區域、時段、趟數」,不含精確位置、金額、平台。至少 3 位車友都上過車的地方才會顯示給有分享的人看,看不到任何人的個人紀錄。可以隨時在上面取消分享。');
   h += para('💬 建議與問題回報', '有任何建議或使用上的問題,歡迎來信:<br>'+
     '✉️ <a style="'+link+'" href="mailto:ridewithwelson@gmail.com">ridewithwelson@gmail.com</a>');
   h += para('ℹ️ 版本資訊', '版本:'+APP_VERSION+'<br>製作者:Welson 威爾森<br>© 2026 Welson 版權所有');
@@ -3485,7 +3631,7 @@ function saveCatSettings(){
 }
 function openNewCatModal(){
   var h = '<div class="modal-title">新增支出項目<button class="close" data-act="close-modal">✕</button></div>';
-  h += '<div class="form-grid2" style="grid-template-columns:70px 1fr"><div class="form-row"><label>圖示</label><input id="f-newcat-icon" type="text" maxlength="4" value="🧾" style="text-align:center"></div>'+
+  h += '<div class="form-grid2" style="grid-template-columns:70px 1fr"><div class="form-row"><label>圖示</label><input id="f-newcat-icon" readonly inputmode="none" data-act="icon-pick:f-newcat-icon" type="text" maxlength="4" value="🧾" style="text-align:center"></div>'+
     '<div class="form-row"><label>名稱</label><input id="f-newcat-name" type="text" maxlength="12" placeholder="例如:餐費、手機網路費"></div></div>';
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-newcat">新增</button></div>';
   openModal(h);
@@ -3534,6 +3680,9 @@ function saveSettings(){
   state.dayCutoffHour = +document.getElementById('f-day-cutoff').value;
   state.trackAccept = document.getElementById('f-track-accept').checked;
   state.statOptOut = !document.getElementById('f-stat-on').checked;
+  var shEl = document.getElementById('f-share-hot');
+  // an untouched box for someone never asked keeps them in the "ask me" state
+  if(shEl && (shEl.checked || state.shareHot!==undefined)){ var wasShare = state.shareHot; state.shareHot = shEl.checked; if(state.shareHot && wasShare!==true){ friendHot = {}; setTimeout(hotSharePush, 500); } }
   var prevSyncUrl = state.syncUrl;
   state.syncUrl = document.getElementById('f-sync-url').value.trim();
   var keyBefore = getCloudKey();
@@ -3648,6 +3797,10 @@ document.addEventListener('click', function(e){
   else if(cmd==='period'){ analyticsPeriod=arg; renderAll(); }
   else if(cmd==='year'){ uiMonth.setFullYear(uiMonth.getFullYear()+(+arg)); renderAll(); }
   else if(cmd==='hot-slot'){ hotspotSlot=arg; renderAll(); }
+  else if(cmd==='hot-src'){ hotSource=arg; renderAll(); }
+  else if(cmd==='hot-reload'){ friendHot = {}; renderAll(); }
+  else if(cmd==='share-hot-on'){ state.shareHot = true; save(); hotSharePush(); friendHot = {}; renderAll(); }
+  else if(cmd==='share-hot-choose'){ state.shareHot = arg==='yes'; save(); closeModal(); if(state.shareHot) hotSharePush(); }
   else if(cmd==='hot-rename'){
     var hrNames = state.hotspotNames || {};
     var hrNow = hrNames[arg] || (state.hotspotPlaces||{})[arg] || '';
@@ -3818,6 +3971,17 @@ document.addEventListener('click', function(e){
   else if(cmd==='reset-all'){
     if(confirm('確定要清除所有記帳資料嗎?此動作無法復原。')){ state=defaultState(); save(); closeModal(); renderAll(); }
   }
+  else if(cmd==='icon-pick'){ toggleIconPicker(arg); }
+  else if(cmd==='icon-set'){
+    var ix = arg.indexOf(':'), iel = document.getElementById(arg.slice(0,ix));
+    if(iel) iel.value = arg.slice(ix+1);
+    var ip = document.getElementById('iconPicker'); if(ip) ip.remove();
+  }
+  else if(cmd==='icon-type'){
+    var tel = document.getElementById(arg);
+    var ip2 = document.getElementById('iconPicker'); if(ip2) ip2.remove();
+    if(tel){ tel.readOnly = false; tel.removeAttribute('inputmode'); tel.removeAttribute('data-act'); tel.focus(); tel.select(); }
+  }
   else if(cmd==='ui-preset'){
     var pr = uiPreset(arg);
     Object.keys(pr).forEach(function(k){ var el = document.getElementById('f-ui-'+k); if(el) el.checked = pr[k]; });
@@ -3906,10 +4070,11 @@ applyTheme();
 renderAll();
 setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(); }); }, 1500);
 setTimeout(statPing, 4000);
+setTimeout(hotSharePush, 6000);
 var _staleShiftDate = findStaleOpenShiftDate();
 if(_staleShiftDate){ openStaleShiftModal(_staleShiftDate); }
 else if(!state.uiMode && !hasMeaningfulData()){ state.seenVersion = APP_VERSION; openModeChooser(); }
-else { if(!state.uiMode){ state.uiMode = uiModeOf(state.ui||{}); save(); } var _missingKmDate = findMissingKmDate(); if(_missingKmDate) openMissingKmModal(_missingKmDate); else maybeShowWhatsNew(); }
+else { if(!state.uiMode){ state.uiMode = uiModeOf(state.ui||{}); save(); } var _missingKmDate = findMissingKmDate(); if(_missingKmDate) openMissingKmModal(_missingKmDate); else if(!maybeShowWhatsNew()) maybeAskShareHot(); }
 }
 // Load saved data from IndexedDB (large storage) first, then start the app with it.
 // If IndexedDB is unavailable the app falls back to localStorage like before.
