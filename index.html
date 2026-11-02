@@ -916,7 +916,31 @@ window.addEventListener('online', function(){ setTimeout(cloudSyncIfBehind, 1500
 function flushCloudSync(){
   if(cloudSyncTimer){ clearTimeout(cloudSyncTimer); cloudSyncTimer=null; pushCloudSnapshot(); }
 }
-document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='hidden') flushCloudSync(); });
+document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='hidden') flushCloudSync(); else statPing(); });
+
+/* ---------- 匿名使用人數統計 ----------
+   once per calendar day: a random device id, date, version, mode, phone OS. Never any amounts, platforms or locations.
+   The endpoint only accepts these pings; it has no way to read anything back. */
+var STAT_URL = 'https://script.google.com/macros/s/AKfycbymslkUN8TEY80ln4-WNynHxzMp2vKwkWBzYfFuU7oJ9k-OEyWtJojB8MWLY1Oi2EqmmQ/exec';
+function statPing(){
+  if(!STAT_URL || state.statOptOut) return;
+  if(/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) return;
+  var day = toDateStr(new Date()), sent = null;
+  try{ sent = localStorage.getItem('taxi_stat_day'); }catch(e){}
+  if(sent===day) return;
+  if(!state.statId){
+    var a = new Uint32Array(3); (window.crypto||window.msCrypto).getRandomValues(a);
+    state.statId = Array.prototype.map.call(a, function(n){ return n.toString(36); }).join('').slice(0,16);
+    save();
+  }
+  var ua = navigator.userAgent;
+  var os = /iPhone|iPad|iPod/.test(ua) ? 'ios' : (/Android/.test(ua) ? 'android' : 'other');
+  var sa = ((window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone) ? 1 : 0;
+  var q = 'id='+state.statId+'&d='+day+'&v='+encodeURIComponent(APP_VERSION)+'&m='+(state.uiMode||'new')+'&os='+os+'&sa='+sa;
+  fetch(STAT_URL+'?'+q, {mode:'no-cors', cache:'no-store'}).then(function(){
+    try{ localStorage.setItem('taxi_stat_day', day); }catch(e){}
+  }, function(){});
+}
 window.addEventListener('pagehide', flushCloudSync);
 var cloudCbSeq = 0;
 function cloudGet(params){
@@ -3170,6 +3194,7 @@ function openSettingsModal(){
     [0,1,2,3,4,5,6,7,8].map(function(hh){ return '<option value="'+hh+'"'+(hh===cutoffNow?' selected':'')+'>'+(hh===0?'午夜 00:00(不跨夜)':('凌晨 '+pad(hh)+':00'))+'</option>'; }).join('')+
     '</select></div>';
   h += '<div class="form-row" style="margin-top:6px"><label>進階:記錄接單時間</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-track-accept" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.trackAccept?' checked':'')+'>打開後,下車後的大按鈕會變成「📲 接到單了」。接單時按一下,客人上車再按「上車」,分析頁就能把空檔拆成「等單」和「接駁」兩段。不打開就跟原本一樣。</label></div>';
+  h += '<div class="form-row"><label>匿名使用人數統計</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-stat-on" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.statOptOut?'':' checked')+'>參與匿名統計,幫製作者知道有多少司機在用。每天只送一次:隨機編號、日期、版本、簡單/完整模式、手機系統。<b>不含任何金額、平台、位置或個人資料。</b></label></div>';
   h += '<div class="form-row" style="margin-top:6px"><label>Google Sheet 同步網址</label><input id="f-sync-url" type="text" placeholder="https://script.google.com/macros/s/.../exec" value="'+esc(state.syncUrl||'')+'"></div>';
   h += '<div class="form-row"><label>雲端密碼(要跟 Apps Script 指令碼屬性 TAXI_KEY 一樣)</label><input id="f-cloud-key" type="password" autocomplete="off" placeholder="尚未設定" value="'+esc(getCloudKey())+'">'+
     '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);margin-top:6px;font-weight:400"><input type="checkbox" id="f-cloud-key-show" style="width:16px;height:16px">顯示密碼</label>'+
@@ -3207,7 +3232,8 @@ var WHATS_NEW = [
   '🧩 可以自己關掉用不到的功能:記收入要填的欄位、記帳頁、分析頁的區塊都能開關(⚙️ 最上面)',
   '🟢 一鍵切換「簡單記帳」:點平台、打金額、儲存就好;想看完整分析隨時切回「🔵 完整分析」',
   '🌓 外觀可以選淺色、深色,或跟著手機設定',
-  '⚡ BOLT 實收算到小數點兩位,跟 App 一樣用每趟的小數加總'
+  '⚡ BOLT 實收算到小數點兩位,跟 App 一樣用每趟的小數加總',
+  '📊 新增匿名使用人數統計(不含任何帳目),不想參與可以在 ⚙️ 取消勾選'
 ];
 function maybeShowWhatsNew(){
   if(state.seenVersion===APP_VERSION) return;
@@ -3226,6 +3252,7 @@ function aboutHtml(){
   var h = '<div class="card" style="margin-top:18px;padding:14px 16px"><div style="font-size:15px;font-weight:700;margin-bottom:12px">關於跑車人生</div>';
   h += para('🆓 免費使用', '本記帳本完全免費,不需註冊帳號。');
   h += para('🔒 你的帳,只有你看得到', '所有紀錄只存在你自己的手機裡,製作者和其他使用者都看不到。設定雲端備份的話,資料也是存到你自己的 Google 帳號。<br>為了保護你的資料,建議手機設定螢幕鎖,並定期備份。');
+  h += para('📊 匿名使用人數統計', '為了知道有多少司機在用,記帳本每天會送出一次匿名資料:一組隨機編號、日期、版本、簡單/完整模式、手機系統(iPhone/安卓)。<br>不包含任何金額、平台、位置或個人資料,製作者也無法從編號知道你是誰。不想參與,可以在上面「匿名使用人數統計」取消勾選。');
   h += para('💬 建議與問題回報', '有任何建議或使用上的問題,歡迎來信:<br>'+
     '✉️ <a style="'+link+'" href="mailto:ridewithwelson@gmail.com">ridewithwelson@gmail.com</a>');
   h += para('ℹ️ 版本資訊', '版本:'+APP_VERSION+'<br>製作者:Welson 威爾森<br>© 2026 Welson 版權所有');
@@ -3506,6 +3533,7 @@ function saveSettings(){
   state.feeRules.boltThresholdEnabled = document.getElementById('f-fee-boltthresholdenabled').checked;
   state.dayCutoffHour = +document.getElementById('f-day-cutoff').value;
   state.trackAccept = document.getElementById('f-track-accept').checked;
+  state.statOptOut = !document.getElementById('f-stat-on').checked;
   var prevSyncUrl = state.syncUrl;
   state.syncUrl = document.getElementById('f-sync-url').value.trim();
   var keyBefore = getCloudKey();
@@ -3877,6 +3905,7 @@ document.addEventListener('change', function(e){
 applyTheme();
 renderAll();
 setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(); }); }, 1500);
+setTimeout(statPing, 4000);
 var _staleShiftDate = findStaleOpenShiftDate();
 if(_staleShiftDate){ openStaleShiftModal(_staleShiftDate); }
 else if(!state.uiMode && !hasMeaningfulData()){ state.seenVersion = APP_VERSION; openModeChooser(); }
