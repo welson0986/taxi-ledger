@@ -238,6 +238,16 @@ body{
   padding:16px 18px calc(18px + env(safe-area-inset-bottom,0px));max-height:calc(88vh / var(--zoom, 1));overflow-y:auto;
   box-shadow:0 -4px 24px rgba(0,0,0,.2);
 }
+.set-sec{border:1px solid var(--border);border-radius:14px;margin-bottom:8px;background:var(--surface)}
+.set-sec-hd{width:100%;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;background:none;border:none;color:var(--text);font-family:inherit;text-align:left;cursor:pointer}
+.set-sec-hd b{display:block;font-size:14.5px}
+.set-sec-hd small{display:block;font-size:11.5px;color:var(--text-muted);margin-top:2px;font-weight:400;line-height:1.4}
+.set-sec.open .set-sec-hd{border-bottom:1px solid var(--border)}
+.set-chev{font-size:14px;color:var(--text-muted);flex:none}
+.set-sec-bd{padding:8px 12px 12px}
+.set-sec-bd .form-grid2>*{min-width:0}
+.set-sec-bd input:not([type=checkbox]):not([type=color]),.set-sec-bd select,.set-sec-bd textarea{max-width:100%;box-sizing:border-box}
+.settings-save{position:sticky;bottom:calc(-18px - env(safe-area-inset-bottom,0px));background:var(--surface);padding:10px 0 calc(12px + env(safe-area-inset-bottom,0px));margin-top:10px;border-top:1px solid var(--border);z-index:2}
 .modal-title{font-size:16px;font-weight:900;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center}
 .modal-title .close{background:var(--surface-sunken);border:none;width:30px;height:30px;border-radius:9px;font-size:15px;cursor:pointer;color:var(--text)}
 .form-row{margin-bottom:12px}
@@ -259,6 +269,8 @@ body{
 
 .plat-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)}
 .plat-row:last-child{border-bottom:none}
+.plat-row .li-del{flex:none}
+.big-ui .plat-row{gap:5px}
 .plat-row.dragging{opacity:.4}
 .ord-btns{display:flex;flex-direction:column;gap:2px;flex:none}
 .ord-btn{width:26px;height:20px;padding:0;border:1px solid var(--border);border-radius:5px;background:var(--surface-sunken);color:var(--text);font-size:11px;line-height:1;cursor:pointer;font-family:inherit}
@@ -3664,18 +3676,18 @@ function applyTheme(){
   if(t==='light' || t==='dark') document.documentElement.setAttribute('data-theme', t);
   else document.documentElement.removeAttribute('data-theme');
 }
-function uiSettingsHtml(){
+function uiSettingsHtml(part){
   var mode = uiModeOf(state.ui||{});
   var cb = 'display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text);margin:0 0 7px';
   function group(title, list){
     return '<div style="font-size:12px;font-weight:700;color:var(--text-muted);margin:10px 0 6px">'+title+'</div>'+
       list.map(function(x){ return '<label style="'+cb+'"><input type="checkbox" id="f-ui-'+x[0]+'" style="width:17px;height:17px;flex:none"'+(uiOn(x[0])?' checked':'')+'>'+esc(x[1])+'</label>'; }).join('');
   }
-  var h = '<div class="form-row"><label>🧩 顯示模式與功能開關</label></div>';
+  var h = '<div class="form-row"><label>🧩 顯示模式與功能開關</label></div>', hb = '';
   h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-4px 0 8px;line-height:1.6">用不到的功能可以關掉,畫面會更簡單。<b>關掉不會刪資料</b>,之後再打開就回來了。目前:<b id="uiModeLbl">'+uiModeLabel(state.ui||{})+'</b></div>';
   h += '<div class="btn-row" style="margin-bottom:6px"><button class="btn" data-act="ui-preset:simple">🟢 一鍵切換:簡單記帳</button><button class="btn" data-act="ui-preset:full">🔵 一鍵切換:完整分析</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:4px">簡單記帳 = 點平台、打金額、儲存;完整分析 = 全部功能都打開。按完還可以在下面一項一項調整。</div>';
-  h += '<div class="form-row" style="margin:4px 0 10px"><label>🚕 我的車</label><select id="f-car-type">'+
+  hb += '<div class="form-row" style="margin:4px 0 10px"><label>🚕 我的車</label><select id="f-car-type">'+
     '<option value="multi"'+(!isYellowCab()&&!isRental()?' selected':'')+'>多元計程車</option>'+
     '<option value="yellow"'+(isYellowCab()?' selected':'')+'>小黃(一般計程車)</option>'+
     '<option value="rental"'+(isRental()?' selected':'')+'>R 牌租賃車</option></select>'+
@@ -3692,14 +3704,13 @@ function uiSettingsHtml(){
     '今天上班滿 <input id="f-rest-day" type="number" min="0" step="1" inputmode="numeric" style="'+numIn+'" value="'+restDayHours()+'"> 小時提醒收工(填 0 = 不提醒)</div></div>';
   h += group('分析頁要顯示的', UI_ANALYSIS);
   h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin:2px 0 6px">「載客效率」「上車熱區」要開「上車/下車按鈕」才有資料;「健康」要開「上廁所次數」;「效率指標」要開打卡或里程。<br>按了一鍵切換以後,還是可以在上面一項一項打開你想用的功能。</div>';
-  h += '<div class="form-row" style="margin-top:10px"><label>🌓 外觀</label><select id="f-theme">'+
+  hb += '<div class="form-row" style="margin-top:10px"><label>🌓 外觀</label><select id="f-theme">'+
     '<option value="auto"'+(state.theme!=='light'&&state.theme!=='dark'?' selected':'')+'>跟著手機設定</option>'+
     '<option value="light"'+(state.theme==='light'?' selected':'')+'>淺色</option>'+
     '<option value="dark"'+(state.theme==='dark'?' selected':'')+'>深色</option></select></div>';
-  h += '<div class="form-row"><label>🔠 字體大小(字、圖示、按鈕一起放大)</label>'+chipRowHtml('fontScale', FONT_SCALES.map(function(x){ return x[0]; }), fontScaleLabel())+
+  hb += '<div class="form-row"><label>🔠 字體大小(字、圖示、按鈕一起放大)</label>'+chipRowHtml('fontScale', FONT_SCALES.map(function(x){ return x[0]; }), fontScaleLabel())+
     '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5">點了馬上換,不用按儲存。特大、超大的平台按鈕會改成一排 2 個。</div></div>';
-  h += '<div style="height:10px"></div>';
-  return h;
+  return part==='basic' ? hb : h;
 }
 function saveUiSettings(){
   var ui = {};
@@ -3917,7 +3928,7 @@ document.addEventListener('visibilitychange', function(){ if(document.visibility
 var HELP = [
   ['記收入', [
     ['記一筆收入', '記帳頁點平台 → 打金額 → 儲存。Uber 多元打 App 顯示的實收;其他平台打車資,系統自動扣手續費。2 分鐘內記了一模一樣的一筆會先問你。'],
-    ['我的車:多元/小黃/R 牌', '⚙️ 最上面「我的車」。選小黃後 Uber、BOLT、LINE GO 不用選車種;Uber 小黃打跳表金額,自動扣 15%(手續費設定可改)。選 R 牌租賃車,記帳頁不顯示路招、呼叫小黃、接電。'],
+    ['我的車:多元/小黃/R 牌', '⚙️「基本設定」→「我的車」。選小黃後 Uber、BOLT、LINE GO 不用選車種;Uber 小黃打跳表金額,自動扣 15%(手續費設定可改)。選 R 牌租賃車,記帳頁不顯示路招、呼叫小黃、接電。'],
     ['車種/屬性', 'Uber、BOLT、LINE GO 記帳時選車種,分析頁可以看各車種賺多少。', 'subtype'],
     ['計價方式', '跳表、預估車資、據點叫車。', 'fareType'],
     ['付款方式', '現金、信用卡、悠遊卡、愛心卡、企業簽單…;會算出今日現金和待撥款(悠遊卡、愛心卡算車隊撥款,不算今日現金,撥款時扣手續費 %,預設 3%,可在平台手續費設定改)。關掉時可設定一律當現金或信用卡。', 'payment'],
@@ -3976,14 +3987,15 @@ var HELP = [
     ['清除所有資料', '⚙️ 最下面,要輸入「清除」兩個字才會執行。']
   ]],
   ['設定與外觀', [
-    ['簡單記帳 / 完整分析', '⚙️ 最上面一鍵切換,也可以一項一項開關;關掉不會刪資料。'],
+    ['簡單記帳 / 完整分析', '⚙️「記帳首頁與功能」一鍵切換,也可以一項一項開關;關掉不會刪資料。'],
     ['平台、車種、支出項目', '⚙️ 平台管理:隱藏、排序、改名稱、顏色、圖示;車種和支出項目也可以隱藏、新增。'],
     ['LINE GO 小黃的手續費', '⚙️「平台手續費設定」→ Line Go(我的車選小黃才有):車資 $199 以下每趟扣 $10、$200 以上抽 10%,刷卡、LINE Pay、悠遊卡另扣 2.5%,付現金不扣;派遣費每月累計到 $3,000 就不再扣;都可以改。記帳時選付款方式。'],
     ['台灣大小黃的手續費', '⚙️「平台手續費設定」→ 台灣大車隊(我的車選小黃才有信用卡那格):多平台小黃填手續費 %(已含刷卡費);台灣大正式隊員填每單扣 $,刷卡、綁定支付另扣的 % 填在「信用卡/綁定支付手續費 %」。月費、電話費記在固定成本。'],
     ['手續費設定', '⚙️「平台手續費設定」:每單扣 $ 和 %,沒有的留空;月費記在固定成本。從某天起換方案可以套用到那天以後的帳。接電單:台灣大照台灣大的設定,大都會照方案(0 月費 12.5%)、綁定支付另扣刷卡 %。'],
     ['自己的車行、車隊', '⚙️ 平台管理「+ 新增平台」,可以設派遣費 % 和 / 或每趟扣 $(R 牌車行常用),也可以選「車行收款後撥給我」,撥款頁就會出現這個平台;之後在平台手續費設定、撥款設定改。'],
     ['外觀、名稱', '⚙️「外觀」選跟著手機 / 淺色 / 深色;點左上角名稱可以改。'],
-    ['記帳首頁排列', '⚙️「記帳首頁排列」:用 ▲▼ 調整記帳頁每一塊的順序(例如把平台按鈕放到最上面),取消勾選就不顯示;排亂了按「恢復預設排列」。'],
+    ['設定頁分類', '⚙️ 設定分成基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享,點一類才展開;「儲存設定」固定在最下面。'],
+    ['記帳首頁排列', '⚙️「記帳首頁與功能」→「記帳首頁排列」:用 ▲▼ 調整記帳頁每一塊的順序(例如把平台按鈕放到最上面),取消勾選就不顯示;排亂了按「恢復預設排列」。'],
     ['字體大小', '⚙️「字體大小」選標準 / 大 / 特大 / 超大,字、圖示、按鈕一起放大,點了馬上換。看不清楚、有老花眼的可以調大。'],
     ['隱私', '帳只存在你的手機。不具名使用統計可以在 ⚙️ 取消;完整隱私權政策在「關於跑車人生」。']
   ]]
@@ -4211,8 +4223,10 @@ function openSettingsModal(){
   var fr = state.feeRules;
   var h = '<div class="modal-title">設定<button class="close" data-act="close-modal">✕</button></div>';
   h += '<div class="btn-row" style="margin-bottom:12px"><button class="btn" data-act="open-help">📖 功能說明:每個功能在哪裡、怎麼用</button></div>';
-  h += uiSettingsHtml();
-  h += feeSettingsHtml(fr);
+  var hdr = h, S = {};
+  S.basic = uiSettingsHtml('basic');
+  S.features = uiSettingsHtml('features');
+  h = feeSettingsHtml(fr);
 
   h += '<div class="form-row" style="margin-top:6px"><label>平台管理(用 ▲▼ 排序,可改名/隱藏/新增)</label></div>';
   h += '<div id="platOrderList">';
@@ -4229,6 +4243,7 @@ function openSettingsModal(){
   h += '</div>';
   h += '<div style="height:8px"></div><button class="add-fixed-btn" data-act="open-newplatform">+ 新增平台</button><div style="height:14px"></div>';
 
+  S.platforms = h; h = '';
   h += '<div class="form-row" style="margin-top:6px"><label>支出項目管理(用 ▲▼ 排序,可改名/隱藏/新增)</label></div>';
   h += '<div id="catOrderList">';
   allCats().forEach(function(c){
@@ -4249,6 +4264,7 @@ function openSettingsModal(){
   });
   h += '</div><div style="height:8px"></div>';
 
+  S.expenses = h; h = '';
   var stPlats = allPlatforms().filter(function(p){ return p.allSubtypes && p.allSubtypes.length; });
   if(stPlats.length){
     h += '<div class="form-row" style="margin-top:6px"><label>車種/屬性管理(用 ▲▼ 排序,勾選的不會出現在記帳畫面)</label>';
@@ -4264,6 +4280,7 @@ function openSettingsModal(){
     h += '</div><div style="height:8px"></div>';
   }
 
+  S.platforms += h; h = '';
   h += '<div class="form-row" style="margin-top:6px"><label>收入目標(依實收計算)</label>';
   h += '<div class="form-grid2" style="margin-bottom:8px"><div><span style="font-size:11px;color:var(--text-muted)">每日</span><input class="num-input" id="f-target-daily" type="number" min="0" value="'+(state.targets.daily||'')+'"></div>'+
        '<div><span style="font-size:11px;color:var(--text-muted)">每週</span><input class="num-input" id="f-target-weekly" type="number" min="0" value="'+(state.targets.weekly||'')+'"></div></div>';
@@ -4273,16 +4290,17 @@ function openSettingsModal(){
   h += '<div class="form-row" style="margin-top:6px"><label>我的營業日分界時間(日報、分析用;跑過午夜時,這個時間以前都算前一天。平台撥款另外依各平台結算時間計算,不受影響)</label><select id="f-day-cutoff">'+
     [0,1,2,3,4,5,6,7,8].map(function(hh){ return '<option value="'+hh+'"'+(hh===cutoffNow?' selected':'')+'>'+(hh===0?'午夜 00:00(不跨夜)':('凌晨 '+pad(hh)+':00'))+'</option>'; }).join('')+
     '</select></div>';
+  S.basic += h; h = '';
   h += '<div class="form-row" style="margin-top:6px"><label>進階:記錄接單時間</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-track-accept" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.trackAccept?' checked':'')+'>打開後,下車後的大按鈕會變成「📲 接到單了」。接單時按一下,客人上車再按「上車」,分析頁就能把空檔拆成「等單」和「接駁」兩段。不打開就跟原本一樣。</label></div>';
   if(HOT_URL) h += '<div class="form-row"><label>分享上車熱區(車友熱區)</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-share-hot" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.shareHot===true?' checked':'')+'>分享你的上車熱區,就能在分析頁看「車友熱區」。只送約 1 公里一格的區域、日期、時段、趟數,<b>不送精確位置、金額、平台</b>;3 位以上車友都上過車的地方才會顯示。取消勾選會一併刪除你分享過的資料。</label></div>';
   h += '<div class="form-row"><label>不具名使用人數統計</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-stat-on" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.statOptOut?'':' checked')+'>參與不具名統計,幫製作者知道有多少司機在用。每天只送一次:隨機編號、日期、版本、簡單/完整模式、手機系統、是否從主畫面打開。<b>不含任何金額、平台、位置或個人資料。</b></label></div>';
+  S.privacy = h; h = '';
   h += '<div class="form-row" style="margin-top:6px"><label>Google Sheet 同步網址</label><input id="f-sync-url" type="text" placeholder="https://script.google.com/macros/s/.../exec" value="'+esc(state.syncUrl||'')+'"></div>';
   h += '<div class="form-row"><label>雲端密碼(要跟 Apps Script 指令碼屬性 TAXI_KEY 一樣)</label><input id="f-cloud-key" type="password" autocomplete="off" placeholder="尚未設定" value="'+esc(getCloudKey())+'">'+
     '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);margin-top:6px;font-weight:400"><input type="checkbox" id="f-cloud-key-show" style="width:16px;height:16px">顯示密碼</label>'+
     '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px"><span id="cloudAuthLine" style="font-size:12px;color:var(--text-muted)">'+cloudStatusText()+'</span><button class="btn btn-ghost" style="flex:none;width:auto;padding:7px 12px;font-size:12px" data-act="test-cloud">測試雲端連線</button></div>'+
     '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5">密碼只存在這支手機,不會寫進網頁原始碼,也不會放進雲端備份。換手機時要重新輸入。</div></div>';
 
-  h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-settings">儲存設定</button></div>';
   h += '<div style="height:10px"></div>';
   h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="sync-all">立即同步到雲端</button><button class="btn btn-ghost" style="flex:1" data-act="open-restore">從雲端還原</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">'+(state.lastCloudPushOk?('上次成功送出同步:'+fmtTs(state.lastCloudPushOk)):'這個瀏覽器還沒有成功送出過同步')+((state.lastChangeAt||0)>(state.lastCloudPushOk||0)&&state.lastCloudPushOk?' · 有新的變動尚未送出':'')+'</div>';
@@ -4303,13 +4321,17 @@ function openSettingsModal(){
 
   h += '<div class="btn-row"><button class="btn btn-danger" data-act="reset-all">清除所有資料</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.6">資料儲存在這支手機的瀏覽器裡。設定 Google Sheet 網址後,每次新增、修改、刪除後停 30 秒(或打下班卡、切出記帳本時)會自動把完整資料同步到雲端(表單會整份更新,不會重複,刪除也會同步),雲端另外保留最近 60 次、90 天內每天一份、24 個月內每月一份完整備份(Apps Script v5 起存在 Google 雲端硬碟),換手機或資料不見時可以用「從雲端還原」拿回來。</div>';
-  h += aboutHtml();
+  S.cloud = h;
+  S.about = aboutHtml();
+  h = hdr + settingsSectionsHtml(S);
+  h += '<div class="settings-save"><div class="btn-row"><button class="btn btn-primary" data-act="save-settings">儲存設定</button></div></div>';
   openModal(h);
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.03.21';
+var APP_VERSION = '2026.11.04.1';
 var WHATS_NEW = [
+  '⚙️ 設定頁分成六類(基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享),點一類才展開,不用一直往下滑;「儲存設定」固定在最下面',
   '📱 記帳首頁可以自己排順序、隱藏用不到的區塊(⚙️「記帳首頁排列」);預設把平台按鈕移到路況上面',
   '✓ 記好一筆會跳出「已記」提示;最上面「今日淨收入」改名「今日結餘」(今天實收減今天支出,固定成本在分析頁的淨利才扣);雲端超過 3 天沒同步成功會提醒',
   '💬 LINE GO 小黃改成兩段手續費:$199 以下每趟扣 $10、$200 以上抽 10%,非現金另扣 2.5%,派遣費每月最多 $3,000;記帳可選付款方式',
@@ -4348,6 +4370,35 @@ function maybeShowWhatsNew(){
   state.seenVersion = APP_VERSION; save();
   openModal(h);
   return true;
+}
+// 設定頁分類:點開一類才展開,同時只開一類;記住上次開的那一類(新增平台後重開設定也停在原處)
+var SETTINGS_SECS = [
+  ['basic', '🚕 基本設定', '我的車、外觀、字體大小、收入目標、營業日分界'],
+  ['features', '📱 記帳首頁與功能', '首頁排列、功能開關、休息提醒時間'],
+  ['platforms', '💰 平台與手續費', '手續費設定、平台管理、車種'],
+  ['expenses', '🧾 支出項目', '支出項目、支出細項'],
+  ['cloud', '☁️ 雲端與備份', '試算表同步、備份還原、資料用量、年度報表'],
+  ['privacy', '🔒 隱私與分享', '車友熱區、不具名統計、記錄接單時間'],
+  ['about', 'ℹ️ 關於跑車人生', '版本、隱私權政策、聯絡我們']
+];
+var settingsOpenSec = null;
+function settingsSectionsHtml(S){
+  return SETTINGS_SECS.map(function(x){
+    var open = settingsOpenSec===x[0];
+    return '<div class="set-sec'+(open?' open':'')+'" data-sec="'+x[0]+'"><button type="button" class="set-sec-hd" data-act="set-sec:'+x[0]+'">'+
+      '<span><b>'+x[1]+'</b><small>'+x[2]+'</small></span><span class="set-chev">'+(open?'▾':'▸')+'</span></button>'+
+      '<div class="set-sec-bd" id="setsec-'+x[0]+'"'+(open?'':' hidden')+'>'+(S[x[0]]||'')+'</div></div>';
+  }).join('');
+}
+function toggleSettingsSec(id){
+  settingsOpenSec = settingsOpenSec===id ? null : id;
+  document.querySelectorAll('.set-sec').forEach(function(sec){
+    var on = sec.getAttribute('data-sec')===settingsOpenSec;
+    sec.classList.toggle('open', on);
+    var bd = sec.querySelector('.set-sec-bd'); if(bd) bd.hidden = !on;
+    var ch = sec.querySelector('.set-chev'); if(ch) ch.textContent = on ? '▾' : '▸';
+  });
+  var cur = document.querySelector('.set-sec.open'); if(cur) cur.scrollIntoView({block:'start', behavior:'smooth'});
 }
 function aboutHtml(){
   var link = 'color:var(--accent);text-decoration:none;font-weight:700';
@@ -4892,6 +4943,7 @@ document.addEventListener('click', function(e){
   else if(cmd==='save-fixed-override'){ saveFixedOverride(arg); }
   else if(cmd==='reset-fixed-override'){ resetFixedOverride(arg); }
   else if(cmd==='rename-app'){ openRenameModal(); }
+  else if(cmd==='set-sec'){ toggleSettingsSec(arg); }
   else if(cmd==='home-reset'){
     var hl = document.getElementById('homeOrderList');
     if(hl){
