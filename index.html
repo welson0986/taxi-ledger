@@ -367,11 +367,11 @@ function holidayBlockDays(b){
 
 /* ---------- platform definitions ---------- */
 var PLATFORM_DEFS = [
-  {key:'uber', label:'Uber', icon:'🚙', color:'#000000', subtypeOptions:['菁英X','樂聚XL','毛孩優步','舒適優步','尊榮優步','純電優步','加大樂聚XXL'], hasMarkupAmount:true},
-  {key:'tdc', label:'台灣大車隊', icon:'🚕', color:'#1E5FA8', fareTypeOptions:['跳表','預估車資'], paymentOptions:['現金','企業簽單','信用卡','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true},
-  {key:'metro', label:'大都會', icon:'🚗', color:'#FFFFFF', fareTypeOptions:['跳表','預估車資'], discountOptions:['原價','婦派','海派','鑽派','超派'], paymentOptions:['現金','企業簽單','信用卡','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true},
+  {key:'uber', label:'Uber', icon:'🚙', color:'#000000', subtypeOptions:['菁英X','樂聚XL','毛孩優步','舒適優步','尊榮優步','純電優步','加大樂聚XXL','優步小黃'], hasMarkupAmount:true, addOnSubtype:'優步小黃'},
+  {key:'tdc', label:'台灣大車隊', icon:'🚕', color:'#1E5FA8', fareTypeOptions:['跳表','預估車資'], paymentOptions:['現金','企業簽單','信用卡','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true, hasAddOn:true},
+  {key:'metro', label:'大都會', icon:'🚗', color:'#FFFFFF', fareTypeOptions:['跳表','預估車資'], discountOptions:['原價','婦派','海派','鑽派','超派'], paymentOptions:['現金','企業簽單','信用卡','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true, hasAddOn:true},
   {key:'bolt', label:'BOLT', icon:'⚡', color:'#1B5E20', subtypeOptions:['經典博特','舒適博特','揪團博特','寵物博特','尊榮博特'], hasMarkupMultiplier:true},
-  {key:'yoxi', label:'YOXI', icon:'🚐', color:'#90CAF9', fareTypeOptions:['跳表','預估車資','據點叫車'], paymentOptions:['現金','企業簽單','信用卡'], enterpriseDiscountOptions:['原價','95折','92折','85折'], estimateTypeOptions:['一般多元','樂聚多元','減碳多元'], estimateHasMarkupMultiplier:true, hasStationFee:true},
+  {key:'yoxi', label:'YOXI', icon:'🚐', color:'#90CAF9', fareTypeOptions:['跳表','預估車資','據點叫車'], paymentOptions:['現金','企業簽單','信用卡'], enterpriseDiscountOptions:['原價','95折','92折','85折'], estimateTypeOptions:['一般多元','樂聚多元','減碳多元'], estimateHasMarkupMultiplier:true, hasStationFee:true, hasAddOn:true},
   {key:'linego', label:'Line Go', icon:'💬', color:'#06C755', subtypeOptions:['一般','六人座'], markupPercent:true},
   {key:'private', label:'私客', icon:'🙋🏻', color:'#7A5FBF'},
   {key:'hailyellow', label:'呼叫小黃', icon:'🚖', color:'#F5C518'  , fareTypeOptions:['跳表','固定價']},
@@ -755,7 +755,7 @@ function computeNetRevenue(r){
     return Math.max(0, gross*(1-pct3/100) - (+fees.linegoFlat||0));
   }
   if(r.platform==='metro'){
-    var discounted = gross - metroDiscount(gross, r.discountTier);
+    var discounted = r.discountFinal ? gross : gross - metroDiscount(gross, r.discountTier);
     var surcharge = 0;
     if(r.payment==='信用卡') surcharge = fees.metroCredit!=null?fees.metroCredit:3;
     else if(r.payment==='企業簽單') surcharge = fees.metroEnterprise!=null?fees.metroEnterprise:6;
@@ -766,6 +766,7 @@ function computeNetRevenue(r){
   }
   return gross;
 }
+// 舊紀錄專用(2026.11.03.3 以前輸入的是跳表金額);之後司機直接輸入大都會 App 顯示的優惠後金額,派別只是標記
 // 173 叫車優惠(0173.tw 折扣說明):婦派=貴賓9折、海派=海鑽85折、鑽派=金鑽8折、超派=超值7折
 // 優惠以 5 元為單位捨去;貴賓無上限,其他每趟最多折 $300
 function metroDiscount(gross, tier){
@@ -824,6 +825,7 @@ function describeRecord(r){
   if(r.markupMultiplier) parts.push('加成'+r.markupMultiplier+'倍');
   if(r.markupPercent) parts.push('加成'+r.markupPercent+'%');
   if(r.markupAmount) parts.push('加成$'+r.markupAmount);
+  if(r.addOn) parts.push('加價$'+r.addOn);
   if(r.pickup && r.dropoff) parts.push('🚕'+Math.round((r.dropoff.ts-r.pickup.ts)/60000)+'分');
   if(r.area) parts.push('📍'+r.area);
   if(r.event) parts.push('🎉'+r.event);
@@ -2259,6 +2261,11 @@ function renderAnalytics(){
   h += '<div class="stat-tile"><div class="lbl">平均日實收</div><div class="val income num">'+(workDays>0?fmtMoney(net.total/workDays):'—')+'</div></div>';
   if(uiShow('shift')) h += '<div class="stat-tile"><div class="lbl">平均每日工時</div><div class="val num">'+(workDays>0?fmtNum(hours/workDays,2)+' 小時':'—')+'</div></div>';
   if(uiShow('shift')) h += '<div class="stat-tile"><div class="lbl">平均每日休息時間</div><div class="val num">'+(workDays>0?fmtNum(breakHours/workDays,2)+' 小時':'—')+'</div></div>';
+  var addOnRecs = uiOn('addOn') ? recs.filter(function(r){ return r.addOn>0; }) : [];
+  if(addOnRecs.length){
+    h += '<div class="stat-tile"><div class="lbl">加價單</div><div class="val num">'+addOnRecs.length+' 單</div></div>';
+    h += '<div class="stat-tile"><div class="lbl">加價多收(未扣手續費)</div><div class="val income num">'+fmtMoney(addOnRecs.reduce(function(a,r){ return a+r.addOn; },0))+'</div></div>';
+  }
   h += '</div></div></div>';
   }
 
@@ -2918,7 +2925,7 @@ function computePreviewRecordFromForm(key){
   rec.tip = +grab('f-tip')||0;
   if(def.fareTypeOptions){ var fte=document.getElementById('chip-fareType'); rec.fareType = fte?fte.value:def.fareTypeOptions[0]; }
   if(def.paymentOptions){ var pe=document.getElementById('chip-payment'); rec.payment = pe?pe.value:def.paymentOptions[0]; }
-  if(def.discountOptions){ var de=document.getElementById('chip-discountTier'); rec.discountTier = de?de.value:def.discountOptions[0]; }
+  if(def.discountOptions){ var de=document.getElementById('chip-discountTier'); rec.discountTier = de?de.value:def.discountOptions[0]; rec.discountFinal = true; }
   if(def.enterpriseDiscountOptions){ var ee=document.getElementById('chip-enterpriseDiscount'); rec.enterpriseDiscount = ee?ee.value:def.enterpriseDiscountOptions[0]; }
   if(def.hasStationFee){ rec.stationFee = +grab('f-station-fee')||0; }
   return rec;
@@ -2966,7 +2973,7 @@ function buildIncomeForm(key, existing){
     h += off('fareType', '<div class="form-row"><label>計價方式</label>'+chipRowHtml('fareType', def.fareTypeOptions, (existing&&existing.fareType)||def.fareTypeOptions[0])+'</div>');
   }
   if(def.discountOptions){
-    h += off('discount', '<div class="form-row"><label>優惠派別</label>'+chipRowHtml('discountTier', def.discountOptions, (existing&&existing.discountTier)||def.discountOptions[0])+'</div>');
+    h += off('discount', '<div class="form-row"><label>優惠派別</label>'+chipRowHtml('discountTier', def.discountOptions, (existing&&existing.discountTier)||def.discountOptions[0])+'<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">車資請輸入大都會 App 顯示的「跟乘客收的金額」(已含優惠與加價),派別只是記錄用</div></div>');
   }
   var curFareType = (existing&&existing.fareType) || (def.fareTypeOptions&&def.fareTypeOptions[0]);
   var meterLike = curFareType==='跳表' || curFareType==='固定價' || (!def.fareTypeOptions);
@@ -2995,6 +3002,11 @@ function buildIncomeForm(key, existing){
     h += '</div>';
   }
   if(def.hasMarkupAmount && uiOn('markup')) h += '<div class="form-row"><label>加成金額(選填)</label><input class="num-input" id="f-markup-amount" type="number" min="0" step="1" placeholder="0" value="'+((existing&&existing.markupAmount)||'')+'"></div>';
+  if((def.hasAddOn || def.addOnSubtype) && uiOn('addOn')){
+    var aoHide = def.addOnSubtype && ((existing&&existing.subtype)||(def.subtypeOptions&&def.subtypeOptions[0])) !== def.addOnSubtype;
+    h += '<div class="form-row" id="sec-addOn"'+(aoHide?' hidden':'')+'><label>加價金額(選填)</label><input class="num-input" id="f-addon" type="number" min="0" step="1" inputmode="numeric" placeholder="0" value="'+((existing&&existing.addOn)||'')+'">'+
+      '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">乘客加價叫車的金額。已經含在車資裡,不會重複計算,只用來統計加價單多賺多少</div></div>';
+  }
   if(def.hasMarkupMultiplier && uiOn('markup')) h += '<div class="form-row"><label>加成倍率(選填,例如 1.2)</label><input class="num-input" id="f-markup-multiplier" type="number" min="0" step="0.1" placeholder="1.0" value="'+((existing&&existing.markupMultiplier)||'')+'"></div>';
   if(def.markupPercent && uiOn('markup')) h += '<div class="form-row"><label>加成 %(選填,App 顯示 70% 就填 70)</label><input class="num-input" id="f-markup-percent" type="number" min="0" step="1" inputmode="numeric" placeholder="0" value="'+((existing&&existing.markupPercent)||'')+'"></div>';
   if(def.subPlatformOptions){
@@ -3059,13 +3071,15 @@ function saveIncome(key, editId){
   rec.revenue = revenue; rec.tip = tip; rec.note = note;
   if(def.subtypeOptions && grab('chip-subtype')!=null) rec.subtype = grab('chip-subtype');
   if(def.fareTypeOptions) rec.fareType = grab('chip-fareType');
-  if(def.discountOptions) rec.discountTier = grab('chip-discountTier');
+  if(def.discountOptions){ rec.discountTier = grab('chip-discountTier'); rec.discountFinal = true; }
   var meterLike = !def.fareTypeOptions || rec.fareType==='跳表' || rec.fareType==='固定價';
   if(def.paymentOptions && meterLike) rec.payment = grab('chip-payment'); else if(def.paymentOptions) rec.payment = undefined;
   if(def.enterpriseDiscountOptions && rec.payment==='企業簽單') rec.enterpriseDiscount = grab('chip-enterpriseDiscount'); else if(def.enterpriseDiscountOptions) rec.enterpriseDiscount = undefined;
   if(def.hasStationFee && rec.fareType==='據點叫車'){ var sf=grab('f-station-fee'); rec.stationFee = (sf!=null && sf!=='') ? +sf : undefined; } else if(def.hasStationFee) rec.stationFee = undefined;
   if(def.estimateTypeOptions && rec.fareType==='預估車資') rec.estimateType = grab('chip-estimateType'); else if(def.estimateTypeOptions) rec.estimateType = undefined;
   var ma = grab('f-markup-amount'); if(ma!=null) rec.markupAmount = ma!=='' ? +ma : undefined;
+  var aoSec = document.getElementById('sec-addOn');
+  if(aoSec){ var ao = aoSec.hidden ? '' : grab('f-addon'); rec.addOn = (ao!=null && ao!=='' && +ao>0) ? +ao : undefined; }
   // a field that is not on this form leaves the old value alone (LINE GO records from before the switch to %)
   var mm = grab('f-markup-multiplier'); if(mm!=null) rec.markupMultiplier = mm!=='' ? +mm : undefined;
   var mp = grab('f-markup-percent'); if(mp!=null) rec.markupPercent = mp!=='' ? +mp : undefined;
@@ -3243,10 +3257,10 @@ function wireFeePlatToggle(){
   });
 }
 /* ---------- 顯示模式與功能開關 ---------- */
-var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['markup','加成(金額/倍率/%)'],['tip','小費'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
+var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['tip','小費'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
 var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁']];
 var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度']];
-var UI_SIMPLE_OFF = ['subtype','fareType','payment','discount','markup','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
+var UI_SIMPLE_OFF = ['subtype','fareType','payment','discount','markup','addOn','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
 function uiOn(k){ return !state.ui || state.ui[k]!==false; }
 // sections that only have data when another feature is on
 function uiShow(k){
@@ -3445,8 +3459,9 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.03.2';
+var APP_VERSION = '2026.11.03.3';
 var WHATS_NEW = [
+  '💰 新增「加價金額」(選填):台灣大、大都會、YOXI、Uber 小黃的乘客加價叫車單,可以記下加價多少,分析頁「本期概況」會統計加價單多收多少。不需要的可以在 ⚙️ 功能開關關掉',
   '💾 右上角新增「備份」按鈕:一按就能存備份檔,可以選存到 iCloud 或 Google 雲端硬碟;按鈕上的數字是幾天沒備份,變紅色就該備份了',
   '📍 取消分享「車友熱區」時,會一併刪除你分享過的資料',
   '🛡️ 加強資料保護:萬一手機裡的帳本讀不出來,原本的資料會另外保留,不會被空白帳本蓋掉',
@@ -4087,6 +4102,10 @@ document.addEventListener('click', function(e){
       if(stationEl) stationEl.hidden = !stationLike;
       var discEl0 = document.getElementById('sec-yoxi-enterprise-discount');
       if(discEl0 && !meterLike) discEl0.hidden = true;
+    }
+    if(groupId==='subtype'){
+      var aoEl = document.getElementById('sec-addOn');
+      if(aoEl && currentIncomeModalKey && platformDef(currentIncomeModalKey).addOnSubtype) aoEl.hidden = value!==platformDef(currentIncomeModalKey).addOnSubtype;
     }
     if(groupId==='payment'){
       var discEl = document.getElementById('sec-yoxi-enterprise-discount');
