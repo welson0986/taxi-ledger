@@ -6,6 +6,11 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#F3F0E8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15130F" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icon-192.png">
 <title>跑車人生</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700;900&display=swap">
 <style>
@@ -80,7 +85,8 @@ body{
 .brand{display:flex;align-items:baseline;gap:8px}
 .brand-name{font-weight:900;font-size:19px;letter-spacing:.2px}
 .topbar-right{display:flex;align-items:center;gap:10px}
-.today-net{font-family:'Space Grotesk';font-weight:700;font-size:15px}
+.today-net{font-family:'Space Grotesk';font-weight:700;font-size:15px;text-align:right;line-height:1.25}
+.brand-name{white-space:nowrap}
 .today-net.pos{color:var(--income)}
 .today-net.neg{color:var(--expense)}
 .icon-btn{
@@ -600,16 +606,29 @@ function onSaveFail(){
   }
   if(wasOk && typeof renderAll==='function') setTimeout(renderAll, 0);
 }
+// On Android the Chrome tab and the home-screen icon share this storage. Each write carries a revision
+// number; a window holding older data never overwrites a newer save, it reloads the newer data instead.
+var lastKnownRev = Math.max(+state.rev||0, +__BOOT.rev||0);
+var ledgerChannel = null;
+try{ if(window.BroadcastChannel) ledgerChannel = new BroadcastChannel('taxi_ledger'); }catch(e){}
 function writeStore(){
   if(storageStale) return;
   var str;
+  state.rev = ++lastKnownRev;
   try{ str = packState(state); }catch(e){ onSaveFail(); return; }
   if(__BOOT.idb){
     try{
-      var tx = __BOOT.idb.transaction('kv','readwrite');
-      tx.objectStore('kv').put(str, 'state');
+      var rev = state.rev, conflict = false;
+      var tx = __BOOT.idb.transaction('kv','readwrite'), kv = tx.objectStore('kv');
+      var g = kv.get('state_rev');
+      g.onsuccess = function(){
+        if((+g.result||0) >= rev){ conflict = true; return; }
+        kv.put(str, 'state'); kv.put(rev, 'state_rev');
+      };
       tx.oncomplete = function(){
+        if(conflict){ reloadFromStore(true); return; }
         onSaveOk();
+        try{ if(ledgerChannel) ledgerChannel.postMessage(rev); }catch(e){}
         try{ if(!localStorage.getItem(IDB_MIGRATED_FLAG)) localStorage.setItem(IDB_MIGRATED_FLAG, '1'); }catch(e){}
       };
       tx.onerror = tx.onabort = function(){ onSaveFail(); };
@@ -618,15 +637,46 @@ function writeStore(){
   }
   try{ localStorage.setItem(STORAGE_KEY, str); onSaveOk(); }catch(e){ onSaveFail(); }
 }
+function reloadFromStore(afterConflict){
+  if(!__BOOT.idb) return;
+  try{
+    var gr = __BOOT.idb.transaction('kv','readonly').objectStore('kv').get('state_rev');
+    gr.onsuccess = function(){
+      var stored = +gr.result||0;
+      if(stored <= lastKnownRev && !afterConflict) return;
+      var gs = __BOOT.idb.transaction('kv','readonly').objectStore('kv').get('state');
+      gs.onsuccess = function(){ useFresh(stored, gs.result); };
+    };
+  }catch(e){}
+  function useFresh(stored, raw){
+      var fresh;
+      try{ fresh = unpackState(JSON.parse(raw)); }catch(e){ lastKnownRev = Math.max(lastKnownRev, stored); return; }
+      var d = defaultState();
+      for(var k in d){ if(!(k in fresh)) fresh[k] = d[k]; }
+      state = fresh;
+      lastKnownRev = Math.max(stored, +fresh.rev||0);
+      if(typeof renderAll==='function') renderAll();
+      if(afterConflict){
+        closeModal();
+        alert('這支手機在另一個畫面(瀏覽器分頁或主畫面圖示)有比較新的資料,已經換成最新的。\n\n剛剛那一筆沒有存到,請再記一次。\n以後請固定只用主畫面圖示記帳。');
+      } else if(typeof showToast==='function') showToast('已讀取另一個畫面記的最新資料');
+  }
+}
+if(ledgerChannel) ledgerChannel.onmessage = function(ev){ if(+ev.data > lastKnownRev) reloadFromStore(false); };
+document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='visible') reloadFromStore(false); });
 // first start on this version: copy the old localStorage data into IndexedDB
 if(__BOOT.idb && __BOOT.state==null && !storageStale){ writeStore(); }
 if(stampMissingFeeSnapshots()) writeStore();
 try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){}
+var writePending = false;
 function save(){
   state.lastChangeAt = Date.now();
-  writeStore();
+  if(!writePending){ writePending = true; setTimeout(flushWrite, 0); }
   scheduleCloudSync();
 }
+function flushWrite(){ if(!writePending) return; writePending = false; writeStore(); }
+window.addEventListener('pagehide', flushWrite);
+document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='hidden') flushWrite(); });
 function dataSizeChars(){ try{ return packState(state).length; }catch(e){ return 0; } }
 function saveFailBannerHtml(){
   if(storageStale) return '<div class="card" style="border-color:var(--expense);background:var(--expense-soft);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 這次沒有讀到最新的資料</b><br>手機的資料庫暫時打不開,畫面上可能是舊資料。<b>請先不要記帳</b>,把記帳本完全關掉(從多工畫面滑掉)再重新打開。這段期間不會同步到雲端,雲端資料是安全的。重開後還是這樣的話,請到 ⚙️ 設定用「從雲端還原」或「匯入還原」拿回資料。</div>';
@@ -1758,7 +1808,7 @@ function renderEntry(){
   var platformTotals = {};
   todayRecs.forEach(function(r){ platformTotals[r.platform]=(platformTotals[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
 
-  var h = saveFailBannerHtml() + tabWarningHtml() + backupReminderHtml();
+  var h = saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml();
   if(state.syncUrl && cloudAuthStatus==='bad'){
     h += '<div class="card" style="border-color:var(--expense);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 雲端密碼不對,資料沒有同步到雲端</b><br>手機裡的帳都還在。請到右上角設定確認「雲端密碼」,改好後會自動補送。</div>';
   }
@@ -3266,7 +3316,7 @@ function wireFeePlatToggle(){
 }
 /* ---------- 顯示模式與功能開關 ---------- */
 var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['tip','小費'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
-var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁']];
+var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['dayReport','下班打卡後顯示今日跑車報告']];
 var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度']];
 var UI_SIMPLE_OFF = ['subtype','fareType','payment','discount','markup','addOn','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
 function uiOn(k){ return !state.ui || state.ui[k]!==false; }
@@ -3275,6 +3325,7 @@ function uiShow(k){
   if(k==='tripEff' || k==='hotspot') return uiOn(k) && uiOn('trips');
   if(k==='health') return uiOn(k) && uiOn('toilet');
   if(k==='efficiency') return uiOn(k) && (uiOn('shift') || uiOn('km'));
+  if(k==='dayReport') return uiOn(k) && uiOn('shift');
   return uiOn(k);
 }
 function uiPreset(mode){
@@ -3336,6 +3387,35 @@ function saveUiSettings(){
   state.carType = document.getElementById('f-car-type').value==='yellow' ? 'yellow' : 'multi';
   state.theme = document.getElementById('f-theme').value;
   applyTheme();
+}
+function openDayReport(t){
+  var recs = recordsInRange(t, t);
+  if(!recs.length) return;
+  var net = sumNetIncome(recs).total, exp = sumExpense(expensesInRange(t, t));
+  var hours = totalHoursInRange(t, t), trips = recs.filter(function(r){ return r.platform!=='bonus'; }).length;
+  var p7from = addDays(t, -7), p7to = addDays(t, -1);
+  var h7 = totalHoursInRange(p7from, p7to), n7 = sumNetIncome(recordsInRange(p7from, p7to)).total;
+  var rate = hours>=0.5 ? net/hours : null, rate7 = h7>=0.5 ? n7/h7 : null;
+  function tile(lbl, val, cls){ return '<div class="stat-tile"><div class="lbl">'+lbl+'</div><div class="val num'+(cls?' '+cls:'')+'">'+val+'</div></div>'; }
+  var h = '<div class="modal-title">🚕 今日跑車報告<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">'+t+' · 辛苦了!</div>';
+  h += '<div class="summary-row" style="grid-template-columns:1fr 1fr;margin-bottom:10px">';
+  h += tile('今日實收', fmtMoney(net), 'income') + tile('今日淨收入(扣支出)', fmtMoney(net-exp));
+  h += tile('趟數', trips+' 趟') + tile('每趟平均', trips?fmtMoney(net/trips):'—');
+  h += tile('工時(已扣休息)', hours>0?fmtNum(hours,2)+' 小時':'—') + tile('時薪', rate!=null?fmtMoney(rate):'—', 'income');
+  var addOn = uiOn('addOn') ? recs.filter(function(r){ return r.addOn>0; }) : [];
+  if(addOn.length) h += tile('加價單', addOn.length+' 單') + tile('加價多收', fmtMoney(addOn.reduce(function(a,r){ return a+r.addOn; },0)), 'income');
+  h += '</div>';
+  var note = '';
+  if(rate==null) note = hours>0 ? '今天打卡的工時不到 30 分鐘,時薪先不算。' : '今天沒有完整的上下班打卡,時薪算不出來。';
+  else if(rate7!=null){
+    var diff = Math.round((rate-rate7)/rate7*100);
+    note = '前 7 天平均時薪 '+fmtMoney(rate7)+',今天'+(diff>=0?'高 ':'低 ')+Math.abs(diff)+'%'+(diff>=10?' 👍':'');
+  }
+  if(note) h += '<div style="font-size:12.5px;line-height:1.6;margin-bottom:12px">'+note+'</div>';
+  h += '<div class="btn-row"><button class="btn" data-act="close-modal">知道了</button><button class="btn btn-primary" data-act="quick-backup">💾 順便備份</button></div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px">不想每天看到:⚙️ 功能開關關掉「今日跑車報告」</div>';
+  openModal(h);
 }
 function openModeChooser(){
   var big = 'display:block;width:100%;text-align:left;padding:14px 16px;margin-bottom:10px;border-radius:14px;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-family:inherit;cursor:pointer;line-height:1.6';
@@ -3472,14 +3552,15 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.03.3';
+var APP_VERSION = '2026.11.03.4';
 var WHATS_NEW = [
+  '📶 沒有網路也能打開記帳本(例如地下停車場),記的帳一樣存在手機裡',
+  '🚕 下班打卡後會跳出「今日跑車報告」:實收、時薪、趟數,還會跟前 7 天比較',
+  '🛡️ 匯入還原前,會先比對備份檔和手機裡的資料;還原或清除錯了可以復原',
+  '🖼️ 新的主畫面圖示:之後新加入主畫面的人會看到。已經加過的不用重新加,刪掉圖示可能讓資料不見',
   '💰 新增「加價金額」(選填):台灣大、大都會、YOXI、Uber 小黃的乘客加價叫車單,可以記下加價多少,分析頁「本期概況」會統計加價單多收多少。不需要的可以在 ⚙️ 功能開關關掉',
   '🚕 開小黃的司機:到 ⚙️ 最上面「我的車」選「小黃」,Uber、BOLT、LINE GO 記帳時就不用再選車種',
-  '💾 右上角新增「備份」按鈕:一按就能存備份檔,可以選存到 iCloud 或 Google 雲端硬碟;按鈕上的數字是幾天沒備份,變紅色就該備份了',
-  '📍 取消分享「車友熱區」時,會一併刪除你分享過的資料',
-  '🛡️ 加強資料保護:萬一手機裡的帳本讀不出來,原本的資料會另外保留,不會被空白帳本蓋掉',
-  '📄 「關於跑車人生」新增隱私權政策'
+  '💾 右上角新增「備份」按鈕:一按就能存備份檔,可以選存到 iCloud 或 Google 雲端硬碟;按鈕上的數字是幾天沒備份,變紅色就該備份了'
 ];
 function maybeShowWhatsNew(){
   if(state.seenVersion===APP_VERSION) return false;
@@ -3610,6 +3691,15 @@ function isIOS(){ return /iPhone|iPad|iPod/.test(navigator.userAgent); }
 function isStandalone(){
   return window.navigator.standalone===true || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
 }
+function inAppBrowser(){ return /\bLine\/|FBAN|FBAV|Instagram/i.test(navigator.userAgent||''); }
+function externalOpenUrl(){ var u = location.href.split('#')[0]; return u + (u.indexOf('?')>=0 ? '&' : '?') + 'openExternalBrowser=1'; }
+function inAppWarningHtml(){
+  if(!inAppBrowser()) return '';
+  var browser = isIOS() ? 'Safari' : 'Chrome';
+  return '<div class="card" style="border-color:var(--expense);background:var(--expense-soft);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6">'+
+    '<b style="color:var(--expense)">⚠️ 你現在是在 LINE(或臉書)裡面打開的</b><br>這裡記的帳存在 LINE 裡,很容易不見,也沒辦法加到主畫面。請改用 '+browser+' 開啟。'+
+    '<div style="margin-top:8px"><a class="btn btn-primary" style="display:block;text-align:center;text-decoration:none" href="'+esc(externalOpenUrl())+'">用 '+browser+' 開啟</a></div></div>';
+}
 function tabWarningHtml(){
   if(!isIOS() || isStandalone()) return '';
   try{ if(sessionStorage.getItem('hideTabWarning')) return ''; }catch(e){}
@@ -3624,7 +3714,43 @@ function openImportModal(){
   h += '<div id="importFileName" style="font-size:12px;color:var(--text-muted);margin:-4px 0 8px;text-align:center"></div>';
   h += '<textarea id="importText" placeholder="貼上備份文字…" style="width:100%;height:160px;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface-sunken);color:var(--text);box-sizing:border-box"></textarea>';
   h += '<div class="btn-row" style="margin-top:10px"><button class="btn btn-danger" data-act="do-import">還原這份資料</button></div>';
+  var ui0 = undoInfo();
+  if(ui0) h += '<div style="font-size:12px;color:var(--text-muted);margin-top:14px;line-height:1.6;border-top:1px solid var(--border);padding-top:10px">'+fmtTs(ui0.at)+' 做過「'+esc(ui0.label)+'」,那之前的資料還留著:<br><a data-act="undo-restore" style="cursor:pointer;color:var(--accent);font-weight:700">↩️ 復原到'+esc(ui0.label)+'前的資料</a></div>';
   openModal(h);
+}
+function ledgerSummary(st){
+  var recs = (st.records||[]).filter(function(r){ return r.platform!=='bonus'; });
+  var dates = (st.records||[]).map(function(r){ return r.date; }).concat((st.expenses||[]).map(function(e){ return e.date; })).filter(Boolean).sort();
+  return {recs:recs.length, exps:(st.expenses||[]).length, from:dates[0]||'', to:dates[dates.length-1]||''};
+}
+function summaryLine(x){ return '收入 '+x.recs+' 筆、支出 '+x.exps+' 筆'+(x.from?(','+x.from+' ~ '+x.to):''); }
+// the ledger as it was before a restore or a full clear, so a mistake can be undone
+function keepUndoCopy(label){
+  try{
+    var copy = JSON.stringify({at:Date.now(), label:label, data:packState(state)});
+    if(__BOOT.idb) __BOOT.idb.transaction('kv','readwrite').objectStore('kv').put(copy, 'state_undo');
+    else localStorage.setItem(STORAGE_KEY+'_undo', copy);
+    localStorage.setItem('taxi_undo_info', JSON.stringify({at:Date.now(), label:label}));
+  }catch(e){}
+}
+function undoInfo(){ try{ return JSON.parse(localStorage.getItem('taxi_undo_info')||'null'); }catch(e){ return null; } }
+function undoRestore(){
+  var info = undoInfo(); if(!info) return;
+  if(!confirm('要把資料換回 '+fmtTs(info.at)+'「'+info.label+'」之前的樣子嗎?\n\n現在的資料會被取代(會先另外保留一份)。')) return;
+  function apply(raw){
+    var o, parsed;
+    try{ o = JSON.parse(raw); parsed = unpackState(JSON.parse(o.data)); }catch(e){ alert('找不到可以復原的資料。'); return; }
+    keepUndoCopy('復原');
+    var d = defaultState();
+    for(var k in d){ if(!(k in parsed)) parsed[k]=d[k]; }
+    state = parsed; storageStale = false;
+    save(); closeModal(); renderAll();
+    alert('已經復原。');
+  }
+  if(__BOOT.idb){
+    var g = __BOOT.idb.transaction('kv','readonly').objectStore('kv').get('state_undo');
+    g.onsuccess = function(){ if(g.result) apply(g.result); else alert('找不到可以復原的資料。'); };
+  } else { try{ apply(localStorage.getItem(STORAGE_KEY+'_undo')); }catch(e){} }
 }
 function doImportData(){
   var ta = document.getElementById('importText');
@@ -3632,14 +3758,19 @@ function doImportData(){
   var parsed;
   try{ parsed = unpackState(JSON.parse(ta.value.trim())); }catch(err){ alert('這段文字看起來不是有效的備份資料,請確認有整段複製完整。'); return; }
   if(!parsed || typeof parsed!=='object' || !Array.isArray(parsed.records)){ alert('這段文字看起來不是有效的備份資料。'); return; }
-  if(!confirm('確定要用這份備份覆蓋掉目前的所有資料嗎?此動作無法復原。')) return;
+  var inFile = ledgerSummary(parsed), now = ledgerSummary(state);
+  var older = now.to && inFile.to < now.to;
+  if(!confirm('請確認要還原的資料:\n\n📄 備份檔:'+summaryLine(inFile)+'\n📱 目前手機:'+summaryLine(now)+'\n\n'+
+    (older ? '⚠️ 備份檔比目前的資料舊,'+inFile.to+' 以後記的帳會不見!\n\n' : '')+
+    '確定要用備份檔取代目前的資料嗎?(目前的資料會先另外保留一份,還原錯了可以復原)')) return;
+  keepUndoCopy('匯入還原');
   var d = defaultState();
   for(var k in d){ if(!(k in parsed)) parsed[k]=d[k]; }
   state = parsed;
   stampMissingFeeSnapshots();
   storageStale = false;
   save(); closeModal(); renderAll();
-  alert('資料已還原。');
+  alert('資料已還原。\n\n如果選錯檔案,到 ⚙️ →「匯入還原」按「↩️ 復原到匯入還原前的資料」。');
 }
 function openNewPlatformModal(){
   var h = '<div class="modal-title">新增平台<button class="close" data-act="close-modal">✕</button></div>';
@@ -3874,6 +4005,7 @@ document.addEventListener('click', function(e){
     if(m2.segmentStart){ m2.workedMs += (Date.now()-m2.segmentStart); m2.segmentStart=null; }
     m2.activeShiftStart=null;
     save(); flushCloudSync(); renderAll();
+    if(uiShow('dayReport')) openDayReport(todayStr());
   }
   else if(cmd==='break-start'){
     var m3 = dm(todayStr());
@@ -4073,8 +4205,15 @@ document.addEventListener('click', function(e){
   else if(cmd==='year-report-csv'){ shareOrDownloadFile('跑車人生_'+arg+'年度報表.csv', yearReportCsv(+arg), 'text/csv'); }
   else if(cmd==='open-import'){ openImportModal(); }
   else if(cmd==='do-import'){ doImportData(); }
+  else if(cmd==='undo-restore'){ undoRestore(); }
   else if(cmd==='reset-all'){
-    if(confirm('確定要清除所有記帳資料嗎?此動作無法復原。')){ state=defaultState(); save(); closeModal(); renderAll(); }
+    if(!confirm('⚠️ 清除後,這支手機上的帳會全部不見。\n\n建議先按右上角「💾」存一份備份檔。\n要繼續清除嗎?')) return;
+    var typed = prompt('確定要清除,請輸入「清除」兩個字:');
+    if(typed===null) return;
+    if(typed.trim()!=='清除'){ alert('輸入的不是「清除」,沒有清除任何資料。'); return; }
+    keepUndoCopy('清除所有資料');
+    state=defaultState(); save(); closeModal(); renderAll();
+    alert('已清除。\n如果是按錯了,到 ⚙️ →「匯入還原」可以復原。');
   }
   else if(cmd==='icon-pick'){ toggleIconPicker(arg); }
   else if(cmd==='icon-set'){
@@ -4171,7 +4310,16 @@ document.addEventListener('change', function(e){
   else if(e.target.id==='customTo'){ if(e.target.value){ customTo = e.target.value; renderAll(); } }
 });
 
+(function(){
+  if(!state.ui) return;
+  var keys = UI_FIELDS.concat(UI_ENTRY, UI_ANALYSIS).map(function(x){ return x[0]; });
+  var off = keys.filter(function(k){ return state.ui[k]===false; }).length;
+  var base = uiPreset(state.uiMode==='simple' || off > UI_SIMPLE_OFF.length/2 ? 'simple' : 'full'), changed = false;
+  keys.forEach(function(k){ if(!(k in state.ui)){ state.ui[k] = base[k]; changed = true; } });
+  if(changed) save();
+})();
 applyTheme();
+try{ if('serviceWorker' in navigator && (location.protocol==='https:' || isLocalHost())) navigator.serviceWorker.register('sw.js').catch(function(){}); }catch(e){}
 renderAll();
 setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(); }); }, 1500);
 setTimeout(statPing, 4000);
@@ -4195,7 +4343,10 @@ var __BOOT = {state:null, idb:null, idbError:false};
       var db = req.result;
       try{
         var g = db.transaction('kv','readonly').objectStore('kv').get('state');
-        g.onsuccess = function(){ __BOOT.idb = db; __BOOT.state = (typeof g.result==='string') ? g.result : null; go(); };
+        g.onsuccess = function(){
+          __BOOT.idb = db; __BOOT.state = (typeof g.result==='string') ? g.result : null;
+          try{ var gr = db.transaction('kv','readonly').objectStore('kv').get('state_rev'); gr.onsuccess = function(){ __BOOT.rev = +gr.result||0; go(); }; gr.onerror = function(){ go(); }; }catch(e){ go(); }
+        };
         g.onerror = function(){ __BOOT.idbError = true; go(); };
       }catch(e){ __BOOT.idbError = true; go(); }
     };
