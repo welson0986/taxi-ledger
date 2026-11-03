@@ -649,10 +649,11 @@ var lastKnownRev = Math.max(+state.rev||0, +__BOOT.rev||0);
 var ledgerChannel = null;
 try{ if(window.BroadcastChannel) ledgerChannel = new BroadcastChannel('taxi_ledger'); }catch(e){}
 function writeStore(){
-  if(storageStale) return;
+  var waiters = saveWaiters.splice(0);
+  if(storageStale){ settleWaiters(waiters, false); return; }
   var str;
   state.rev = ++lastKnownRev;
-  try{ str = packState(state); }catch(e){ onSaveFail(); return; }
+  try{ str = packState(state); }catch(e){ onSaveFail(); settleWaiters(waiters, false); return; }
   if(__BOOT.idb){
     try{
       var rev = state.rev, conflict = false;
@@ -663,16 +664,17 @@ function writeStore(){
         kv.put(str, 'state'); kv.put(rev, 'state_rev');
       };
       tx.oncomplete = function(){
-        if(conflict){ reloadFromStore(true); return; }
+        if(conflict){ settleWaiters(waiters, false); reloadFromStore(true); return; }
         onSaveOk();
+        settleWaiters(waiters, true);
         try{ if(ledgerChannel) ledgerChannel.postMessage(rev); }catch(e){}
         try{ if(!localStorage.getItem(IDB_MIGRATED_FLAG)) localStorage.setItem(IDB_MIGRATED_FLAG, '1'); }catch(e){}
       };
-      tx.onerror = tx.onabort = function(){ onSaveFail(); };
-    }catch(e){ onSaveFail(); }
+      tx.onerror = tx.onabort = function(){ onSaveFail(); settleWaiters(waiters, false); };
+    }catch(e){ onSaveFail(); settleWaiters(waiters, false); }
     return;
   }
-  try{ localStorage.setItem(STORAGE_KEY, str); onSaveOk(); }catch(e){ onSaveFail(); }
+  try{ localStorage.setItem(STORAGE_KEY, str); onSaveOk(); settleWaiters(waiters, true); }catch(e){ onSaveFail(); settleWaiters(waiters, false); }
 }
 function reloadFromStore(afterConflict){
   if(!__BOOT.idb) return;
@@ -705,12 +707,15 @@ document.addEventListener('visibilitychange', function(){ if(document.visibility
 if(__BOOT.idb && __BOOT.state==null && !storageStale){ writeStore(); }
 if(stampMissingFeeSnapshots()) writeStore();
 try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){}
-var writePending = false;
-function save(){
+var writePending = false, saveWaiters = [];
+// onDone(true) once this change is in the phone's storage, onDone(false) if it did not get there
+function save(onDone){
   state.lastChangeAt = Date.now();
+  if(onDone) saveWaiters.push(onDone);
   if(!writePending){ writePending = true; setTimeout(flushWrite, 0); }
   scheduleCloudSync();
 }
+function settleWaiters(list, ok){ list.forEach(function(f){ try{ f(ok); }catch(e){} }); }
 function flushWrite(){ if(!writePending) return; writePending = false; writeStore(); }
 window.addEventListener('pagehide', flushWrite);
 document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='hidden') flushWrite(); });
@@ -1077,20 +1082,31 @@ function cloudStatusText(){
     unknown:'尚未檢查'
   }[cloudAuthStatus] || '';
 }
-function pushCloudSnapshot(){
+// the sheet answers no-cors posts with nothing we can read, so look for the new backup in its list:
+// made after this snapshot was built (10 min slack for a wrong phone clock) with the same counts
+function confirmCloudBackup(builtAt, ic, ec, onResult){
+  cloudGet({action:'list'}).then(function(res){
+    var ok = !!(res && res.ok && (res.versions||[]).some(function(v){ return +v.time >= builtAt-600000 && +v.income===ic && +v.expense===ec; }));
+    // only what was in the snapshot counts as backed up; later changes stay pending
+    if(ok && builtAt > (state.lastCloudPushOk||0)) state.lastCloudPushOk = builtAt;
+    writeStore();
+    if(onResult) onResult(ok);
+  }).catch(function(){ writeStore(); if(onResult) onResult(false); });
+}
+function pushCloudSnapshot(onResult){
   if(!state.syncUrl || cloudSyncSuspended || storageStale || !hasMeaningfulData()) return false;
   try{
-    var snap = buildCloudSnapshot();
+    var snap = buildCloudSnapshot(), builtAt = Date.now();
     snap.key = getCloudKey();
     fetch(state.syncUrl, {
       method:'POST', mode:'no-cors',
       headers:{'Content-Type':'text/plain;charset=utf-8'},
       body: JSON.stringify(snap)
     }).then(function(){
-      if(cloudAuthStatus==='bad') return;
-      state.lastCloudPushOk = Date.now();
-      writeStore();
-    }).catch(function(){});
+      if(cloudAuthStatus==='bad'){ if(onResult) onResult(false); return; }
+      state.lastCloudSendAt = builtAt;
+      confirmCloudBackup(builtAt, snap.incomeCount, snap.expenseCount, onResult);
+    }).catch(function(){ if(onResult) onResult(false); });
     return true;
   }catch(e){ return false; }
 }
@@ -3040,7 +3056,8 @@ function shareOrDownloadFile(filename, text, mime){
 var BACKUP_REMIND_DAYS = 7;
 function markExported(){ state.lastExportAt = Date.now(); save(); }
 function backupReminderDue(){
-  if(state.syncUrl || !hasMeaningfulData()) return false;
+  // the cloud reminder takes over only once the sheet has confirmed a backup
+  if((state.syncUrl && state.lastCloudPushOk) || !hasMeaningfulData()) return false;
   var now = Date.now();
   if(state.backupSnoozeUntil && now < state.backupSnoozeUntil) return false;
   var since = state.lastExportAt;
@@ -3435,8 +3452,8 @@ function saveIncome(key, editId){
   }
   pendingIncomeTripId = null;
   if(!existing) state.records.push(rec);
-  save(); closeModal(); renderAll();
-  showToast('✓ '+(existing?'已更新':'已記')+' '+def.label+' '+fmtMoney(revenue)+(tip>0?' + 小費 '+fmtMoney(tip):''), 2200);
+  var okMsg = '✓ '+(existing?'已更新':'已記')+' '+def.label+' '+fmtMoney(revenue)+(tip>0?' + 小費 '+fmtMoney(tip):'');
+  save(function(ok){ if(ok) showToast(okMsg, 2200); }); closeModal(); renderAll();
 }
 
 function openExpenseModal(catKey, editId){
@@ -3488,8 +3505,8 @@ function saveExpense(catKey, editId){
   var subEl = document.getElementById('chip-expsub');
   if(subEl) rec.sub = subEl.value==='不指定' ? undefined : subEl.value;
   if(!existing) state.expenses.push(rec);
-  save(); closeModal(); renderAll();
-  showToast('✓ '+(existing?'已更新':'已記')+'支出 '+catInfo(catKey).label+' '+fmtMoney(amount), 2200);
+  var okMsgE = '✓ '+(existing?'已更新':'已記')+'支出 '+catInfo(catKey).label+' '+fmtMoney(amount);
+  save(function(ok){ if(ok) showToast(okMsgE, 2200); }); closeModal(); renderAll();
 }
 
 function openExpCatDetailModal(catKey){
@@ -4321,7 +4338,7 @@ function openSettingsModal(){
 
   h += '<div style="height:10px"></div>';
   h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="sync-all">立即同步到雲端</button><button class="btn btn-ghost" style="flex:1" data-act="open-restore">從雲端還原</button></div>';
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">'+(state.lastCloudPushOk?('上次成功送出同步:'+fmtTs(state.lastCloudPushOk)):'這個瀏覽器還沒有成功送出過同步')+((state.lastChangeAt||0)>(state.lastCloudPushOk||0)&&state.lastCloudPushOk?' · 有新的變動尚未送出':'')+'</div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">'+(state.lastCloudPushOk?('上次確認雲端存好:'+fmtTs(state.lastCloudPushOk)):'這個瀏覽器還沒有確認過雲端備份')+((state.lastCloudSendAt||0)>(state.lastCloudPushOk||0)?' · 最近一次已送出、尚未確認':'')+((state.lastChangeAt||0)>(state.lastCloudPushOk||0)&&state.lastCloudPushOk?' · 之後的變動還沒確認備份':'')+'</div>';
   h += '<div id="syncStatus" style="font-size:12px;color:var(--text-muted);margin-top:8px;text-align:center"></div>';
   h += '<div style="height:14px"></div>';
 
@@ -4336,7 +4353,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.3';
+var APP_VERSION = '2026.11.04.4';
 var WHATS_NEW = [
   '⚙️ 設定頁分成六類(基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享),點一類才展開,不用一直往下滑;「儲存設定」固定在最下面',
   '📱 記帳首頁可以自己排順序、隱藏用不到的區塊(⚙️「記帳首頁排列」);預設把平台按鈕移到路況上面',
@@ -4984,8 +5001,12 @@ document.addEventListener('click', function(e){
     var statusEl = document.getElementById('syncStatus');
     if(!hasMeaningfulData()){ if(statusEl) statusEl.textContent = '這個瀏覽器目前沒有任何收入或支出資料,為了避免空資料蓋掉雲端,不會上傳。若要拿回資料請按「從雲端還原」。'; return; }
     if(cloudSyncTimer){ clearTimeout(cloudSyncTimer); cloudSyncTimer=null; }
-    pushCloudSnapshot();
-    if(statusEl) statusEl.textContent = '已送出全部資料('+state.records.length+' 筆收入、'+state.expenses.length+' 筆支出),約 10 秒後可按「從雲端還原」查看最新備份時間確認。';
+    var nI = state.records.length, nE = state.expenses.length;
+    if(statusEl) statusEl.textContent = '送出中,正在確認雲端有沒有存好…';
+    pushCloudSnapshot(function(ok){
+      var el = document.getElementById('syncStatus'); if(!el) return;
+      el.textContent = ok ? '✓ 雲端已確認存好('+nI+' 筆收入、'+nE+' 筆支出)' : '已送出,但還沒確認雲端有存好。請確認網路和密碼,稍後再按一次。';
+    });
   }
   else if(cmd==='open-restore'){ openCloudRestoreModal(); }
   else if(cmd==='test-cloud'){
