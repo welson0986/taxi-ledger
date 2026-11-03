@@ -2457,6 +2457,13 @@ function shareIdOf(){
   }
   return state.shareId;
 }
+// turning sharing off erases everything this phone uploaded; a later opt-in starts over with a new id
+function hotShareDelete(){
+  var sid = state.shareId;
+  state.shareId = null; state.shareSentUntil = null;
+  if(!HOT_URL || !sid || isLocalHost()) return;
+  fetch(HOT_URL+'?action=del&who='+sid, {mode:'no-cors', cache:'no-store'}).catch(function(){});
+}
 function isLocalHost(){ return /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname); }
 // sends each finished day once (up to 14 days back), only cell + time slot + trip count
 function hotSharePush(){
@@ -2529,7 +2536,7 @@ function openShareHotAsk(){
     '・<b>不送</b>精確位置、金額、平台、任何個人資料<br>'+
     '・至少 3 位車友都上過車的地方才會顯示,看不到任何人的紀錄<br>'+
     '・有分享的人才能看車友熱區<br>'+
-    '・隨時可以在 ⚙️ 取消</div>';
+    '・隨時可以在 ⚙️ 取消,取消時會刪除你分享過的資料</div>';
   h += '<div class="btn-row"><button class="btn" data-act="share-hot-choose:no">先不要</button><button class="btn btn-primary" data-act="share-hot-choose:yes">👍 同意分享</button></div>';
   openModal(h);
 }
@@ -3335,7 +3342,7 @@ function openSettingsModal(){
     [0,1,2,3,4,5,6,7,8].map(function(hh){ return '<option value="'+hh+'"'+(hh===cutoffNow?' selected':'')+'>'+(hh===0?'午夜 00:00(不跨夜)':('凌晨 '+pad(hh)+':00'))+'</option>'; }).join('')+
     '</select></div>';
   h += '<div class="form-row" style="margin-top:6px"><label>進階:記錄接單時間</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-track-accept" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.trackAccept?' checked':'')+'>打開後,下車後的大按鈕會變成「📲 接到單了」。接單時按一下,客人上車再按「上車」,分析頁就能把空檔拆成「等單」和「接駁」兩段。不打開就跟原本一樣。</label></div>';
-  if(HOT_URL) h += '<div class="form-row"><label>分享上車熱區(車友熱區)</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-share-hot" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.shareHot===true?' checked':'')+'>分享你的上車熱區,就能在分析頁看「車友熱區」。只送約 1 公里一格的區域、日期、時段、趟數,<b>不送精確位置、金額、平台</b>;3 位以上車友都上過車的地方才會顯示。</label></div>';
+  if(HOT_URL) h += '<div class="form-row"><label>分享上車熱區(車友熱區)</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-share-hot" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.shareHot===true?' checked':'')+'>分享你的上車熱區,就能在分析頁看「車友熱區」。只送約 1 公里一格的區域、日期、時段、趟數,<b>不送精確位置、金額、平台</b>;3 位以上車友都上過車的地方才會顯示。取消勾選會一併刪除你分享過的資料。</label></div>';
   h += '<div class="form-row"><label>匿名使用人數統計</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-stat-on" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.statOptOut?'':' checked')+'>參與匿名統計,幫製作者知道有多少司機在用。每天只送一次:隨機編號、日期、版本、簡單/完整模式、手機系統。<b>不含任何金額、平台、位置或個人資料。</b></label></div>';
   h += '<div class="form-row" style="margin-top:6px"><label>Google Sheet 同步網址</label><input id="f-sync-url" type="text" placeholder="https://script.google.com/macros/s/.../exec" value="'+esc(state.syncUrl||'')+'"></div>';
   h += '<div class="form-row"><label>雲端密碼(要跟 Apps Script 指令碼屬性 TAXI_KEY 一樣)</label><input id="f-cloud-key" type="password" autocomplete="off" placeholder="尚未設定" value="'+esc(getCloudKey())+'">'+
@@ -3682,7 +3689,7 @@ function saveSettings(){
   state.statOptOut = !document.getElementById('f-stat-on').checked;
   var shEl = document.getElementById('f-share-hot');
   // an untouched box for someone never asked keeps them in the "ask me" state
-  if(shEl && (shEl.checked || state.shareHot!==undefined)){ var wasShare = state.shareHot; state.shareHot = shEl.checked; if(state.shareHot && wasShare!==true){ friendHot = {}; setTimeout(hotSharePush, 500); } }
+  if(shEl && (shEl.checked || state.shareHot!==undefined)){ var wasShare = state.shareHot; state.shareHot = shEl.checked; if(state.shareHot && wasShare!==true){ friendHot = {}; setTimeout(hotSharePush, 500); } if(!state.shareHot && wasShare===true){ friendHot = {}; hotShareDelete(); } }
   var prevSyncUrl = state.syncUrl;
   state.syncUrl = document.getElementById('f-sync-url').value.trim();
   var keyBefore = getCloudKey();
