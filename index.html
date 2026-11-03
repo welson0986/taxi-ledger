@@ -367,7 +367,7 @@ function holidayBlockDays(b){
 
 /* ---------- platform definitions ---------- */
 var PLATFORM_DEFS = [
-  {key:'uber', label:'Uber', icon:'🚙', color:'#000000', subtypeOptions:['菁英X','樂聚XL','毛孩優步','舒適優步','尊榮優步','純電優步','加大樂聚XXL','優步小黃'], hasMarkupAmount:true, addOnSubtype:'優步小黃'},
+  {key:'uber', label:'Uber', icon:'🚙', color:'#000000', subtypeOptions:['菁英X','樂聚XL','毛孩優步','舒適優步','尊榮優步','純電優步','加大樂聚XXL'], hasMarkupAmount:true},
   {key:'tdc', label:'台灣大車隊', icon:'🚕', color:'#1E5FA8', fareTypeOptions:['跳表','預估車資'], paymentOptions:['現金','企業簽單','信用卡','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true, hasAddOn:true},
   {key:'metro', label:'大都會', icon:'🚗', color:'#FFFFFF', fareTypeOptions:['跳表','預估車資'], discountOptions:['原價','婦派','海派','鑽派','超派'], paymentOptions:['現金','企業簽單','信用卡','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true, hasAddOn:true},
   {key:'bolt', label:'BOLT', icon:'⚡', color:'#1B5E20', subtypeOptions:['經典博特','舒適博特','揪團博特','寵物博特','尊榮博特'], hasMarkupMultiplier:true},
@@ -411,7 +411,15 @@ function allPlatforms(){
     if(c.subtypeOptions && c.subtypeOptions.length) cp.subtypeOptions = c.subtypeOptions;
     list.push(cp);
   });
-  return orderedPlatforms(list).map(applySubtypePrefs);
+  return orderedPlatforms(list).map(applySubtypePrefs).map(applyCarType);
+}
+// 小黃 drivers only get taxi trips: Uber/BOLT/LINE GO have no car classes to pick, and Uber taxi trips can carry a passenger add-on
+var TAXI_NO_SUBTYPE = ['uber','bolt','linego'];
+function isYellowCab(){ return state.carType==='yellow'; }
+function applyCarType(p){
+  if(isYellowCab() && TAXI_NO_SUBTYPE.indexOf(p.key)>=0){ delete p.subtypeOptions; delete p.allSubtypes; }
+  if(isYellowCab() && p.key==='uber') p.hasAddOn = true;
+  return p;
 }
 // 車種/屬性: person's order first, hidden ones left out of the entry form (kept for editing old records)
 function applySubtypePrefs(p){
@@ -3002,9 +3010,8 @@ function buildIncomeForm(key, existing){
     h += '</div>';
   }
   if(def.hasMarkupAmount && uiOn('markup')) h += '<div class="form-row"><label>加成金額(選填)</label><input class="num-input" id="f-markup-amount" type="number" min="0" step="1" placeholder="0" value="'+((existing&&existing.markupAmount)||'')+'"></div>';
-  if((def.hasAddOn || def.addOnSubtype) && uiOn('addOn')){
-    var aoHide = def.addOnSubtype && ((existing&&existing.subtype)||(def.subtypeOptions&&def.subtypeOptions[0])) !== def.addOnSubtype;
-    h += '<div class="form-row" id="sec-addOn"'+(aoHide?' hidden':'')+'><label>加價金額(選填)</label><input class="num-input" id="f-addon" type="number" min="0" step="1" inputmode="numeric" placeholder="0" value="'+((existing&&existing.addOn)||'')+'">'+
+  if(def.hasAddOn && uiOn('addOn')){
+    h += '<div class="form-row" id="sec-addOn"><label>加價金額(選填)</label><input class="num-input" id="f-addon" type="number" min="0" step="1" inputmode="numeric" placeholder="0" value="'+((existing&&existing.addOn)||'')+'">'+
       '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">乘客加價叫車的金額。已經含在車資裡,不會重複計算,只用來統計加價單多賺多少</div></div>';
   }
   if(def.hasMarkupMultiplier && uiOn('markup')) h += '<div class="form-row"><label>加成倍率(選填,例如 1.2)</label><input class="num-input" id="f-markup-multiplier" type="number" min="0" step="0.1" placeholder="1.0" value="'+((existing&&existing.markupMultiplier)||'')+'"></div>';
@@ -3070,6 +3077,7 @@ function saveIncome(key, editId){
   var rec = existing || {id:uid(), date:currentEntryDate(), ts:Date.now(), platform:key, fees:resolvedFeeRules()};
   rec.revenue = revenue; rec.tip = tip; rec.note = note;
   if(def.subtypeOptions && grab('chip-subtype')!=null) rec.subtype = grab('chip-subtype');
+  else if(key==='uber' && isYellowCab() && !(existing&&existing.subtype)) rec.subtype = '優步小黃';
   if(def.fareTypeOptions) rec.fareType = grab('chip-fareType');
   if(def.discountOptions){ rec.discountTier = grab('chip-discountTier'); rec.discountFinal = true; }
   var meterLike = !def.fareTypeOptions || rec.fareType==='跳表' || rec.fareType==='固定價';
@@ -3301,6 +3309,10 @@ function uiSettingsHtml(){
   h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-4px 0 8px;line-height:1.6">用不到的功能可以關掉,畫面會更簡單。<b>關掉不會刪資料</b>,之後再打開就回來了。目前:<b id="uiModeLbl">'+uiModeLabel(state.ui||{})+'</b></div>';
   h += '<div class="btn-row" style="margin-bottom:6px"><button class="btn" data-act="ui-preset:simple">🟢 一鍵切換:簡單記帳</button><button class="btn" data-act="ui-preset:full">🔵 一鍵切換:完整分析</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin-bottom:4px">簡單記帳 = 點平台、打金額、儲存;完整分析 = 全部功能都打開。按完還可以在下面一項一項調整。</div>';
+  h += '<div class="form-row" style="margin:4px 0 10px"><label>🚕 我的車</label><select id="f-car-type">'+
+    '<option value="multi"'+(isYellowCab()?'':' selected')+'>多元計程車</option>'+
+    '<option value="yellow"'+(isYellowCab()?' selected':'')+'>小黃(一般計程車)</option></select>'+
+    '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.6">選小黃:Uber、BOLT、LINE GO 記帳時不用選車種,Uber 會出現「加價金額」</div></div>';
   h += group('記收入時要填的欄位', UI_FIELDS);
   h += '<div class="form-row" style="margin:2px 0 8px"><label style="font-size:11.5px">關掉「付款方式」時,台灣大、大都會、YOXI 的單當作</label><select id="f-ui-paydefault">'+
     '<option value="cash"'+(state.uiPayDefault!=='card'?' selected':'')+'>現金(錢在身上)</option>'+
@@ -3321,6 +3333,7 @@ function saveUiSettings(){
   state.ui = ui;
   state.uiMode = uiModeOf(ui);
   state.uiPayDefault = document.getElementById('f-ui-paydefault').value;
+  state.carType = document.getElementById('f-car-type').value==='yellow' ? 'yellow' : 'multi';
   state.theme = document.getElementById('f-theme').value;
   applyTheme();
 }
@@ -3462,6 +3475,7 @@ function openSettingsModal(){
 var APP_VERSION = '2026.11.03.3';
 var WHATS_NEW = [
   '💰 新增「加價金額」(選填):台灣大、大都會、YOXI、Uber 小黃的乘客加價叫車單,可以記下加價多少,分析頁「本期概況」會統計加價單多收多少。不需要的可以在 ⚙️ 功能開關關掉',
+  '🚕 開小黃的司機:到 ⚙️ 最上面「我的車」選「小黃」,Uber、BOLT、LINE GO 記帳時就不用再選車種',
   '💾 右上角新增「備份」按鈕:一按就能存備份檔,可以選存到 iCloud 或 Google 雲端硬碟;按鈕上的數字是幾天沒備份,變紅色就該備份了',
   '📍 取消分享「車友熱區」時,會一併刪除你分享過的資料',
   '🛡️ 加強資料保護:萬一手機裡的帳本讀不出來,原本的資料會另外保留,不會被空白帳本蓋掉',
@@ -4102,10 +4116,6 @@ document.addEventListener('click', function(e){
       if(stationEl) stationEl.hidden = !stationLike;
       var discEl0 = document.getElementById('sec-yoxi-enterprise-discount');
       if(discEl0 && !meterLike) discEl0.hidden = true;
-    }
-    if(groupId==='subtype'){
-      var aoEl = document.getElementById('sec-addOn');
-      if(aoEl && currentIncomeModalKey && platformDef(currentIncomeModalKey).addOnSubtype) aoEl.hidden = value!==platformDef(currentIncomeModalKey).addOnSubtype;
     }
     if(groupId==='payment'){
       var discEl = document.getElementById('sec-yoxi-enterprise-discount');
