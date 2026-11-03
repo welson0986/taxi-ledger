@@ -1914,6 +1914,7 @@ function renderEntry(){
   if(uiShow('km')) h += '<div class="daily-row"><span class="l">今日里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(meta.km!=null?meta.km:'')+'" placeholder="0.0" data-km-input></div>';
   if(uiShow('shift')) h += '<div class="daily-row"><span class="l">工時(已扣休息)</span><div style="display:flex;align-items:center;gap:10px"><span class="hours-badge">'+esc(hoursLabel)+'</span>'+shiftBtn+'</div></div>';
   if(uiShow('shift')) h += breakRow;
+  if(uiShow('liveRate')) h += '<div class="daily-row"><span class="l">目前時薪</span><span class="hours-badge" style="color:var(--income)">'+(workedH>=0.5 ? fmtMoney(net.total/workedH) : '—')+'</span></div>';
   if(uiShow('shiftFix')) h += '<div style="text-align:right;padding:2px 0 4px"><a data-act="shift-fix" style="font-size:12.5px;color:var(--accent);cursor:pointer;font-weight:700">⏱️ 補登上班時間 ›</a></div>';
   var stepBtn = 'width:38px;height:38px;border-radius:50%;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-size:20px;font-weight:700;line-height:1;cursor:pointer;font-family:inherit;padding:0';
   if(uiShow('toilet')) h += '<div class="daily-row"><span class="l">🚻 上廁所</span><div style="display:flex;align-items:center;gap:12px">'+
@@ -2142,10 +2143,27 @@ function periodMetrics(from,to){
   };
 }
 function shortRange(r){ var a=r.from.slice(5).replace('-','/'), b=r.to.slice(5).replace('-','/'); return a===b?a:(a+'–'+b); }
+// a single day swings with weather and events, so it is measured against the last 7 days actually worked
+function recentDaysAverage(day){
+  var days = workingDayListInRange(addDays(day, -60), addDays(day, -1)).slice(-7);
+  if(!days.length) return null;
+  var net = 0, exp = 0, trips = 0, hours = 0, km = 0;
+  days.forEach(function(d){
+    var m = periodMetrics(d, d); net += m.net; exp += m.net - m.profit; trips += m.trips;
+    hours += totalHoursInRange(d, d); km += totalKmInRange(d, d);
+  });
+  var n = days.length;
+  return {days:days, m:{net:net/n, profit:(net-exp)/n, trips:Math.round(trips/n*10)/10, hourly:hours>0?net/hours:null, perKm:km>0?net/km:null}};
+}
 function comparisonHtml(range){
   var cr = comparisonRanges(range);
   if(!cr) return '';
-  var a = periodMetrics(cr.cur.from, cr.cur.to), b = periodMetrics(cr.prev.from, cr.prev.to);
+  var a = periodMetrics(cr.cur.from, cr.cur.to), b;
+  if(analyticsPeriod==='day'){
+    var avg = recentDaysAverage(cr.cur.from);
+    if(!avg) return '';
+    b = avg.m; cr.label = '前 '+avg.days.length+' 個工作日平均'; cr.prev = {from:avg.days[0], to:avg.days[avg.days.length-1]};
+  } else b = periodMetrics(cr.prev.from, cr.prev.to);
   function row(name, x, y, fmt){
     var delta = '—', color = 'var(--text-muted)';
     if(x!=null && y!=null && y!==0){
@@ -3047,7 +3065,7 @@ function updateIncomePreview(){
     '<div class="stat-tile"><div class="lbl">實收</div><div class="val income num">'+fmtMoneyFor(currentIncomeModalKey, total)+'</div></div>'+
     '</div>';
 }
-function closeModal(){ pendingIncomeTripId = null; document.getElementById('modalRoot').innerHTML=''; renderAll(); }
+function closeModal(){ pendingIncomeTripId = null; document.getElementById('modalRoot').innerHTML=''; renderAll(); setTimeout(function(){ if(typeof checkRestReminder==='function') checkRestReminder(); }, 800); }
 
 function chipRowHtml(groupId, options, selectedDefault){
   var h = '<div class="chip-row" data-group="'+groupId+'">';
@@ -3389,17 +3407,17 @@ function wireFeePlatToggle(){
 }
 /* ---------- 顯示模式與功能開關 ---------- */
 var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(台灣大、YOXI、Uber 小黃)'],['tip','小費'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
-var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告']];
+var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['liveRate','今日行車顯示目前時薪'],['restRemind','休息提醒(連續開太久、今天上班太久)'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告']];
 var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度']];
-var UI_DEFAULT_OFF = ['shiftFix','campaign'];  // extras nobody sees unless they turn them on
-var UI_SIMPLE_OFF = ['subtype','fareType','payment','discount','markup','addOn','coupon','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
+var UI_DEFAULT_OFF = ['shiftFix','campaign','restRemind'];  // extras nobody sees unless they turn them on
+var UI_SIMPLE_OFF = ['liveRate','subtype','fareType','payment','discount','markup','addOn','coupon','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
 function uiOn(k){ return state.ui ? state.ui[k]!==false : UI_DEFAULT_OFF.indexOf(k)<0; }
 // sections that only have data when another feature is on
 function uiShow(k){
   if(k==='tripEff' || k==='hotspot') return uiOn(k) && uiOn('trips');
   if(k==='health') return uiOn(k) && uiOn('toilet');
   if(k==='efficiency') return uiOn(k) && (uiOn('shift') || uiOn('km'));
-  if(k==='dayReport' || k==='shiftFix') return uiOn(k) && uiOn('shift');
+  if(k==='dayReport' || k==='shiftFix' || k==='liveRate' || k==='restRemind') return uiOn(k) && uiOn('shift');
   return uiOn(k);
 }
 function uiPreset(mode){
@@ -3443,6 +3461,10 @@ function uiSettingsHtml(){
     '<option value="cash"'+(state.uiPayDefault!=='card'?' selected':'')+'>現金(錢在身上)</option>'+
     '<option value="card"'+(state.uiPayDefault==='card'?' selected':'')+'>信用卡(等平台撥款)</option></select></div>';
   h += group('記帳頁要顯示的', UI_ENTRY);
+  var numIn = 'width:64px;display:inline-block;text-align:center;padding:6px';
+  h += '<div class="form-row" style="margin:-2px 0 10px"><label style="font-size:11.5px">休息提醒的時間(要先打開上面的「休息提醒」)</label>'+
+    '<div style="font-size:12.5px;line-height:2.2">連續開車滿 <input id="f-rest-h" type="number" min="0.5" step="0.5" inputmode="decimal" style="'+numIn+'" value="'+restHours()+'"> 小時提醒休息<br>'+
+    '今天上班滿 <input id="f-rest-day" type="number" min="0" step="1" inputmode="numeric" style="'+numIn+'" value="'+restDayHours()+'"> 小時提醒收工(填 0 = 不提醒)</div></div>';
   h += group('分析頁要顯示的', UI_ANALYSIS);
   h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin:2px 0 6px">「載客效率」「上車熱區」要開「上車/下車按鈕」才有資料;「健康」要開「上廁所次數」;「效率指標」要開打卡或里程。<br>按了一鍵切換以後,還是可以在上面一項一項打開你想用的功能。</div>';
   h += '<div class="form-row" style="margin-top:10px"><label>🌓 外觀</label><select id="f-theme">'+
@@ -3458,6 +3480,8 @@ function saveUiSettings(){
   state.ui = ui;
   state.uiMode = uiModeOf(ui);
   state.uiPayDefault = document.getElementById('f-ui-paydefault').value;
+  var rh = +document.getElementById('f-rest-h').value; state.restHours = rh>0 ? rh : 2;
+  var rd = document.getElementById('f-rest-day').value; state.restDayHours = rd==='' ? 12 : Math.max(0, +rd);
   state.carType = document.getElementById('f-car-type').value==='yellow' ? 'yellow' : 'multi';
   state.theme = document.getElementById('f-theme').value;
   applyTheme();
@@ -3631,6 +3655,132 @@ function settleCampaign(id, take){
   save(); renderAll();
   if(take) showToast('已記入活動獎勵');
 }
+/* ---------- rest reminder: shown while the ledger is open (a web page cannot pop up from the background) ---------- */
+function restHours(){ return state.restHours>0 ? +state.restHours : 2; }
+function restDayHours(){ return state.restDayHours!=null ? +state.restDayHours : 12; }
+function checkRestReminder(){
+  if(!uiShow('restRemind') || document.getElementById('modalBody') || document.visibilityState==='hidden') return;
+  var m = dm(todayStr()), now = Date.now();
+  if(!m.activeShiftStart) return;
+  var live = m.workedMs + (m.segmentStart ? now-m.segmentStart : 0), dayH = restDayHours();
+  if(dayH>0 && live >= dayH*3600000 && !m.dayLongWarned){
+    m.dayLongWarned = true; save();
+    openModal('<div class="modal-title">🌙 今天已經上班 '+fmtNum(live/3600000,1)+' 小時<button class="close" data-act="close-modal">✕</button></div>'+
+      '<div style="font-size:13.5px;line-height:1.75;margin-bottom:14px">今天開很久了,注意精神狀況,累了就早點收工休息。</div>'+
+      '<div class="btn-row"><button class="btn btn-primary" data-act="close-modal">知道了</button></div>');
+    return;
+  }
+  if(m.onBreak || !m.segmentStart) return;
+  var cont = now - m.segmentStart;
+  if(cont < restHours()*3600000 || now < (m.restSnoozeUntil||0)) return;
+  m.restSnoozeUntil = now + 30*60000; save();  // at most every 30 minutes, however the box is closed
+  var hh = Math.floor(cont/3600000), mm = Math.floor(cont%3600000/60000);
+  openModal('<div class="modal-title">☕ 該休息一下了<button class="close" data-act="close-modal">✕</button></div>'+
+    '<div style="font-size:13.5px;line-height:1.75;margin-bottom:14px">已經連續開 <b>'+hh+' 小時 '+mm+' 分</b>了,找個安全的地方停下來,喝口水、伸展一下。</div>'+
+    '<div class="btn-row"><button class="btn btn-primary" data-act="close-modal">知道了</button></div>'+
+    '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.6">真的停下來休息時,再按今日行車的「休息開始」。沒休息的話 30 分鐘後會再提醒;提醒時間可以在 ⚙️ 功能開關下面改。</div>');
+}
+setInterval(checkRestReminder, 60000);
+setTimeout(checkRestReminder, 3000);  // opening the ledger counts as a check too
+document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='visible') setTimeout(checkRestReminder, 1500); });
+/* ---------- 📖 feature guide: [title, where / how, switch key] ---------- */
+var HELP = [
+  ['記收入', [
+    ['記一筆收入', '記帳頁點平台 → 打金額 → 儲存。Uber 多元打 App 顯示的實收;其他平台打車資,系統自動扣手續費。2 分鐘內記了一模一樣的一筆會先問你。'],
+    ['我的車:多元/小黃', '⚙️ 最上面「我的車」。選小黃後 Uber、BOLT、LINE GO 不用選車種;Uber 小黃打跳表金額,自動扣 15%(手續費設定可改)。'],
+    ['車種/屬性', 'Uber、BOLT、LINE GO 記帳時選車種,分析頁可以看各車種賺多少。', 'subtype'],
+    ['計價方式', '跳表、預估車資、據點叫車。', 'fareType'],
+    ['付款方式', '現金、信用卡、企業簽單…;會算出今日現金和待撥款。關掉時可設定一律當現金或信用卡。', 'payment'],
+    ['優惠派別、大都會方案', '大都會車資打 App 顯示的「跟乘客收的金額」,派別只是記錄。0 月費方案:⚙️ 手續費設定的「方案」選 0 月費,記帳時選派遣費 12.5% / 20% / 25%。', 'discount'],
+    ['加成', 'Uber 加成金額、BOLT 倍率、LINE GO 加成 %。', 'markup'],
+    ['加價金額', '乘客加價叫車的單(台灣大、大都會、YOXI、Uber 小黃),記下加價多少,分析頁統計多收多少。', 'addOn'],
+    ['優惠券折抵', '乘客用優惠券少付的錢。車資照跳表全額打,選「平台會補回」或「自己吸收」,今日現金和撥款會算對。', 'coupon'],
+    ['小費、備註', '記帳時選填。', 'tip'],
+    ['🎁 活動獎勵', '「收入/平台」最後一格。記車隊發的獎金,選哪個平台、什麼類型;算進實收,不算趟數,跟著那個平台撥款。'],
+    ['🎯 活動追蹤', '記帳頁「🎯 活動」建活動卡:每趟加給、跑滿 N 趟拿獎金、達標後每趟加錢。用接單時間算趟數,結束時按「記入獎勵」。可複製上次的活動。', 'campaign'],
+    ['改錯、補記', '改或刪:點「今日明細」那一筆。補記前幾天:「歷史」頁點那一天 → 補記。']
+  ]],
+  ['記支出', [
+    ['記一筆支出', '記帳頁下方點項目(加油、停車、保養…)→ 打金額 → 儲存。'],
+    ['公升數、充電度數', '選填,填了才能算油耗、電耗。', 'fuelQty'],
+    ['支出細項', '例如保養維修 → 輪胎、機油。⚙️ 支出項目管理可以設定。', 'expSub'],
+    ['固定成本', '「支出」頁新增靠行費、保險、月費等,每月自動算進成本。']
+  ]],
+  ['上班與工時', [
+    ['上下班打卡、休息', '記帳頁「今日行車」按上班打卡 / 下班打卡,休息按休息開始 / 結束。忘了打下班卡,下次打開會問你。', 'shift'],
+    ['跑過半夜', '凌晨 5 點前都算前一天,⚙️「我的營業日分界時間」可以改。'],
+    ['目前時薪', '今日行車顯示今日實收 ÷ 已跑工時,上班滿 30 分鐘才顯示。', 'liveRate'],
+    ['今日跑車報告', '下班打卡後跳出:實收、時薪、趟數,跟前 7 天比較,可以順便備份。', 'dayReport'],
+    ['休息提醒', '連續開車太久(預設 2 小時)、今天上班太久(預設 12 小時)時提醒你,只是提醒,不會幫你按休息。時間在功能開關下面改。記帳本要打開著才會跳出來。', 'restRemind'],
+    ['補登上班時間', '忘了打卡、或中途才開始用:今日行車的「⏱️ 補登上班時間」,選幾點上班、幾點下班。前幾天的工時到「歷史」頁改。', 'shiftFix'],
+    ['里程', '每天記里程,才能算每公里成本、每公里實收。', 'km'],
+    ['🚻 上廁所', '記帳頁按 + / −,分析頁統計多久上一次。', 'toilet']
+  ]],
+  ['載客與熱區', [
+    ['上車 / 下車', '客人上車按「上車」,下車按「下車」→ 選平台、打車資;還不知道車資可以「稍後再填」。位置只在按下那一刻記一次。', 'trips'],
+    ['接到單了', '⚙️「進階:記錄接單時間」打勾後出現,分析頁會分出等單和接駁各花多久;活動追蹤也用這個時間算趟數。'],
+    ['📍 上車熱區', '分析頁看你最常上車的地方,可篩白天 / 晚上 / 深夜,點 ✏️ 取名。', 'hotspot'],
+    ['👥 車友熱區', '同意分享上車熱區才能看附近車友都在哪裡上車;只分享約 1 公里一格,不含精確位置、金額;取消分享會刪除你分享過的資料。'],
+    ['即時路況', '記帳頁「看即時路況」開 Google 地圖;常用地點可以新增、排序。停車或紅燈時再看。', 'traffic']
+  ]],
+  ['分析', [
+    ['看賺多少', '分析頁選本日 / 本週 / 本月 / 本年 / 自訂,看實收、淨利、時薪。'],
+    ['與上期比較', '本日跟前 7 個工作日平均比,本週跟上週、本月跟上月比。', 'compare'],
+    ['效率指標', '時薪、每公里成本、每公里實收、油耗。', 'efficiency'],
+    ['平台佔比、平台效率', '各平台賺多少、每趟平均;佔比圖右上角可切長條 / 圓餅。', 'platShare'],
+    ['時段、星期、月份', '哪個時段、星期幾最好賺。', 'timeslot'],
+    ['收入目標', '⚙️「收入目標」設定每天 / 每月目標,記帳頁和分析頁顯示進度。', 'todayTarget'],
+    ['📊 年度報表', '⚙️「年度報表」,可以匯出 Excel。']
+  ]],
+  ['撥款', [
+    ['撥款頁', '看各平台什麼時候匯多少錢給你;下面出現紅色數字 = 有還沒對帳的批次。', 'payoutTab'],
+    ['撥款設定', '撥款頁「⚙️ 撥款設定」:每個平台設每週固定一天、跑完後 N 個工作天,或依星期對照。LINE GO 選收款帳戶。'],
+    ['對帳', '錢入帳後點那一批,輸入實際金額。']
+  ]],
+  ['備份與資料', [
+    ['💾 備份', '右上角 💾 → 選 iCloud 或 Google 雲端硬碟 → 存成備份檔。數字 = 幾天沒備份,變紅色就該備份了。不要只傳到 LINE,檔案會過期。'],
+    ['換手機、還原', '新手機 ⚙️「匯入還原」→ 選擇備份檔。還原前會先比對資料;還原或清除錯了,可以按「↩️ 復原」。'],
+    ['沒有網路', '打開過一次之後,沒網路也能打開、記帳。'],
+    ['清除所有資料', '⚙️ 最下面,要輸入「清除」兩個字才會執行。']
+  ]],
+  ['設定與外觀', [
+    ['簡單記帳 / 完整分析', '⚙️ 最上面一鍵切換,也可以一項一項開關;關掉不會刪資料。'],
+    ['平台、車種、支出項目', '⚙️ 平台管理:隱藏、排序、改名稱、顏色、圖示;車種和支出項目也可以隱藏、新增。'],
+    ['手續費設定', '⚙️「平台手續費設定」:每單扣 $ 和 %,沒有的留空;月費記在固定成本。從某天起換方案可以套用到那天以後的帳。'],
+    ['外觀、名稱', '⚙️「外觀」選跟著手機 / 淺色 / 深色;點左上角名稱可以改。'],
+    ['隱私', '帳只存在你的手機。不具名使用統計可以在 ⚙️ 取消;完整隱私權政策在「關於跑車人生」。']
+  ]]
+];
+function helpItemHtml(it){
+  var key = it[2], off = key && !uiOn(key);
+  return '<div class="help-item" style="padding:9px 0;border-bottom:1px solid var(--border)">'+
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="font-size:13.5px">'+esc(it[0])+'</b>'+
+    (off ? '<button class="btn" style="width:auto;padding:4px 10px;font-size:11.5px" data-act="help-on:'+key+'">目前關閉 · 打開</button>' : '')+'</div>'+
+    '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.65;margin-top:3px">'+esc(it[1])+'</div></div>';
+}
+function openHelp(q){
+  var h = '<div class="modal-title">📖 功能說明<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<input id="f-help-q" type="search" placeholder="搜尋功能,例如:撥款、優惠券、補登" value="'+esc(q||'')+'" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:10px 12px;font-size:14px;border:1px solid var(--border);border-radius:10px;background:var(--surface-sunken);color:var(--text)">';
+  HELP.forEach(function(sec){
+    h += '<div class="help-sec"><div style="font-size:12px;font-weight:700;color:var(--accent);margin:12px 0 2px">'+esc(sec[0])+'</div>'+sec[1].map(helpItemHtml).join('')+'</div>';
+  });
+  h += '<div id="help-none" hidden style="font-size:12.5px;color:var(--text-muted);padding:12px 0">找不到相關功能,換個關鍵字試試,或寫信問我們(⚙️ 最下面「關於跑車人生」)。</div>';
+  openModal(h);
+  if(q) filterHelp(q);
+}
+function filterHelp(q){
+  q = (q||'').trim().toLowerCase();
+  var any = false;
+  Array.prototype.forEach.call(document.querySelectorAll('.help-sec'), function(sec){
+    var shown = 0;
+    Array.prototype.forEach.call(sec.querySelectorAll('.help-item'), function(it){
+      var hit = !q || it.textContent.toLowerCase().indexOf(q)>=0;
+      it.hidden = !hit; if(hit) shown++;
+    });
+    sec.hidden = !shown; if(shown) any = true;
+  });
+  var none = document.getElementById('help-none'); if(none) none.hidden = any;
+}
 function openShiftFix(){
   var t = todayStr(), m = dm(t);
   var h = '<div class="modal-title">⏱️ 補登上班時間<button class="close" data-act="close-modal">✕</button></div>';
@@ -3742,6 +3892,7 @@ function toggleIconPicker(inputId){
 function openSettingsModal(){
   var fr = state.feeRules;
   var h = '<div class="modal-title">設定<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div class="btn-row" style="margin-bottom:12px"><button class="btn" data-act="open-help">📖 功能說明:每個功能在哪裡、怎麼用</button></div>';
   h += uiSettingsHtml();
   h += feeSettingsHtml(fr);
 
@@ -3839,8 +3990,10 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.03.7';
+var APP_VERSION = '2026.11.03.8';
 var WHATS_NEW = [
+  '📖 ⚙️ 最上面新增「功能說明」:每個功能在哪裡、怎麼用,可以搜尋,關著的功能可以直接打開',
+  '⏱️ 今日行車顯示「目前時薪」;可以打開「休息提醒」,連續開太久會提醒你休息',
   '🎯 新增「活動獎勵追蹤」:車隊有趟趟加給、跑滿 N 趟獎金時建一張活動卡,記帳本自動算趟數和獎勵(⚙️ 功能開關打開)',
   '💲 手續費改成跟車隊一樣進位到整數(例如 $150 × 15% = 22.5 → $23)',
   '🚗 大都會 0 月費方案:⚙️ 手續費設定選「0 月費方案」,記帳時選這單的派遣費 12.5% / 20% / 25%',
@@ -4315,6 +4468,14 @@ document.addEventListener('click', function(e){
       save(); renderAll();
     }
   }
+  else if(cmd==='open-help'){ openHelp(); }
+  else if(cmd==='help-on'){
+    if(!state.ui) state.ui = uiPreset(state.uiMode==='simple'?'simple':'full');
+    state.ui[arg] = true; if(arg==='liveRate'||arg==='restRemind'||arg==='shiftFix'||arg==='dayReport') state.ui.shift = true;
+    state.uiMode = uiModeOf(state.ui); save();
+    var hq = document.getElementById('f-help-q'); openHelp(hq ? hq.value : '');
+    showToast('已打開');
+  }
   else if(cmd==='break-end'){
     var m4 = dm(todayStr());
     if(m4.onBreak && m4.breakStart){
@@ -4568,6 +4729,7 @@ document.addEventListener('click', function(e){
   }
 });
 document.addEventListener('input', function(e){
+  if(e.target.id==='f-help-q'){ filterHelp(e.target.value); return; }
   if(currentIncomeModalKey && e.target.closest && e.target.closest('#modalBody')){
     updateIncomePreview();
   }
