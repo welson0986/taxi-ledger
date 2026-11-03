@@ -1879,7 +1879,7 @@ function renderTopbar(){
   var exp = sumExpense(expensesInRange(t,t));
   var val = net.total-exp;
   var el = document.getElementById('todayNet');
-  el.textContent = (val>=0?'今日淨收入 +':'今日淨收入 ')+fmtMoney(val);
+  el.textContent = (val>=0?'今日結餘 +':'今日結餘 ')+fmtMoney(val);
   el.className = 'today-net '+(val>=0?'pos':'neg');
   renderBackupBtn();
   var nameEl = document.getElementById('appNameLabel');
@@ -1912,7 +1912,7 @@ function renderEntry(){
   var platformTotals = {};
   todayRecs.forEach(function(r){ platformTotals[r.platform]=(platformTotals[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
 
-  var h = saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + fontAskHtml();
+  var h = saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudStaleHtml() + fontAskHtml();
   if(state.syncUrl && cloudAuthStatus==='bad'){
     h += '<div class="card" style="border-color:var(--expense);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 雲端密碼不對,資料沒有同步到雲端</b><br>手機裡的帳都還在。請到右上角設定確認「雲端密碼」,改好後會自動補送。</div>';
   }
@@ -1920,51 +1920,53 @@ function renderEntry(){
   if(nowCal!==t){
     h += '<div class="card" style="margin-bottom:12px;padding:10px 14px;font-size:12.5px;line-height:1.6;color:var(--text-muted)">🌙 現在已過午夜,'+pad(dayCutoffHour())+':00 以前記的帳、打的下班卡,都算在 <b style="color:var(--text)">'+t.slice(5).replace('-','/')+'</b> 這個營業日。</div>';
   }
-  h += '<div class="section"><div class="summary-row" style="grid-template-columns:'+(uiShow('grossTile')?'1fr 1fr 1fr':'1fr 1fr')+'">';
-  h += '<div class="stat-tile"><div class="lbl">今日實收(含小費)</div><div class="val income num">'+fmtMoney(net.total)+'</div></div>';
-  if(uiShow('grossTile')) h += '<div class="stat-tile"><div class="lbl">今日車資(未扣手續費)</div><div class="val num">'+fmtMoney(gross.total)+'</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">今日支出</div><div class="val expense num">'+fmtMoney(exp)+'</div></div>';
-  h += '</div></div>';
+  var B = {};
+  B.stats = '<div class="section"><div class="summary-row" style="grid-template-columns:'+(uiShow('grossTile')?'1fr 1fr 1fr':'1fr 1fr')+'">'+
+    '<div class="stat-tile"><div class="lbl">今日實收(含小費)</div><div class="val income num">'+fmtMoney(net.total)+'</div></div>'+
+    (uiShow('grossTile') ? '<div class="stat-tile"><div class="lbl">今日車資(未扣手續費)</div><div class="val num">'+fmtMoney(gross.total)+'</div></div>' : '')+
+    '<div class="stat-tile"><div class="lbl">今日支出</div><div class="val expense num">'+fmtMoney(exp)+'</div></div></div></div>';
   // an unfinished trip stays visible even after the buttons are switched off
-  if(uiShow('trips') || state.activeTrip || (state.pendingTrips||[]).length || state.pendingAccept) h += tripCardHtml();
-  if(uiShow('traffic')) h += trafficCardHtml();
+  B.trips = (uiShow('trips') || state.activeTrip || (state.pendingTrips||[]).length || state.pendingAccept) ? tripCardHtml() : '';
+  B.traffic = uiShow('traffic') ? trafficCardHtml() : '';
   var todayFlow = cashSummary(todayRecs);
+  B.cashFlow = '';
   if(todayRecs.length && uiShow('cashFlow')){
-    h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">'+
+    B.cashFlow = '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">'+
       '<div class="stat-tile"><div class="lbl">今日現金收入(應在身上)</div><div class="val num">'+fmtMoney(todayFlow.cash)+'</div></div>'+
       '<div class="stat-tile"><div class="lbl">今日非現金單(待撥款)</div><div class="val num">'+fmtMoney(todayFlow.noncash)+'</div></div>'+
       '</div>'+
       (todayFlow.feeNetted>0?'<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px">今日現金單手續費 '+fmtMoney(todayFlow.feeNetted)+',會從之後的撥款扣回去</div>':'')+
       (todayFlow.feeSeparate>0?'<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px">另外要繳給車隊的現金單手續費:'+fmtMoney(todayFlow.feeSeparate)+'</div>':'')+'</div>';
   }
-  h += campaignSectionHtml();
+  B.campaign = campaignSectionHtml();
   var dailyTarget = (state.targets&&state.targets.daily)||0;
+  B.target = '';
   if(dailyTarget>0 && uiShow('todayTarget')){
     var tPct = Math.min(100, Math.round(net.total/dailyTarget*100));
     var tLeft = dailyTarget-net.total;
-    h += '<div class="section"><div class="card"><div class="progress-wrap">'+
+    B.target = '<div class="section"><div class="card"><div class="progress-wrap">'+
       '<div class="progress-lbl"><span class="p">今日目標 '+fmtMoney(net.total)+' / '+fmtMoney(dailyTarget)+'</span><span class="v num">'+tPct+'%</span></div>'+
       '<div class="progress-bar"><div class="progress-fill" style="width:'+tPct+'%"></div></div>'+
       '<div style="font-size:12px;color:var(--text-muted);margin-top:6px">'+(tLeft>0?('還差 '+fmtMoney(tLeft)):'🎉 今日目標達成')+'</div>'+
       '</div></div></div>';
   }
 
-  h += '<div class="section"><div class="section-title">收入/平台</div><div class="platform-grid">';
+  var hp = '<div class="section"><div class="section-title">收入/平台</div><div class="platform-grid">';
   visiblePlatforms().forEach(function(p){
     var pt = platformTotals[p.key]||0;
-    h += '<div class="platform-chip" data-act="open-income:'+p.key+'">'+
+    hp += '<div class="platform-chip" data-act="open-income:'+p.key+'">'+
          '<div class="plat-badge" style="background:'+(p.color||'#8A8272')+'">'+(p.icon||'🚘')+'</div>'+
          '<div class="pname">'+esc(p.label)+'</div>'+
          '<div class="ptotal '+(pt>0?'has':'')+' num">'+(pt>0?fmtMoney(pt):'—')+'</div></div>';
   });
-  h += '</div></div>';
+  B.platforms = hp + '</div></div>';
 
-  h += '<div class="section"><div class="section-title">支出</div><div class="expense-grid">';
+  var he = '<div class="section"><div class="section-title">支出</div><div class="expense-grid">';
   visibleCats().forEach(function(c){
-    h += '<div class="expense-chip" data-act="open-expense:'+c.key+'">'+
+    he += '<div class="expense-chip" data-act="open-expense:'+c.key+'">'+
          '<div class="eic">'+esc(c.icon)+'</div><div class="ename">'+esc(c.label)+'</div></div>';
   });
-  h += '</div></div>';
+  B.expenses = he + '</div></div>';
 
   var liveWorked = meta.workedMs + (meta.segmentStart? (Date.now()-meta.segmentStart):0);
   var liveBreak = meta.breakMs + (meta.onBreak && meta.breakStart? (Date.now()-meta.breakStart):0);
@@ -1984,6 +1986,7 @@ function renderEntry(){
   }
   var hoursLabel = (meta.activeShiftStart? (meta.onBreak?'休息中 · ':'營運中 · '):'')+fmtNum(workedH,2)+' 小時';
 
+  var hd = h; h = '';
   var showDaily = uiShow('km') || uiShow('shift') || uiShow('toilet');
   if(showDaily) h += '<div class="section"><div class="section-title">今日行車</div><div class="card daily-card">';
   if(uiShow('km')) h += '<div class="daily-row"><span class="l">今日里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(meta.km!=null?meta.km:'')+'" placeholder="0.0" data-km-input></div>';
@@ -1997,13 +2000,55 @@ function renderEntry(){
        '<span class="num" style="min-width:44px;text-align:center;font-size:17px;font-weight:800">'+(meta.toilet||0)+' 次</span>'+
        '<button style="'+stepBtn+'" data-act="toilet:1" aria-label="加一次">+</button></div></div>';
   if(showDaily) h += '</div></div>';
+  B.daily = h;
+  B.dayList = (todayRecs.length || todayExps.length) ? '<div class="section"><div class="section-title">今日明細</div><div class="card">'+renderDayList(t)+'</div></div>' : '';
 
-  if(todayRecs.length || todayExps.length){
-    h += '<div class="section"><div class="section-title">今日明細</div><div class="card">';
-    h += renderDayList(t);
-    h += '</div></div>';
-  }
+  h = hd;
+  homeOrder().forEach(function(k){ if(!homeHidden(k)) h += B[k]||''; });
   return h;
+}
+// 記帳首頁的區塊:司機可以在 ⚙️ 排順序;有開關的區塊和功能開關是同一個設定
+var HOME_BLOCKS = [
+  ['stats','今日實收/車資/支出'],
+  ['trips','上車/下車按鈕','trips'],
+  ['platforms','收入/平台按鈕'],
+  ['traffic','看即時路況、常用地點','traffic'],
+  ['campaign','活動獎勵','campaign'],
+  ['cashFlow','今日現金收入/待撥款','cashFlow'],
+  ['target','今日目標','todayTarget'],
+  ['expenses','支出按鈕',null,true],
+  ['daily','今日行車(打卡、里程、上廁所)'],
+  ['dayList','今日明細',null,true]
+];
+function homeOrder(){
+  var def = HOME_BLOCKS.map(function(b){ return b[0]; });
+  var saved = (state.homeOrder||[]).filter(function(k){ return def.indexOf(k)>=0; });
+  def.forEach(function(k, i){ if(saved.indexOf(k)<0) saved.splice(Math.min(i, saved.length), 0, k); });
+  return saved;
+}
+function homeHidden(k){ return !!(state.homeHide && state.homeHide[k]); }
+function homeLayoutHtml(){
+  var info = {}; HOME_BLOCKS.forEach(function(b){ info[b[0]] = b; });
+  var h = '<div class="form-row" style="margin:4px 0 4px"><label>📱 記帳首頁排列</label></div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin:-2px 0 6px;line-height:1.6">▲▼ 調整順序,取消勾選就不顯示。備份、雲端提醒會固定在最上面。</div>';
+  h += '<div id="homeOrderList">';
+  homeOrder().forEach(function(k){
+    var b = info[k], box = '';
+    if(b[2]) box = '<input type="checkbox" data-mirror="f-ui-'+b[2]+'" style="width:17px;height:17px;flex:none"'+(uiOn(b[2])?' checked':'')+'>';
+    else if(b[3]) box = '<input type="checkbox" id="f-home-show-'+k+'" style="width:17px;height:17px;flex:none"'+(homeHidden(k)?'':' checked')+'>';
+    else box = '<span style="width:17px;flex:none"></span>';
+    h += '<div data-key="'+k+'" style="display:flex;align-items:center;gap:8px;padding:6px 8px;margin-bottom:5px;border:1px solid var(--border);border-radius:10px;background:var(--surface-sunken);font-size:13px">'+
+      box+'<span style="flex:1">'+esc(b[1])+'</span>'+orderBtnsHtml('homeOrderList', k)+'</div>';
+  });
+  h += '</div><div style="text-align:right;margin:2px 0 10px"><a data-act="home-reset" style="font-size:12.5px;color:var(--accent);cursor:pointer;font-weight:700">恢復預設排列</a></div>';
+  return h;
+}
+function saveHomeLayout(){
+  var list = document.getElementById('homeOrderList'); if(!list) return;
+  state.homeOrder = Array.prototype.slice.call(list.children).map(function(r){ return r.getAttribute('data-key'); });
+  var hide = {};
+  HOME_BLOCKS.forEach(function(b){ if(b[3]){ var el = document.getElementById('f-home-show-'+b[0]); if(el && !el.checked) hide[b[0]] = true; } });
+  state.homeHide = hide;
 }
 
 function renderDayList(dateStr){
@@ -2991,6 +3036,16 @@ function backupReminderDue(){
   }
   return now - since >= BACKUP_REMIND_DAYS*86400000;
 }
+function cloudStaleHtml(){
+  if(!state.syncUrl || !state.lastCloudPushOk || cloudAuthStatus==='bad') return '';
+  if((state.lastChangeAt||0) <= state.lastCloudPushOk) return '';
+  if(state.backupSnoozeUntil && Date.now() < state.backupSnoozeUntil) return '';
+  var days = Math.floor((Date.now()-state.lastCloudPushOk)/86400000);
+  if(days < 3) return '';
+  return '<div class="card" style="border-color:var(--expense);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6">'+
+    '<b style="color:var(--expense)">☁️ 雲端已經 '+days+' 天沒有同步成功</b><br>這幾天記的帳還沒送到雲端。請確認有網路、到 ⚙️ 看「雲端同步」;先存一份備份檔比較保險。'+
+    '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" style="flex:2" data-act="export-file">立即存成備份檔</button><button class="btn btn-ghost" style="flex:1" data-act="backup-snooze">明天再提醒</button></div></div>';
+}
 function backupReminderHtml(){
   if(!backupReminderDue()) return '';
   var days = state.lastExportAt ? Math.floor((Date.now()-state.lastExportAt)/86400000) : null;
@@ -3367,6 +3422,7 @@ function saveIncome(key, editId){
   pendingIncomeTripId = null;
   if(!existing) state.records.push(rec);
   save(); closeModal(); renderAll();
+  showToast('✓ '+(existing?'已更新':'已記')+' '+def.label+' '+fmtMoney(revenue)+(tip>0?' + 小費 '+fmtMoney(tip):''), 2200);
 }
 
 function openExpenseModal(catKey, editId){
@@ -3419,6 +3475,7 @@ function saveExpense(catKey, editId){
   if(subEl) rec.sub = subEl.value==='不指定' ? undefined : subEl.value;
   if(!existing) state.expenses.push(rec);
   save(); closeModal(); renderAll();
+  showToast('✓ '+(existing?'已更新':'已記')+'支出 '+catInfo(catKey).label+' '+fmtMoney(amount), 2200);
 }
 
 function openExpCatDetailModal(catKey){
@@ -3623,6 +3680,7 @@ function uiSettingsHtml(){
     '<option value="yellow"'+(isYellowCab()?' selected':'')+'>小黃(一般計程車)</option>'+
     '<option value="rental"'+(isRental()?' selected':'')+'>R 牌租賃車</option></select>'+
     '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.6">選小黃:Uber、BOLT、LINE GO 記帳時不用選車種,Uber 會出現「加價金額」。<br>選 R 牌:記帳頁不顯示路招、呼叫小黃、接電;各平台 R 牌的手續費請到下面「平台手續費設定」改成你的。</div></div>';
+  h += homeLayoutHtml();
   h += group('記收入時要填的欄位', UI_FIELDS);
   h += '<div class="form-row" style="margin:2px 0 8px"><label style="font-size:11.5px">關掉「付款方式」時,台灣大、大都會、YOXI 的單當作</label><select id="f-ui-paydefault">'+
     '<option value="cash"'+(state.uiPayDefault!=='card'?' selected':'')+'>現金(錢在身上)</option>'+
@@ -3925,6 +3983,7 @@ var HELP = [
     ['手續費設定', '⚙️「平台手續費設定」:每單扣 $ 和 %,沒有的留空;月費記在固定成本。從某天起換方案可以套用到那天以後的帳。接電單:台灣大照台灣大的設定,大都會照方案(0 月費 12.5%)、綁定支付另扣刷卡 %。'],
     ['自己的車行、車隊', '⚙️ 平台管理「+ 新增平台」,可以設派遣費 % 和 / 或每趟扣 $(R 牌車行常用),也可以選「車行收款後撥給我」,撥款頁就會出現這個平台;之後在平台手續費設定、撥款設定改。'],
     ['外觀、名稱', '⚙️「外觀」選跟著手機 / 淺色 / 深色;點左上角名稱可以改。'],
+    ['記帳首頁排列', '⚙️「記帳首頁排列」:用 ▲▼ 調整記帳頁每一塊的順序(例如把平台按鈕放到最上面),取消勾選就不顯示;排亂了按「恢復預設排列」。'],
     ['字體大小', '⚙️「字體大小」選標準 / 大 / 特大 / 超大,字、圖示、按鈕一起放大,點了馬上換。看不清楚、有老花眼的可以調大。'],
     ['隱私', '帳只存在你的手機。不具名使用統計可以在 ⚙️ 取消;完整隱私權政策在「關於跑車人生」。']
   ]]
@@ -4059,7 +4118,7 @@ function openDayReport(t){
   var h = '<div class="modal-title">🚕 今日跑車報告<button class="close" data-act="close-modal">✕</button></div>';
   h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">'+t+' · 辛苦了!</div>';
   h += '<div class="summary-row" style="grid-template-columns:1fr 1fr;margin-bottom:10px">';
-  h += tile('今日實收', fmtMoney(net), 'income') + tile('今日淨收入(扣支出)', fmtMoney(net-exp));
+  h += tile('今日實收', fmtMoney(net), 'income') + tile('今日結餘(扣今日支出)', fmtMoney(net-exp));
   h += tile('趟數', trips+' 趟') + tile('每趟平均', trips?fmtMoney(net/trips):'—');
   h += tile('工時(已扣休息)', hours>0?fmtNum(hours,2)+' 小時':'—') + tile('時薪', rate!=null?fmtMoney(rate):'—', 'income');
   var addOn = uiOn('addOn') ? recs.filter(function(r){ return r.addOn>0; }) : [];
@@ -4082,6 +4141,43 @@ function openModeChooser(){
   h += '<div style="font-size:13px;line-height:1.7;margin-bottom:12px">你想怎麼記帳?之後隨時可以在右上角 ⚙️ 改。</div>';
   h += '<button style="'+big+'" data-act="ui-choose:simple"><b style="font-size:15px">🟢 簡單記帳</b><br><span style="font-size:12px;color:var(--text-muted)">只記每個平台跑了多少錢。點平台 → 打金額 → 儲存,其他都不用選。</span></button>';
   h += '<button style="'+big+'" data-act="ui-choose:full"><b style="font-size:15px">🔵 完整分析</b><br><span style="font-size:12px;color:var(--text-muted)">記車種、付款方式、上下車時間,分析時薪、熱區、載客率。</span></button>';
+  openModal(h);
+}
+function onboardStep(n, title){
+  return '<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:2px">第 '+n+' / 3 步</div><div class="modal-title">'+title+'</div>';
+}
+function openOnboardCar(){
+  var big = 'display:block;width:100%;text-align:left;padding:14px 16px;margin-bottom:10px;border-radius:14px;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-family:inherit;cursor:pointer;line-height:1.6';
+  var h = onboardStep(1, '你開的是哪種車?');
+  h += '<button style="'+big+'" data-act="ob-car:multi"><b style="font-size:15px">多元計程車</b><br><span style="font-size:12px;color:var(--text-muted)">Uber、台灣大、大都會、YOXI、LINE GO…</span></button>';
+  h += '<button style="'+big+'" data-act="ob-car:yellow"><b style="font-size:15px">小黃(一般計程車)</b><br><span style="font-size:12px;color:var(--text-muted)">跳表計費,也接 Uber 小黃、呼叫小黃、路招</span></button>';
+  h += '<button style="'+big+'" data-act="ob-car:rental"><b style="font-size:15px">R 牌租賃車</b><br><span style="font-size:12px;color:var(--text-muted)">靠行車行派單、平台接單</span></button>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted)">之後可以在 ⚙️「我的車」改。</div>';
+  openModal(h);
+}
+// fleets and ways of getting passengers the driver can switch off at the start
+function onboardPlatKeys(){
+  return allPlatforms().filter(function(p){ return !p.custom && !p.tipOnly && p.key!=='bonus' && !(isRental() && RENTAL_HIDE.indexOf(p.key)>=0); }).map(function(p){ return p.key; });
+}
+function openOnboardPlats(){
+  var h = onboardStep(2, '你有在跑哪些?');
+  h += '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 10px;line-height:1.6">沒在跑的取消勾選,記帳頁就不會出現。之後可以在 ⚙️「平台管理」改。</div>';
+  h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">';
+  onboardPlatKeys().forEach(function(k){
+    var p = platformDef(k);
+    h += '<label style="display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-sunken);font-size:14px;cursor:pointer">'+
+      '<input type="checkbox" id="ob-plat-'+k+'" style="width:18px;height:18px"'+(p.hidden?'':' checked')+'>'+esc((p.icon||'')+' '+p.label)+'</label>';
+  });
+  h += '</div><div class="btn-row"><button class="btn btn-primary" data-act="ob-plats">下一步</button></div>';
+  openModal(h);
+}
+function openOnboardFont(){
+  var cur = fontScaleLabel();
+  var b = 'flex:1;padding:12px 0;border-radius:12px;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-weight:700;cursor:pointer;font-family:inherit';
+  var h = onboardStep(3, '字會不會太小?');
+  h += '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 10px;line-height:1.6">點一下馬上換,選看得最清楚的。之後可以在 ⚙️「字體大小」改。</div><div style="display:flex;gap:6px;margin-bottom:14px">';
+  FONT_SCALES.forEach(function(x, i){ h += '<button data-act="ob-font:'+x[0]+'" style="'+b+';font-size:'+(13+i*2)+'px'+(x[0]===cur?';border:2px solid var(--accent-strong);background:var(--accent-soft)':'')+'">'+x[0]+'</button>'; });
+  h += '</div><div class="btn-row"><button class="btn btn-primary" data-act="ob-done">完成,開始記帳</button></div>';
   openModal(h);
 }
 /* ---------- icon picker: tap an icon box to choose instead of typing an emoji ---------- */
@@ -4212,8 +4308,10 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.03.19';
+var APP_VERSION = '2026.11.03.21';
 var WHATS_NEW = [
+  '📱 記帳首頁可以自己排順序、隱藏用不到的區塊(⚙️「記帳首頁排列」);預設把平台按鈕移到路況上面',
+  '✓ 記好一筆會跳出「已記」提示;最上面「今日淨收入」改名「今日結餘」(今天實收減今天支出,固定成本在分析頁的淨利才扣);雲端超過 3 天沒同步成功會提醒',
   '💬 LINE GO 小黃改成兩段手續費:$199 以下每趟扣 $10、$200 以上抽 10%,非現金另扣 2.5%,派遣費每月最多 $3,000;記帳可選付款方式',
   '🚖 台灣大小黃可以填「信用卡/綁定支付手續費 %」(正式隊員刷卡另扣的),在 ⚙️ 平台手續費設定',
   '🔠 可以調字體大小了:⚙️「字體大小」選標準 / 大 / 特大 / 超大,字、圖示、按鈕一起放大',
@@ -4514,6 +4612,7 @@ function moveRow(listId, key, dir){
   var k = i + dir; if(i<0 || k<0 || k>=rows.length) return;
   if(dir<0) list.insertBefore(rows[i], rows[k]); else list.insertBefore(rows[k], rows[i]);
   var keys = Array.prototype.slice.call(list.children).map(function(r){ return r.getAttribute('data-key'); });
+  if(listId==='homeOrderList') { rows[i].scrollIntoView({block:'nearest'}); return; }
   if(listId==='platOrderList') state.platformOrder = keys;
   else if(listId==='catOrderList') state.catOrder = keys;
   else if(listId.indexOf('subList-')===0) saveSubtypeList(listId.slice(8));
@@ -4577,6 +4676,7 @@ function saveNewCat(){
 function saveSettings(){
   var feesBefore = JSON.stringify(resolvedFeeRules());
   saveUiSettings();
+  saveHomeLayout();
   savePlatformSettings();
   saveCatSettings();
   state.targets.daily = +document.getElementById('f-target-daily').value || 0;
@@ -4792,6 +4892,14 @@ document.addEventListener('click', function(e){
   else if(cmd==='save-fixed-override'){ saveFixedOverride(arg); }
   else if(cmd==='reset-fixed-override'){ resetFixedOverride(arg); }
   else if(cmd==='rename-app'){ openRenameModal(); }
+  else if(cmd==='home-reset'){
+    var hl = document.getElementById('homeOrderList');
+    if(hl){
+      HOME_BLOCKS.forEach(function(b){ var row = hl.querySelector('[data-key="'+b[0]+'"]'); if(row) hl.appendChild(row); });
+      HOME_BLOCKS.forEach(function(b){ var el = document.getElementById('f-home-show-'+b[0]); if(el) el.checked = true; });
+      showToast('已恢復預設排列,按「儲存設定」才會生效', 2500);
+    }
+  }
   else if(cmd==='font-pick'){ setFontScale(arg, true); renderAll(); }
   else if(cmd==='font-ask-off'){ state.fontAsked = true; save(); renderAll(); }
   else if(cmd==='save-appname'){ saveAppName(); }
@@ -4954,10 +5062,23 @@ document.addEventListener('click', function(e){
   else if(cmd==='ui-preset'){
     var pr = uiPreset(arg);
     Object.keys(pr).forEach(function(k){ var el = document.getElementById('f-ui-'+k); if(el) el.checked = pr[k]; });
+    document.querySelectorAll('[data-mirror]').forEach(function(m){ var mt = document.getElementById(m.getAttribute('data-mirror')); if(mt) m.checked = mt.checked; });
     var ml = document.getElementById('uiModeLbl'); if(ml) ml.textContent = arg==='simple' ? '🟢 簡單記帳(按最下面「儲存設定」才會生效)' : '🔵 完整分析(按最下面「儲存設定」才會生效)';
   }
   else if(cmd==='ui-choose'){
-    state.ui = uiPreset(arg); state.uiMode = arg; save(); closeModal(); renderAll();
+    state.ui = uiPreset(arg); state.uiMode = arg; save(); renderAll();
+    if(!state.onboarded) openOnboardCar(); else closeModal();
+  }
+  else if(cmd==='ob-car'){ state.carType = arg==='yellow'||arg==='rental' ? arg : 'multi'; save(); renderAll(); openOnboardPlats(); }
+  else if(cmd==='ob-plats'){
+    onboardPlatKeys().forEach(function(k){
+      var el = document.getElementById('ob-plat-'+k); if(!el) return;
+      var ov = state.platformOverrides[k] || {}; ov.hidden = !el.checked; state.platformOverrides[k] = ov;
+    });
+    save(); renderAll(); openOnboardFont();
+  }
+  else if(cmd==='ob-font'){ setFontScale(arg, true); renderAll(); openOnboardFont(); }
+  else if(cmd==='ob-done'){ state.onboarded = true; state.fontAsked = true; save(); closeModal(); renderAll();
   }
   else if(cmd==='chip'){
     var gv0 = arg.indexOf(':');
@@ -5000,6 +5121,8 @@ document.addEventListener('input', function(e){
   }
 });
 document.addEventListener('change', function(e){
+  if(e.target.matches && e.target.matches('[data-mirror]')){ var mt = document.getElementById(e.target.getAttribute('data-mirror')); if(mt) mt.checked = e.target.checked; return; }
+  if(e.target.id && e.target.id.indexOf('f-ui-')===0){ document.querySelectorAll('[data-mirror="'+e.target.id+'"]').forEach(function(m){ m.checked = e.target.checked; }); }
   if(e.target.id==='f-tip-cur'){ var re = document.getElementById('f-tip-rate'); if(re) re.value = fxRate(e.target.value)||''; tipFxUpdate(); if(currentIncomeModalKey) updateIncomePreview(); return; }
   if(e.target.id==='f-cloud-key-show'){ var ck=document.getElementById('f-cloud-key'); if(ck) ck.type = e.target.checked ? 'text' : 'password'; return; }
   if(e.target.matches('[data-km-input]')){
