@@ -648,6 +648,7 @@ function onSaveFail(){
 var lastKnownRev = Math.max(+state.rev||0, +__BOOT.rev||0);
 var ledgerChannel = null;
 try{ if(window.BroadcastChannel) ledgerChannel = new BroadcastChannel('taxi_ledger'); }catch(e){}
+var writePending = false, saveWaiters = [];
 function writeStore(){
   var waiters = saveWaiters.splice(0);
   if(storageStale){ settleWaiters(waiters, false); return; }
@@ -707,7 +708,6 @@ document.addEventListener('visibilitychange', function(){ if(document.visibility
 if(__BOOT.idb && __BOOT.state==null && !storageStale){ writeStore(); }
 if(stampMissingFeeSnapshots()) writeStore();
 try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){}
-var writePending = false, saveWaiters = [];
 // onDone(true) once this change is in the phone's storage, onDone(false) if it did not get there
 function save(onDone){
   state.lastChangeAt = Date.now();
@@ -4353,7 +4353,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.4';
+var APP_VERSION = '2026.11.04.5';
 var WHATS_NEW = [
   '⚙️ 設定頁分成六類(基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享),點一類才展開,不用一直往下滑;「儲存設定」固定在最下面',
   '📱 記帳首頁可以自己排順序、隱藏用不到的區塊(⚙️「記帳首頁排列」);預設把平台按鈕移到路況上面',
