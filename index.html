@@ -789,9 +789,16 @@ function stampMissingFeeSnapshots(){
 function computeNetRevenue(r){
   var n = netBeforeCoupon(r);
   if(r.coupon>0 && r.couponType==='absorb') n = Math.max(0, n - r.coupon);
+  return n + (+r.tripBonus||0);
+}
+// fleets charge whole dollars (Uber 小黃: $150 x 15% = 22.5 -> $23); BOLT keeps its cents
+var ROUND_FEE_PLATS = ['tdc','metro','yoxi','linego','uber'];
+function netBeforeCoupon(r){
+  var n = rawNet(r), g = +r.revenue||0;
+  if(g>0 && ROUND_FEE_PLATS.indexOf(r.platform)>=0) n = g - Math.round(g - n + 1e-9);
   return n;
 }
-function netBeforeCoupon(r){
+function rawNet(r){
   var gross = +r.revenue||0;
   if(gross<=0) return 0;
   if(r.platform==='bonus') return gross;
@@ -874,7 +881,8 @@ function yoxiNet(r, gross, fees){
     return gross*(1-yoxiBase/100);
   }
 }
-function computeGrossRevenue(r){
+function computeGrossRevenue(r){ return grossBase(r) + (+r.tripBonus||0); }
+function grossBase(r){
   var v = +r.revenue||0;
   if(v<=0) return 0;
   if(r.platform==='bonus') return v;
@@ -900,6 +908,7 @@ function describeRecord(r){
   if(r.markupPercent) parts.push('加成'+r.markupPercent+'%');
   if(r.markupAmount) parts.push('加成$'+r.markupAmount);
   if(r.dispatchPct!=null) parts.push('派遣費'+r.dispatchPct+'%');
+  if(r.tripBonus) parts.push('🎯活動+$'+r.tripBonus);
   if(r.addOn) parts.push('加價$'+r.addOn);
   if(r.coupon) parts.push('優惠券$'+r.coupon+(r.couponType==='absorb'?'(自己吸收)':'(平台補回)'));
   if(r.pickup && r.dropoff) parts.push('🚕'+Math.round((r.dropoff.ts-r.pickup.ts)/60000)+'分');
@@ -1296,7 +1305,7 @@ function moneyFlow(r){
     var fee = Math.max(0, (+r.revenue||0) - netBeforeCoupon(r));
     var netted = cfg.cashFeeFromPayout && cfg.schedule!=='none';
     // the passenger paid the coupon part with the platform's money: less cash, and the platform owes it
-    return {cash:(+r.revenue||0)-coupon+tip, noncash:(r.couponType==='absorb'?0:coupon), cashFee:fee, netted:netted};
+    return {cash:(+r.revenue||0)-coupon+tip, noncash:(r.couponType==='absorb'?0:coupon)+(+r.tripBonus||0), cashFee:fee, netted:netted};
   }
   return {cash:0, noncash:net+tip, cashFee:0, netted:false};
 }
@@ -1853,6 +1862,7 @@ function renderEntry(){
       (todayFlow.feeNetted>0?'<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px">今日現金單手續費 '+fmtMoney(todayFlow.feeNetted)+',會從之後的撥款扣回去</div>':'')+
       (todayFlow.feeSeparate>0?'<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px">另外要繳給車隊的現金單手續費:'+fmtMoney(todayFlow.feeSeparate)+'</div>':'')+'</div>';
   }
+  h += campaignSectionHtml();
   var dailyTarget = (state.targets&&state.targets.daily)||0;
   if(dailyTarget>0 && uiShow('todayTarget')){
     var tPct = Math.min(100, Math.round(net.total/dailyTarget*100));
@@ -1928,12 +1938,12 @@ function renderDayList(dateStr){
   recs.forEach(function(r){
     var net = computeNetRevenue(r);
     var grossEst = computeGrossRevenue(r);
-    var fee = grossEst-net;
+    var fee = grossEst-net-(r.couponType==='absorb' ? (+r.coupon||0) : 0);
     var amt = net+(+r.tip||0);
     var desc = describeRecord(r);
     var parts = [];
     if(desc && uiShow('recDesc')) parts.push(esc(desc));
-    if(grossEst) parts.push((r.platform==='bonus'?'金額 ':'車資 ')+fmtMoney(grossEst));
+    if(grossEst) parts.push((r.platform==='bonus'?'金額 ':'車資 ')+fmtMoney(grossEst-(+r.tripBonus||0)));
     if(fee>0.5) parts.push('抽成 '+fmtMoney(fee));
     if(r.tip) parts.push('小費 '+fmtMoney(r.tip));
     if(r.note) parts.push(esc(r.note));
@@ -2278,7 +2288,7 @@ function renderAnalytics(){
   var exps = expensesInRange(range.from, range.to);
   var gross = sumIncome(recs);
   var net = sumNetIncome(recs);
-  var feeTotal = gross.total-net.total;
+  var feeTotal = gross.total-net.total-recs.reduce(function(a,r){ return a + (r.couponType==='absorb' ? (+r.coupon||0) : 0); }, 0);
   var varExp = sumExpense(exps);
   var fixExp = fixedTotalForRange(range.from, range.to);
   var totalExp = varExp+fixExp;
@@ -2340,6 +2350,12 @@ function renderAnalytics(){
   h += '<div class="stat-tile"><div class="lbl">平均日實收</div><div class="val income num">'+(workDays>0?fmtMoney(net.total/workDays):'—')+'</div></div>';
   if(uiShow('shift')) h += '<div class="stat-tile"><div class="lbl">平均每日工時</div><div class="val num">'+(workDays>0?fmtNum(hours/workDays,2)+' 小時':'—')+'</div></div>';
   if(uiShow('shift')) h += '<div class="stat-tile"><div class="lbl">平均每日休息時間</div><div class="val num">'+(workDays>0?fmtNum(breakHours/workDays,2)+' 小時':'—')+'</div></div>';
+  var campRecs = recs.filter(function(r){ return r.tripBonus>0 || (r.platform==='bonus' && r.campaignId); });
+  if(campRecs.length){
+    var campAmt = campRecs.reduce(function(a,r){ return a + (r.platform==='bonus' ? (+r.revenue||0) : (+r.tripBonus||0)); }, 0);
+    h += '<div class="stat-tile"><div class="lbl">🎯 活動獎勵</div><div class="val income num">'+fmtMoney(campAmt)+'</div></div>';
+    h += '<div class="stat-tile"><div class="lbl">活動獎勵佔實收</div><div class="val num">'+(net.total>0?Math.round(campAmt/net.total*100)+'%':'—')+'</div></div>';
+  }
   var addOnRecs = uiOn('addOn') ? recs.filter(function(r){ return r.addOn>0; }) : [];
   if(addOnRecs.length){
     h += '<div class="stat-tile"><div class="lbl">加價單</div><div class="val num">'+addOnRecs.length+' 單</div></div>';
@@ -3009,6 +3025,7 @@ function computePreviewRecordFromForm(key){
   if(def.hasStationFee){ rec.stationFee = +grab('f-station-fee')||0; }
   if(def.dispatchOptions){ var dpe=document.getElementById('chip-dispatchPct'); rec.dispatchPct = parseFloat(dpe?dpe.value:def.dispatchOptions[0]); }
   if(key==='uber' && isYellowCab()) rec.subtype = '優步小黃';
+  var cmp0 = document.getElementById('f-camp'); if(cmp0 && cmp0.checked) rec.tripBonus = +cmp0.getAttribute('data-amt')||0;
   var cpv0 = +grab('f-coupon')||0;
   if(cpv0>0){ rec.coupon = cpv0; rec.couponType = grab('chip-couponType')==='自己吸收' ? 'absorb' : 'refund'; }
   return rec;
@@ -3132,6 +3149,7 @@ function openIncomeModal(key, editId){
     h += '<div class="form-row"><label>'+revLabel+'</label><input class="num-input" id="f-revenue" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.revenue)||'')+'"></div>';
     if(uiOn('tip')) h += '<div class="form-row"><label>小費(選填)</label><input class="num-input" id="f-tip" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.tip)||'')+'"></div>';
     h += '<div id="incomePreview" style="margin-bottom:12px"></div>';
+    h += campaignCheckHtml(key, existing);
     h += buildIncomeForm(key, existing);
   }
   if(!def.tipOnly) h += tripChoiceHtml(existing);
@@ -3198,6 +3216,11 @@ function saveIncome(key, editId){
     } else rec.bonusType = grab('chip-bonusType');
   }
   if(!def.tipOnly) applyTripChoiceOnSave(rec);
+  var cmpEl = document.getElementById('f-camp');
+  if(cmpEl){
+    rec.tripBonus = cmpEl.checked ? (+cmpEl.getAttribute('data-amt')||0) : undefined;
+    rec.campaignId = cmpEl.checked ? (cmpEl.getAttribute('data-id')||undefined) : undefined;
+  }
   pendingIncomeTripId = null;
   if(!existing) state.records.push(rec);
   save(); closeModal(); renderAll();
@@ -3366,9 +3389,9 @@ function wireFeePlatToggle(){
 }
 /* ---------- 顯示模式與功能開關 ---------- */
 var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(台灣大、YOXI、Uber 小黃)'],['tip','小費'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
-var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['dayReport','下班打卡後顯示今日跑車報告']];
+var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告']];
 var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度']];
-var UI_DEFAULT_OFF = ['shiftFix'];  // extras nobody sees unless they turn them on
+var UI_DEFAULT_OFF = ['shiftFix','campaign'];  // extras nobody sees unless they turn them on
 var UI_SIMPLE_OFF = ['subtype','fareType','payment','discount','markup','addOn','coupon','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
 function uiOn(k){ return state.ui ? state.ui[k]!==false : UI_DEFAULT_OFF.indexOf(k)<0; }
 // sections that only have data when another feature is on
@@ -3438,6 +3461,175 @@ function saveUiSettings(){
   state.carType = document.getElementById('f-car-type').value==='yellow' ? 'yellow' : 'multi';
   state.theme = document.getElementById('f-theme').value;
   applyTheme();
+}
+/* ---------- 🎯 campaigns: short fleet promotions the driver types in when they see one ---------- */
+var CAMP_TYPES = [['per','每趟加給'],['tier','跑滿 N 趟拿獎金'],['after','達標後每趟加錢']];
+function campPlatforms(){
+  return visiblePlatforms().filter(function(p){ var d = platformDef(p.key); return !d.tipOnly && !d.bonus && ['hailyellow','private','street','reservation'].indexOf(p.key)<0; });
+}
+// trips count by when the job was accepted
+function campTripTime(r){ return (r.accept&&r.accept.ts) || (r.pickup&&r.pickup.ts) || r.ts; }
+function campTrips(c){
+  return state.records.filter(function(r){ if(r.platform!==c.platform) return false; var t = campTripTime(r); return t>=c.from && t<=c.to; });
+}
+function campReward(c, n){
+  if(c.type==='tier'){ var best = 0; (c.tiers||[]).forEach(function(t){ if(n>=t.n) best = Math.max(best, t.amt); }); return best; }
+  if(c.type==='after') return n>=c.afterN ? (+c.afterBase||0) + (n-c.afterN)*(+c.afterAmt||0) : 0;
+  return 0;
+}
+function campTimeLabel(c){
+  var a = new Date(c.from), b = new Date(c.to);
+  var sameDay = toDateStr(a)===toDateStr(b);
+  var d = function(x){ return (x.getMonth()+1)+'/'+x.getDate(); };
+  return (toDateStr(a)===toDateStr(new Date()) ? '' : d(a)+' ')+hhmm(c.from)+'–'+(sameDay?'':d(b)+' ')+hhmm(c.to);
+}
+function campRuleLabel(c){
+  if(c.type==='per') return '每趟 +'+fmtMoney(c.perAmt);
+  if(c.type==='tier') return (c.tiers||[]).map(function(t){ return t.n+' 趟 '+fmtMoney(t.amt); }).join('、');
+  return '跑滿 '+c.afterN+' 趟'+(+c.afterBase?(' 先拿 '+fmtMoney(c.afterBase)+','):',')+'之後每趟 +'+fmtMoney(c.afterAmt);
+}
+// the per-trip campaign that applies to a trip of this platform taken now (or the record being edited)
+function perCampaignFor(key, existing){
+  var times = existing ? [campTripTime(existing)] : [Date.now()];
+  if(!existing){
+    if(state.pendingAccept) times.push(state.pendingAccept.ts);
+    if(state.activeTrip) times.push(campTripTime(state.activeTrip));
+    (state.pendingTrips||[]).forEach(function(t){ times.push(campTripTime(t)); });
+  }
+  return (state.campaigns||[]).filter(function(c){
+    return c.type==='per' && c.platform===key && times.some(function(t){ return t>=c.from && t<=c.to; });
+  })[0] || null;
+}
+function campaignCheckHtml(key, existing){
+  if(!uiShow('campaign') && !(existing && existing.tripBonus)) return '';
+  var c = perCampaignFor(key, existing);
+  var amt = existing && existing.tripBonus ? existing.tripBonus : (c ? c.perAmt : 0);
+  if(!amt) return '';
+  var on = existing ? !!existing.tripBonus : true;
+  return '<label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;margin:-2px 0 12px;padding:9px 12px;border:1px solid var(--accent);border-radius:10px;background:var(--accent-soft);color:var(--text)">'+
+    '<input type="checkbox" id="f-camp" data-amt="'+amt+'" data-id="'+(c?c.id:(existing&&existing.campaignId)||'')+'" style="width:18px;height:18px;flex:none"'+(on?' checked':'')+'>'+
+    '🎯 活動加給 +'+fmtMoney(amt)+(c?'<span style="font-weight:400;color:var(--text-muted);font-size:11.5px">('+campTimeLabel(c)+')</span>':'')+'</label>';
+}
+function visibleCampaigns(){
+  var dayStart = new Date(todayStr()+'T00:00:00').getTime() + dayCutoffHour()*3600000, now = Date.now();
+  return (state.campaigns||[]).filter(function(c){
+    if(c.to >= dayStart || c.from > now) return true;
+    // finished goals still waiting for "did you get it?"
+    return c.type!=='per' && !c.settled && now - c.to < 14*86400000;
+  }).sort(function(a,b){ return a.from-b.from; });
+}
+function campaignSectionHtml(){
+  if(!uiShow('campaign')) return '';
+  var list = visibleCampaigns(), now = Date.now();
+  var h = '<div class="section"><div class="section-title">🎯 活動</div><div class="card" style="padding:10px 12px">';
+  if(!list.length) h += '<div style="font-size:12.5px;color:var(--text-muted);padding:4px 0 8px">車隊有活動時,在這裡建一張活動卡,記帳本會幫你算趟數和獎勵。</div>';
+  list.forEach(function(c){
+    var trips = campTrips(c), n = trips.length, live = now>=c.from && now<=c.to, ended = now>c.to;
+    var p = platformDef(c.platform);
+    var status = c.from>now ? '尚未開始' : (live ? '進行中 · 剩 '+Math.max(1, Math.round((c.to-now)/60000))+' 分' : '已結束');
+    var line = '';
+    if(c.type==='per'){
+      var got = trips.reduce(function(a,r){ return a + (+r.tripBonus||0); }, 0);
+      line = '已 '+n+' 趟 · 加給 '+fmtMoney(got);
+    } else {
+      var rw = campReward(c, n);
+      if(c.type==='tier'){
+        var next = (c.tiers||[]).filter(function(t){ return n < t.n; })[0];
+        line = '已 '+n+' 趟'+(rw?' · ✅ 已達 '+fmtMoney(rw):'')+(next?(' · 再 '+(next.n-n)+' 趟拿 '+fmtMoney(next.amt)):'');
+      } else {
+        line = '已 '+n+' 趟'+(n>=c.afterN ? ' · 獎勵 '+fmtMoney(rw) : ' · 再 '+(c.afterN-n)+' 趟開始算');
+      }
+    }
+    h += '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'+
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><a data-act="camp-edit:'+c.id+'" style="cursor:pointer;font-weight:700;font-size:13.5px;color:var(--text)">'+esc((p.icon||'')+' '+p.label)+' '+campTimeLabel(c)+' ✏️</a>'+
+      '<span style="font-size:11.5px;color:'+(live?'var(--income)':'var(--text-muted)')+';white-space:nowrap">'+status+'</span></div>'+
+      '<div style="font-size:12px;color:var(--text-muted);margin-top:2px">'+esc(campRuleLabel(c))+(c.note?' · '+esc(c.note):'')+'</div>'+
+      '<div style="font-size:13px;margin-top:3px">'+line+'</div>';
+    if(ended && c.type!=='per' && !c.settled){
+      var rw2 = campReward(c, n);
+      h += rw2>0
+        ? '<div class="btn-row" style="margin-top:6px"><button class="btn" data-act="camp-settle:'+c.id+':no">沒拿到</button><button class="btn btn-primary" data-act="camp-settle:'+c.id+':yes">記入獎勵 '+fmtMoney(rw2)+'</button></div>'
+        : '<div style="font-size:12px;color:var(--text-muted);margin-top:4px">這次沒達標 <a data-act="camp-settle:'+c.id+':no" style="cursor:pointer;color:var(--accent)">關閉</a></div>';
+    }
+    h += '</div>';
+  });
+  h += '<div class="btn-row" style="margin-top:10px"><button class="btn" data-act="camp-new:copy">複製上次的活動</button><button class="btn btn-primary" data-act="camp-new">+ 新增活動</button></div>';
+  return h + '</div></div>';
+}
+function dtLocal(ts){ var d = new Date(ts); return toDateStr(d)+'T'+pad(d.getHours())+':'+pad(d.getMinutes()); }
+function openCampaignModal(id, copyLast){
+  var c = id ? (state.campaigns||[]).filter(function(x){ return x.id===id; })[0] : null;
+  var src = c, last = (state.campaigns||[]).slice(-1)[0];
+  if(!c && copyLast && last){
+    // same hours as last time, moved to today
+    var lenMs = last.to - last.from, f = new Date(last.from), t0 = new Date(todayStr()+'T'+pad(f.getHours())+':'+pad(f.getMinutes())+':00').getTime();
+    if(f.getHours() < dayCutoffHour()) t0 += 86400000;
+    src = JSON.parse(JSON.stringify(last)); src.from = t0; src.to = t0 + lenMs; delete src.id; delete src.settled;
+  }
+  if(!src){ var b = new Date(); b.setMinutes(0,0,0); src = {platform:(campPlatforms()[0]||{}).key, type:'per', from:b.getTime(), to:b.getTime()+3*3600000, perAmt:'', tiers:[], afterN:'', afterAmt:'', afterBase:''}; }
+  var plats = campPlatforms(), pLabel = platformDef(src.platform).label, typeLabel = CAMP_TYPES.filter(function(x){ return x[0]===src.type; })[0][1];
+  var inputStyle = 'width:100%;box-sizing:border-box';
+  var h = '<div class="modal-title">🎯 '+(c?'修改活動':'新增活動')+'<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div class="form-row"><label>平台</label>'+chipRowHtml('campPlat', plats.map(function(p){ return p.label; }), pLabel)+'</div>';
+  h += '<div class="form-grid2"><div class="form-row"><label>開始</label><input id="f-camp-from" type="datetime-local" style="'+inputStyle+'" value="'+dtLocal(src.from)+'"></div>'+
+    '<div class="form-row"><label>結束</label><input id="f-camp-to" type="datetime-local" style="'+inputStyle+'" value="'+dtLocal(src.to)+'"></div></div>';
+  h += '<div class="form-row"><label>獎勵方式</label>'+chipRowHtml('campType', CAMP_TYPES.map(function(x){ return x[1]; }), typeLabel)+'</div>';
+  h += '<div id="camp-sec-per"'+(src.type==='per'?'':' hidden')+'><div class="form-row"><label>每趟加多少</label><input class="num-input" id="f-camp-per" type="number" min="0" step="1" inputmode="numeric" placeholder="例如 50" value="'+(src.perAmt||'')+'"></div></div>';
+  var tiers = (src.tiers||[]).concat([{},{},{}]).slice(0,3);
+  h += '<div id="camp-sec-tier"'+(src.type==='tier'?'':' hidden')+'><label style="font-size:12.5px;font-weight:700">跑滿幾趟 → 拿多少(最多 3 級,用不到的留空)</label>';
+  tiers.forEach(function(t, i){
+    h += '<div class="form-grid2"><div class="form-row"><input class="num-input" id="f-camp-tn'+i+'" type="number" min="1" step="1" inputmode="numeric" placeholder="趟數" value="'+(t.n||'')+'"></div>'+
+      '<div class="form-row"><input class="num-input" id="f-camp-ta'+i+'" type="number" min="0" step="1" inputmode="numeric" placeholder="獎金 $" value="'+(t.amt||'')+'"></div></div>';
+  });
+  h += '</div>';
+  h += '<div id="camp-sec-after"'+(src.type==='after'?'':' hidden')+'><div class="form-grid2">'+
+    '<div class="form-row"><label>跑滿幾趟後開始算</label><input class="num-input" id="f-camp-an" type="number" min="1" step="1" inputmode="numeric" value="'+(src.afterN||'')+'"></div>'+
+    '<div class="form-row"><label>之後每趟 +$</label><input class="num-input" id="f-camp-aa" type="number" min="0" step="1" inputmode="numeric" value="'+(src.afterAmt||'')+'"></div></div>'+
+    '<div class="form-row"><label>達標時先給一筆(選填)</label><input class="num-input" id="f-camp-ab" type="number" min="0" step="1" inputmode="numeric" placeholder="0" value="'+(src.afterBase||'')+'"></div></div>';
+  h += '<div class="form-row"><label>備註(選填,例如 接單率 80% 以上)</label><input id="f-camp-note" type="text" maxlength="30" value="'+esc(src.note||'')+'"></div>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.6;margin-bottom:10px">趟數用「接到單」的時間算(沒按「接到單了」就用上車時間或記帳時間)。</div>';
+  h += '<div class="btn-row">'+(c?'<button class="btn btn-danger" data-act="camp-del:'+c.id+'">刪除</button>':'')+'<button class="btn btn-primary" data-act="camp-save'+(c?':'+c.id:'')+'">儲存</button></div>';
+  openModal(h);
+}
+function saveCampaign(id){
+  function v(x){ var el = document.getElementById(x); return el ? el.value : ''; }
+  var pl = campPlatforms().filter(function(p){ return p.label===v('chip-campPlat'); })[0];
+  var type = CAMP_TYPES.filter(function(x){ return x[1]===v('chip-campType'); })[0][0];
+  var from = new Date(v('f-camp-from')).getTime(), to = new Date(v('f-camp-to')).getTime();
+  if(!pl){ alert('請選擇平台。'); return; }
+  if(!from || !to || to<=from){ alert('結束時間要比開始時間晚。'); return; }
+  var c = {id:id||uid(), platform:pl.key, type:type, from:from, to:to, note:v('f-camp-note').trim()};
+  if(type==='per'){ c.perAmt = +v('f-camp-per')||0; if(!c.perAmt){ alert('請填每趟加多少。'); return; } }
+  if(type==='tier'){
+    c.tiers = [0,1,2].map(function(i){ return {n:+v('f-camp-tn'+i)||0, amt:+v('f-camp-ta'+i)||0}; }).filter(function(t){ return t.n>0 && t.amt>0; }).sort(function(a,b){ return a.n-b.n; });
+    if(!c.tiers.length){ alert('請至少填一級:跑滿幾趟、拿多少。'); return; }
+  }
+  if(type==='after'){
+    c.afterN = +v('f-camp-an')||0; c.afterAmt = +v('f-camp-aa')||0; c.afterBase = +v('f-camp-ab')||0;
+    if(!c.afterN || !c.afterAmt){ alert('請填跑滿幾趟後開始算、之後每趟加多少。'); return; }
+  }
+  state.campaigns = state.campaigns||[];
+  var old = state.campaigns.filter(function(x){ return x.id===c.id; })[0];
+  if(old){ c.settled = old.settled; state.campaigns[state.campaigns.indexOf(old)] = c; } else state.campaigns.push(c);
+  // trips already logged inside a per-trip window can pick up the add-on now
+  if(type==='per'){
+    var miss = campTrips(c).filter(function(r){ return !r.tripBonus; });
+    if(miss.length && confirm('這段時間已經記了 '+miss.length+' 趟 '+pl.label+',要都加上活動加給 '+fmtMoney(c.perAmt)+' 嗎?\n(沒有拿到獎勵的單,之後點那一筆取消勾選就好)')){
+      miss.forEach(function(r){ r.tripBonus = c.perAmt; r.campaignId = c.id; });
+    }
+  }
+  save(); closeModal(); renderAll();
+}
+function settleCampaign(id, take){
+  var c = (state.campaigns||[]).filter(function(x){ return x.id===id; })[0]; if(!c) return;
+  if(take){
+    var amt = campReward(c, campTrips(c).length);
+    state.records.push({id:uid(), date:businessDayOf(c.to), ts:c.to, platform:'bonus', revenue:amt, tip:0, note:'🎯 '+campRuleLabel(c),
+      bonusPlatform:c.platform, bonusType:'趟次獎勵', campaignId:c.id, fees:resolvedFeeRules()});
+  }
+  c.settled = true;
+  save(); renderAll();
+  if(take) showToast('已記入活動獎勵');
 }
 function openShiftFix(){
   var t = todayStr(), m = dm(t);
@@ -3647,8 +3839,10 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.03.6';
+var APP_VERSION = '2026.11.03.7';
 var WHATS_NEW = [
+  '🎯 新增「活動獎勵追蹤」:車隊有趟趟加給、跑滿 N 趟獎金時建一張活動卡,記帳本自動算趟數和獎勵(⚙️ 功能開關打開)',
+  '💲 手續費改成跟車隊一樣進位到整數(例如 $150 × 15% = 22.5 → $23)',
   '🚗 大都會 0 月費方案:⚙️ 手續費設定選「0 月費方案」,記帳時選這單的派遣費 12.5% / 20% / 25%',
   '⏱️ 可以補登上班時間(忘了打卡、或中途才開始用記帳本):⚙️ 功能開關打開「補登上班時間」',
   '📶 沒有網路也能打開記帳本(例如地下停車場),記的帳一樣存在手機裡',
@@ -4065,6 +4259,11 @@ document.addEventListener('click', function(e){
     if(expToEdit) openExpenseModal(expToEdit.category, arg);
   }
   else if(cmd==='shift-fix'){ openShiftFix(); }
+  else if(cmd==='camp-new'){ openCampaignModal(null, arg==='copy'); }
+  else if(cmd==='camp-edit'){ openCampaignModal(arg); }
+  else if(cmd==='camp-save'){ saveCampaign(arg||null); }
+  else if(cmd==='camp-del'){ if(confirm('刪除這個活動?(已經記進帳裡的加給和獎勵不會被刪掉)')){ state.campaigns = (state.campaigns||[]).filter(function(x){ return x.id!==arg; }); save(); closeModal(); renderAll(); } }
+  else if(cmd==='camp-settle'){ var cs = arg.split(':'); settleCampaign(cs[0], cs[1]==='yes'); }
   else if(cmd==='save-shift-fix'){ saveShiftFix(); }
   else if(cmd==='clock-in'){
     var staleDate1 = findStaleOpenShiftDate();
@@ -4357,6 +4556,9 @@ document.addEventListener('click', function(e){
       if(stationEl) stationEl.hidden = !stationLike;
       var discEl0 = document.getElementById('sec-yoxi-enterprise-discount');
       if(discEl0 && !meterLike) discEl0.hidden = true;
+    }
+    if(groupId==='campType'){
+      CAMP_TYPES.forEach(function(x){ var sec = document.getElementById('camp-sec-'+x[0]); if(sec) sec.hidden = x[1]!==value; });
     }
     if(groupId==='payment'){
       var discEl = document.getElementById('sec-yoxi-enterprise-discount');
