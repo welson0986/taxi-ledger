@@ -521,9 +521,10 @@ function defaultState(){
 var IDB_MIGRATED_FLAG = 'taxi_ledger_idb';
 // After moving to IndexedDB, localStorage keeps a frozen copy from the move; reading it alone would show stale data
 var storageStale = false;
+var corruptRaw = null;  // ledger text that failed to load; kept aside so the blank ledger never overwrites it
 function load(){
+  var raw = null;
   try{
-    var raw = null;
     if(__BOOT.state!=null) raw = __BOOT.state;
     else {
       raw = localStorage.getItem(STORAGE_KEY);
@@ -534,7 +535,7 @@ function load(){
     var d = defaultState();
     for(var k in d){ if(!(k in s)) s[k]=d[k]; }
     return s;
-  }catch(e){ return defaultState(); }
+  }catch(e){ if(raw) corruptRaw = raw; return defaultState(); }
 }
 var FEE_DEFAULTS = {tdcFlat:0,metroPct:0,yoxiFlat:0,linegoFlat:0,tdc:15,yoxiCash:10,yoxiCreditExtra:2,linego:19.5,metroFlat:25,metroCredit:3,metroEnterprise:6,uber:25,boltFlat:20,boltPct:10,boltThreshold:15,boltThresholdEnabled:true};
 // Each record keeps the fee rules in force when it was entered. Identical rule sets are written once
@@ -562,6 +563,16 @@ function unpackState(s){
   return s;
 }
 var state = load();
+if(corruptRaw){
+  try{
+    var corruptKey = 'state_corrupt_'+Date.now();
+    if(__BOOT.idb) __BOOT.idb.transaction('kv','readwrite').objectStore('kv').put(corruptRaw, corruptKey);
+    else localStorage.setItem(STORAGE_KEY+'_corrupt', corruptRaw);
+  }catch(e){}
+  setTimeout(function(){
+    alert('⚠️ 讀取帳本時發現資料損壞,現在顯示的是空白帳本。\n\n原本的資料已另外保留在手機裡,不會被蓋掉。\n請到 ⚙️ →「匯入還原」用最近的備份檔還原;沒有備份檔請先不要記帳,寫信給製作者(⚙️ 最下面「關於跑車人生」)。');
+  }, 300);
+}
 var saveFailed = false, saveFailAlerted = false;
 if(storageStale || __BOOT.idbError && (function(){ try{ return !!localStorage.getItem(IDB_MIGRATED_FLAG); }catch(e){ return false; } })()){
   // never push a stale copy over the cloud
@@ -2583,7 +2594,8 @@ function runPlaceQueue(){
 function hotspotName(key, lat, lng){
   var own = (state.hotspotNames||{})[key]; if(own) return own;
   var auto = (state.hotspotPlaces||{})[key]; if(auto) return auto;
-  queuePlaceLookup(key, lat, lng);
+  var g = String(key).split(',');
+  queuePlaceLookup(key, g[0], g[1]);
   return '';
 }
 function hotspotHtml(days, dayKeys){
@@ -2613,7 +2625,7 @@ function hotspotHtml(days, dayKeys){
       ' <a data-act="hot-rename:'+c.key+'" style="cursor:pointer;font-size:12px;text-decoration:none" aria-label="幫熱區取名">✏️</a></div><div class="li-sub">'+c.n+' 趟 · 平均載客 '+fmtNum(c.min/c.n,1)+' 分'+(c.fareN?' · 平均實收 '+fmtMoney(c.fare/c.fareN):'')+'</div></div>'+
       '<a class="li-amt" style="color:var(--accent);font-size:13px;text-decoration:none;flex:none" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query='+lat+','+lng+'">看地圖 ›</a></div>';
   }).join('');
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">以上車位置約 1 公里見方分區統計,時段依上車時間。地名由 OpenStreetMap 自動查詢(只送出熱區中心點座標,查過就記住);點 ✏️ 可以自己取名,例如「大巨蛋散場」。點「看地圖」會用 Google 地圖打開那一區的中心點。</div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">以上車位置約 1 公里見方分區統計,時段依上車時間。地名資料 © OpenStreetMap 貢獻者(查詢時只送出 1 公里格子的格點座標,查過就記住);點 ✏️ 可以自己取名,例如「大巨蛋散場」。點「看地圖」會用 Google 地圖打開那一區的中心點。</div>';
   h += '</div></div>';
   return h;
 }
@@ -2741,7 +2753,7 @@ function backupReminderHtml(){
   if(!backupReminderDue()) return '';
   var days = state.lastExportAt ? Math.floor((Date.now()-state.lastExportAt)/86400000) : null;
   return '<div class="card" style="border-color:var(--accent);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6">'+
-    '<b style="color:var(--accent)">💾 '+(days!=null?'已經 '+days+' 天沒有存備份檔了':'還沒有存過備份檔')+'</b><br>你的帳只存在這支手機,手機遺失或壞掉就拿不回來。按下面按鈕存到 LINE Keep、Google 雲端硬碟或 iCloud。'+
+    '<b style="color:var(--accent)">💾 '+(days!=null?'已經 '+days+' 天沒有存備份檔了':'還沒有存過備份檔')+'</b><br>你的帳只存在這支手機,手機遺失或壞掉就拿不回來。按下面按鈕存到 Google 雲端硬碟、iCloud 或「檔案」。'+
     '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" style="flex:2" data-act="export-file">立即存成備份檔</button><button class="btn btn-ghost" style="flex:1" data-act="backup-snooze">明天再提醒</button></div></div>';
 }
 function downloadBlob(filename, blob){
@@ -3343,7 +3355,7 @@ function openSettingsModal(){
     '</select></div>';
   h += '<div class="form-row" style="margin-top:6px"><label>進階:記錄接單時間</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-track-accept" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.trackAccept?' checked':'')+'>打開後,下車後的大按鈕會變成「📲 接到單了」。接單時按一下,客人上車再按「上車」,分析頁就能把空檔拆成「等單」和「接駁」兩段。不打開就跟原本一樣。</label></div>';
   if(HOT_URL) h += '<div class="form-row"><label>分享上車熱區(車友熱區)</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-share-hot" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.shareHot===true?' checked':'')+'>分享你的上車熱區,就能在分析頁看「車友熱區」。只送約 1 公里一格的區域、日期、時段、趟數,<b>不送精確位置、金額、平台</b>;3 位以上車友都上過車的地方才會顯示。取消勾選會一併刪除你分享過的資料。</label></div>';
-  h += '<div class="form-row"><label>匿名使用人數統計</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-stat-on" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.statOptOut?'':' checked')+'>參與匿名統計,幫製作者知道有多少司機在用。每天只送一次:隨機編號、日期、版本、簡單/完整模式、手機系統。<b>不含任何金額、平台、位置或個人資料。</b></label></div>';
+  h += '<div class="form-row"><label>不具名使用人數統計</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-stat-on" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.statOptOut?'':' checked')+'>參與不具名統計,幫製作者知道有多少司機在用。每天只送一次:隨機編號、日期、版本、簡單/完整模式、手機系統、是否從主畫面打開。<b>不含任何金額、平台、位置或個人資料。</b></label></div>';
   h += '<div class="form-row" style="margin-top:6px"><label>Google Sheet 同步網址</label><input id="f-sync-url" type="text" placeholder="https://script.google.com/macros/s/.../exec" value="'+esc(state.syncUrl||'')+'"></div>';
   h += '<div class="form-row"><label>雲端密碼(要跟 Apps Script 指令碼屬性 TAXI_KEY 一樣)</label><input id="f-cloud-key" type="password" autocomplete="off" placeholder="尚未設定" value="'+esc(getCloudKey())+'">'+
     '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);margin-top:6px;font-weight:400"><input type="checkbox" id="f-cloud-key-show" style="width:16px;height:16px">顯示密碼</label>'+
@@ -3404,11 +3416,12 @@ function aboutHtml(){
   var h = '<div class="card" style="margin-top:18px;padding:14px 16px"><div style="font-size:15px;font-weight:700;margin-bottom:12px">關於跑車人生</div>';
   h += para('🆓 免費使用', '本記帳本完全免費,不需註冊帳號。');
   h += para('🔒 你的帳,只有你看得到', '所有紀錄只存在你自己的手機裡,製作者和其他使用者都看不到。設定雲端備份的話,資料也是存到你自己的 Google 帳號。<br>為了保護你的資料,建議手機設定螢幕鎖,並定期備份。');
-  h += para('📊 匿名使用人數統計', '為了知道有多少司機在用,記帳本每天會送出一次匿名資料:一組隨機編號、日期、版本、簡單/完整模式、手機系統(iPhone/安卓)。<br>不包含任何金額、平台、位置或個人資料,製作者也無法從編號知道你是誰。不想參與,可以在上面「匿名使用人數統計」取消勾選。');
+  h += para('📊 不具名使用人數統計', '為了知道有多少司機在用,記帳本每天會送出一次不具名資料:一組隨機編號、日期、版本、簡單/完整模式、手機系統(iPhone/安卓)、是否從主畫面打開。<br>不包含任何金額、平台、位置或個人資料,製作者也無法從編號知道你是誰。不想參與,可以在上面「不具名使用人數統計」取消勾選。');
+  h += para('📄 隱私權政策', '完整說明記帳本會處理哪些資料、存在哪裡、保存多久:<br><a style="'+link+'" target="_blank" rel="noopener" href="https://welson0986.github.io/taxi-ledger/privacy.html">查看隱私權政策 ›</a>');
   h += para('📍 車友熱區', '同意分享的人,記帳本每天會送出前一天的「約 1 公里一格的上車區域、時段、趟數」,不含精確位置、金額、平台。至少 3 位車友都上過車的地方才會顯示給有分享的人看,看不到任何人的個人紀錄。可以隨時在上面取消分享。');
   h += para('💬 建議與問題回報', '有任何建議或使用上的問題,歡迎來信:<br>'+
     '✉️ <a style="'+link+'" href="mailto:ridewithwelson@gmail.com">ridewithwelson@gmail.com</a>');
-  h += para('ℹ️ 版本資訊', '版本:'+APP_VERSION+'<br>製作者:Welson 威爾森<br>© 2026 Welson 版權所有');
+  h += para('ℹ️ 版本資訊', '版本:'+APP_VERSION+'<br>製作者:Welson 威爾森(瑞威興業有限公司)<br>© 2026 瑞威興業有限公司 版權所有');
   return h+'</div>';
 }
 function wirePlatformDrag(){
@@ -3447,7 +3460,7 @@ function wirePlatformDrag(){
 function openExportModal(){
   var json = packState(state);
   var h = '<div class="modal-title">匯出備份<button class="close" data-act="close-modal">✕</button></div>';
-  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6"><b>建議用「存成備份檔」</b>:會跳出分享選單,可以存到 LINE Keep、Google 雲端硬碟、iCloud 或「檔案」。要還原時到「匯入還原」選這個檔案。</div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6"><b>建議用「存成備份檔」</b>:會跳出分享選單,可以存到 Google 雲端硬碟、iCloud 或「檔案」(LINE 聊天室的檔案會過期,不適合長期保存)。要還原時到「匯入還原」選這個檔案。</div>';
   h += '<div class="btn-row" style="margin-bottom:12px"><button class="btn btn-primary" data-act="export-file">存成備份檔</button></div>';
   h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;line-height:1.6">或複製下面整段文字貼到備忘錄(資料多時文字很長,LINE 訊息可能貼不下)。</div>';
   h += '<textarea id="exportText" readonly style="width:100%;height:160px;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface-sunken);color:var(--text);box-sizing:border-box" onclick="this.focus();this.select()">'+esc(json)+'</textarea>';
