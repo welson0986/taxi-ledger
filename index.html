@@ -427,6 +427,7 @@ function applyCarType(p){
   if(isYellowCab() && TAXI_NO_SUBTYPE.indexOf(p.key)>=0){ delete p.subtypeOptions; delete p.allSubtypes; }
   if(isYellowCab() && p.key==='uber'){ p.hasAddOn = true; p.paymentOptions = ['現金','信用卡']; }
   if(p.key==='tdc' || p.key==='yoxi' || (isYellowCab() && p.key==='uber')) p.hasCoupon = true;
+  if(p.key==='metro' && state.metroPlan==='zero'){ delete p.discountOptions; p.dispatchOptions = ['12.5%','20%','25%']; }
   return p;
 }
 // 車種/屬性: person's order first, hidden ones left out of the entry form (kept for editing old records)
@@ -822,6 +823,11 @@ function netBeforeCoupon(r){
     var pct3 = fees.linego!=null?fees.linego:19.5;
     return Math.max(0, gross*(1-pct3/100) - (+fees.linegoFlat||0));
   }
+  if(r.platform==='metro' && r.dispatchPct!=null){
+    // 0 月費方案: the dispatch fee already covers card payments; company accounts still pay their service fee
+    var entZ = r.payment==='企業簽單' ? (fees.metroEnterprise!=null?fees.metroEnterprise:6) : 0;
+    return Math.max(0, gross*(1-(r.dispatchPct+entZ)/100));
+  }
   if(r.platform==='metro'){
     var discounted = r.discountFinal ? gross : gross - metroDiscount(gross, r.discountTier);
     var surcharge = 0;
@@ -893,6 +899,7 @@ function describeRecord(r){
   if(r.markupMultiplier) parts.push('加成'+r.markupMultiplier+'倍');
   if(r.markupPercent) parts.push('加成'+r.markupPercent+'%');
   if(r.markupAmount) parts.push('加成$'+r.markupAmount);
+  if(r.dispatchPct!=null) parts.push('派遣費'+r.dispatchPct+'%');
   if(r.addOn) parts.push('加價$'+r.addOn);
   if(r.coupon) parts.push('優惠券$'+r.coupon+(r.couponType==='absorb'?'(自己吸收)':'(平台補回)'));
   if(r.pickup && r.dropoff) parts.push('🚕'+Math.round((r.dropoff.ts-r.pickup.ts)/60000)+'分');
@@ -1897,6 +1904,7 @@ function renderEntry(){
   if(uiShow('km')) h += '<div class="daily-row"><span class="l">今日里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(meta.km!=null?meta.km:'')+'" placeholder="0.0" data-km-input></div>';
   if(uiShow('shift')) h += '<div class="daily-row"><span class="l">工時(已扣休息)</span><div style="display:flex;align-items:center;gap:10px"><span class="hours-badge">'+esc(hoursLabel)+'</span>'+shiftBtn+'</div></div>';
   if(uiShow('shift')) h += breakRow;
+  if(uiShow('shiftFix')) h += '<div style="text-align:right;padding:2px 0 4px"><a data-act="shift-fix" style="font-size:12.5px;color:var(--accent);cursor:pointer;font-weight:700">⏱️ 補登上班時間 ›</a></div>';
   var stepBtn = 'width:38px;height:38px;border-radius:50%;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-size:20px;font-weight:700;line-height:1;cursor:pointer;font-family:inherit;padding:0';
   if(uiShow('toilet')) h += '<div class="daily-row"><span class="l">🚻 上廁所</span><div style="display:flex;align-items:center;gap:12px">'+
        '<button style="'+stepBtn+'" data-act="toilet:-1" aria-label="減一次">−</button>'+
@@ -2999,6 +3007,7 @@ function computePreviewRecordFromForm(key){
   if(def.discountOptions){ var de=document.getElementById('chip-discountTier'); rec.discountTier = de?de.value:def.discountOptions[0]; rec.discountFinal = true; }
   if(def.enterpriseDiscountOptions){ var ee=document.getElementById('chip-enterpriseDiscount'); rec.enterpriseDiscount = ee?ee.value:def.enterpriseDiscountOptions[0]; }
   if(def.hasStationFee){ rec.stationFee = +grab('f-station-fee')||0; }
+  if(def.dispatchOptions){ var dpe=document.getElementById('chip-dispatchPct'); rec.dispatchPct = parseFloat(dpe?dpe.value:def.dispatchOptions[0]); }
   if(key==='uber' && isYellowCab()) rec.subtype = '優步小黃';
   var cpv0 = +grab('f-coupon')||0;
   if(cpv0>0){ rec.coupon = cpv0; rec.couponType = grab('chip-couponType')==='自己吸收' ? 'absorb' : 'refund'; }
@@ -3045,6 +3054,11 @@ function buildIncomeForm(key, existing){
   }
   if(def.fareTypeOptions){
     h += off('fareType', '<div class="form-row"><label>計價方式</label>'+chipRowHtml('fareType', def.fareTypeOptions, (existing&&existing.fareType)||def.fareTypeOptions[0])+'</div>');
+  }
+  if(def.dispatchOptions){
+    var dpCur = (existing && existing.dispatchPct!=null) ? existing.dispatchPct+'%' : def.dispatchOptions[0];
+    h += '<div class="form-row"><label>派遣費</label>'+chipRowHtml('dispatchPct', def.dispatchOptions, dpCur)+
+      '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">接單時看到的優惠 %。車資打跟乘客收的金額,系統扣這個 % 算實收(已含刷卡手續費)</div></div>';
   }
   if(def.discountOptions){
     h += off('discount', '<div class="form-row"><label>優惠派別</label>'+chipRowHtml('discountTier', def.discountOptions, (existing&&existing.discountTier)||def.discountOptions[0])+'<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">車資請輸入大都會 App 顯示的「跟乘客收的金額」(已含優惠與加價),派別只是記錄用</div></div>');
@@ -3152,6 +3166,7 @@ function saveIncome(key, editId){
   else if(key==='uber' && isYellowCab() && !(existing&&existing.subtype)) rec.subtype = '優步小黃';
   if(def.fareTypeOptions) rec.fareType = grab('chip-fareType');
   if(def.discountOptions){ rec.discountTier = grab('chip-discountTier'); rec.discountFinal = true; }
+  if(def.dispatchOptions && grab('chip-dispatchPct')){ rec.dispatchPct = parseFloat(grab('chip-dispatchPct')); rec.discountTier = undefined; }
   var meterLike = !def.fareTypeOptions || rec.fareType==='跳表' || rec.fareType==='固定價';
   if(def.paymentOptions && meterLike) rec.payment = grab('chip-payment'); else if(def.paymentOptions) rec.payment = undefined;
   if(def.enterpriseDiscountOptions && rec.payment==='企業簽單') rec.enterpriseDiscount = grab('chip-enterpriseDiscount'); else if(def.enterpriseDiscountOptions) rec.enterpriseDiscount = undefined;
@@ -3321,7 +3336,11 @@ function feeSettingsHtml(fr){
   var h = '<div class="form-row"><label>平台手續費設定</label></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin:-4px 0 6px;line-height:1.6">每家分「每單扣 $」和「抽 %」兩種,用哪種填哪種,<b>沒有的可以直接留空或填 0</b>(兩種都有就都填)。月費或行政費的部分請記在「支出」頁的固定成本。隱藏的平台不會顯示在這裡。</div>';
   h += block('tdc', '<div class="form-grid2">'+inp('f-fee-tdcflat','每單扣 $(沒有留空)','tdcFlat',1,true)+inp('f-fee-tdc','手續費 %(沒有留空)','tdc',0.1,true)+'</div>');
-  h += block('metro', '<div class="form-grid2">'+inp('f-fee-metroflat','每單扣 $(沒有留空)','metroFlat',1,true)+inp('f-fee-metropct','手續費 %(沒有留空)','metroPct',0.1,true)+
+  h += block('metro', '<div class="form-row" style="margin-bottom:6px"><label style="font-size:11.5px">方案</label><select id="f-metro-plan">'+
+    '<option value="monthly"'+(state.metroPlan==='zero'?'':' selected')+'>月費方案(每單扣 $、刷卡/簽單另扣 %)</option>'+
+    '<option value="zero"'+(state.metroPlan==='zero'?' selected':'')+'>0 月費方案(派遣費 12.5% / 20% / 25%)</option></select>'+
+    '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5">選 0 月費方案:記帳時選這單的派遣費 %(已含刷卡手續費),下面的每單扣 $、刷卡 % 不會用到</div></div>'+
+    '<div class="form-grid2">'+inp('f-fee-metroflat','每單扣 $(沒有留空)','metroFlat',1,true)+inp('f-fee-metropct','手續費 %(沒有留空)','metroPct',0.1,true)+
     inp('f-fee-metrocredit','信用卡服務費 %','metroCredit',0.1)+inp('f-fee-metroenterprise','企業簽單服務費 %','metroEnterprise',0.1)+'</div>');
   h += block('yoxi', '<div class="form-grid2">'+inp('f-fee-yoxiflat','每單扣 $(沒有留空)','yoxiFlat',1,true)+inp('f-fee-yoxicash','基本手續費 %(現金/企業簽單)','yoxiCash',0.1,true)+
     inp('f-fee-yoxicreditextra','信用卡服務費 %','yoxiCreditExtra',0.1)+'</div>');
@@ -3347,21 +3366,22 @@ function wireFeePlatToggle(){
 }
 /* ---------- 顯示模式與功能開關 ---------- */
 var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(台灣大、YOXI、Uber 小黃)'],['tip','小費'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
-var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['dayReport','下班打卡後顯示今日跑車報告']];
+var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['dayReport','下班打卡後顯示今日跑車報告']];
 var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度']];
+var UI_DEFAULT_OFF = ['shiftFix'];  // extras nobody sees unless they turn them on
 var UI_SIMPLE_OFF = ['subtype','fareType','payment','discount','markup','addOn','coupon','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
-function uiOn(k){ return !state.ui || state.ui[k]!==false; }
+function uiOn(k){ return state.ui ? state.ui[k]!==false : UI_DEFAULT_OFF.indexOf(k)<0; }
 // sections that only have data when another feature is on
 function uiShow(k){
   if(k==='tripEff' || k==='hotspot') return uiOn(k) && uiOn('trips');
   if(k==='health') return uiOn(k) && uiOn('toilet');
   if(k==='efficiency') return uiOn(k) && (uiOn('shift') || uiOn('km'));
-  if(k==='dayReport') return uiOn(k) && uiOn('shift');
+  if(k==='dayReport' || k==='shiftFix') return uiOn(k) && uiOn('shift');
   return uiOn(k);
 }
 function uiPreset(mode){
   var ui = {};
-  UI_FIELDS.concat(UI_ENTRY, UI_ANALYSIS).forEach(function(x){ ui[x[0]] = mode!=='simple' || UI_SIMPLE_OFF.indexOf(x[0])<0; });
+  UI_FIELDS.concat(UI_ENTRY, UI_ANALYSIS).forEach(function(x){ ui[x[0]] = UI_DEFAULT_OFF.indexOf(x[0])<0 && (mode!=='simple' || UI_SIMPLE_OFF.indexOf(x[0])<0); });
   return ui;
 }
 function uiModeOf(ui){
@@ -3418,6 +3438,50 @@ function saveUiSettings(){
   state.carType = document.getElementById('f-car-type').value==='yellow' ? 'yellow' : 'multi';
   state.theme = document.getElementById('f-theme').value;
   applyTheme();
+}
+function openShiftFix(){
+  var t = todayStr(), m = dm(t);
+  var h = '<div class="modal-title">⏱️ 補登上班時間<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">補登 '+t+' 的工時,會加在今天已經有的工時上。前幾天的工時請到「歷史」頁點那一天修改。</div>';
+  h += '<div class="form-row"><label>幾點開始上班</label><input id="f-sf-start" type="time" value="'+(m.activeShiftStart?hhmm(m.activeShiftStart):'')+'"></div>';
+  h += '<div class="form-row"><label>現在</label>'+chipRowHtml('sfState', ['還在跑','已經下班'], '還在跑')+'</div>';
+  h += '<div class="form-row"><label>幾點下班(選「已經下班」才要填)</label><input id="f-sf-end" type="time"></div>';
+  h += '<div class="form-row"><label>中間休息幾分鐘(選填)</label><input class="num-input" id="f-sf-break" type="number" min="0" step="5" inputmode="numeric" placeholder="0"></div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-shift-fix">補登</button></div>';
+  openModal(h);
+}
+// a clock time on the business day: hours before the day boundary belong to the next calendar date
+function tsOnBusinessDay(t, hm){
+  var d = new Date(t+'T'+hm+':00');
+  if(d.getHours() < dayCutoffHour()) d.setDate(d.getDate()+1);
+  return d.getTime();
+}
+function saveShiftFix(){
+  var t = todayStr(), m = dm(t);
+  var sv = document.getElementById('f-sf-start').value;
+  if(!sv){ alert('請選擇幾點開始上班。'); return; }
+  var start = tsOnBusinessDay(t, sv), brk = Math.max(0, +document.getElementById('f-sf-break').value||0)*60000;
+  if(start > Date.now()){ alert('上班時間不能比現在晚。'); return; }
+  if(document.getElementById('chip-sfState').value==='已經下班'){
+    if(m.activeShiftStart){ alert('你現在還在上班中。要補登已經跑完的這段,請先按「下班打卡」;或選「還在跑」把上班時間往前調。'); return; }
+    var ev = document.getElementById('f-sf-end').value;
+    if(!ev){ alert('請選擇幾點下班。'); return; }
+    var end = tsOnBusinessDay(t, ev);
+    if(end <= start){ alert('下班時間要比上班時間晚。'); return; }
+    if(end - start <= brk){ alert('休息時間比上班時間還長,請再確認。'); return; }
+    m.workedMs += end - start - brk; m.breakMs += brk;
+  } else {
+    if(m.activeShiftStart){
+      if(start < m.activeShiftStart){ m.workedMs += m.activeShiftStart - start; m.activeShiftStart = start; }
+    } else {
+      var staleD = findStaleOpenShiftDate();
+      if(staleD){ openStaleShiftModal(staleD); return; }
+      m.activeShiftStart = start; m.segmentStart = start; m.onBreak = false;
+    }
+    m.workedMs -= brk; m.breakMs += brk;
+  }
+  save(); closeModal(); renderAll();
+  showToast('已補登上班時間');
 }
 function openDayReport(t){
   var recs = recordsInRange(t, t);
@@ -3583,8 +3647,10 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.03.5';
+var APP_VERSION = '2026.11.03.6';
 var WHATS_NEW = [
+  '🚗 大都會 0 月費方案:⚙️ 手續費設定選「0 月費方案」,記帳時選這單的派遣費 12.5% / 20% / 25%',
+  '⏱️ 可以補登上班時間(忘了打卡、或中途才開始用記帳本):⚙️ 功能開關打開「補登上班時間」',
   '📶 沒有網路也能打開記帳本(例如地下停車場),記的帳一樣存在手機裡',
   '🚕 下班打卡後會跳出「今日跑車報告」:實收、時薪、趟數,還會跟前 7 天比較',
   '🛡️ 匯入還原前,會先比對備份檔和手機裡的資料;還原或清除錯了可以復原',
@@ -3940,6 +4006,7 @@ function saveSettings(){
   state.feeRules.metroEnterprise = g('f-fee-metroenterprise');
   state.feeRules.uber = g('f-fee-uber');
   state.feeRules.uberTaxi = g('f-fee-ubertaxi');
+  var mpEl = document.getElementById('f-metro-plan'); if(mpEl) state.metroPlan = mpEl.value==='zero' ? 'zero' : 'monthly';
   state.feeRules.boltFlat = g('f-fee-boltflat');
   state.feeRules.boltPct = g('f-fee-boltpct');
   state.feeRules.boltThreshold = g('f-fee-boltthreshold');
@@ -3997,6 +4064,8 @@ document.addEventListener('click', function(e){
     var expToEdit = state.expenses.filter(function(e){return e.id===arg;})[0];
     if(expToEdit) openExpenseModal(expToEdit.category, arg);
   }
+  else if(cmd==='shift-fix'){ openShiftFix(); }
+  else if(cmd==='save-shift-fix'){ saveShiftFix(); }
   else if(cmd==='clock-in'){
     var staleDate1 = findStaleOpenShiftDate();
     if(staleDate1){ openStaleShiftModal(staleDate1); return; }
