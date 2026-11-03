@@ -67,6 +67,7 @@
 *{box-sizing:border-box}
 html,body{height:100%}
 body{
+  margin:0;
   background:var(--bg);
   color:var(--text);
   font-family:'Noto Sans TC', system-ui, sans-serif;
@@ -310,7 +311,7 @@ body{
     <div class="topbar-right">
       <span id="todayNet" class="today-net"></span>
       <button class="icon-btn backup-btn" id="backupBtn" data-act="quick-backup" title="備份" aria-label="備份" style="display:none">💾</button>
-      <button class="icon-btn" data-act="open-settings" title="設定">⚙️</button>
+      <button class="icon-btn" data-act="open-settings" title="設定" aria-label="設定">⚙️</button>
     </div>
   </div>
   <main id="content" class="content"></main>
@@ -1072,6 +1073,7 @@ function cloudAuthCheck(after){
     else if(res && res.error==='unauthorized') cloudAuthStatus = 'bad';
     else if(res && res.ok) cloudAuthStatus = 'open';
     else cloudAuthStatus = 'unreachable';
+    if(res && res.ok) cloudServerV = +res.v || 0;
     if(cloudAuthStatus==='bad'){ state.lastCloudConfirmAt = 0; writeStore(); }
     if(prev==='bad' && cloudAuthStatus==='ok'){ state.lastCloudConfirmAt = 0; cloudSyncIfBehind(); }
     if(currentTab==='entry' && !document.getElementById('modalBody')) renderAll();
@@ -1091,6 +1093,34 @@ function cloudStatusText(){
 // already has; afterwards only a backup that was not there before, with this snapshot's counts, proves it got saved.
 // (an older backup with the same counts says nothing about an edited amount)
 var cloudPushBusy = false, cloudPushAgain = false, cloudPushWaiters = [];
+// Apps Script v6 stores each backup under the id the app gave it and reports a fingerprint (SHA-256) of the
+// content it really stored, so the app can check that this exact backup arrived intact. Older scripts
+// fall back to comparing the backup list before and after sending.
+var cloudServerV = 0;
+function newSnapshotId(){
+  var a = new Uint32Array(3); (window.crypto||window.msCrypto).getRandomValues(a);
+  return (Array.prototype.map.call(a, function(n){ return n.toString(36); }).join('') + Date.now().toString(36)).slice(0,20);
+}
+// '' when this browser cannot compute it; the id alone is then the proof
+function sha256Hex(text){
+  try{
+    if(!(window.crypto && crypto.subtle && window.TextEncoder)) return Promise.resolve('');
+    return crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)).then(function(buf){
+      return Array.prototype.map.call(new Uint8Array(buf), function(b){ return ('0'+b.toString(16)).slice(-2); }).join('');
+    }, function(){ return ''; });
+  }catch(e){ return Promise.resolve(''); }
+}
+function confirmBySnapshot(sid, hash, builtAt, onResult, retried){
+  cloudListVersions().then(function(vs){
+    var hit = vs.filter(function(v){ return v.sid===sid; })[0];
+    // the sheet's list can lag a moment behind the save
+    if(!hit && !retried){ setTimeout(function(){ confirmBySnapshot(sid, hash, builtAt, onResult, true); }, 4000); return; }
+    var ok = !!hit && (!hash || hit.hash===hash);
+    if(ok && builtAt > (state.lastCloudConfirmAt||0)) state.lastCloudConfirmAt = builtAt;
+    writeStore();
+    onResult(ok);
+  }).catch(function(){ writeStore(); onResult(false); });
+}
 function cloudListVersions(){
   return cloudGet({action:'list'}).then(function(res){
     if(!res || !res.ok) throw new Error('list');
@@ -1122,6 +1152,21 @@ function pushCloudSnapshot(onResult){
   }
   var snap, builtAt;
   try{ snap = buildCloudSnapshot(); builtAt = Date.now(); snap.key = getCloudKey(); }catch(e){ done(false); return false; }
+  if(cloudServerV >= 6){
+    snap.snapshotId = newSnapshotId();
+    sha256Hex(snap.state).then(function(hash){
+      return fetch(state.syncUrl, {
+        method:'POST', mode:'no-cors',
+        headers:{'Content-Type':'text/plain;charset=utf-8'},
+        body: JSON.stringify(snap)
+      }).then(function(){
+        if(cloudAuthStatus==='bad'){ done(false); return; }
+        state.lastCloudSendAt = builtAt;
+        confirmBySnapshot(snap.snapshotId, hash, builtAt, done);
+      });
+    }).catch(function(){ done(false); });
+    return true;
+  }
   cloudListVersions().then(function(vs){
     var before = {};
     vs.forEach(function(v){ before[+v.time] = true; });
@@ -3278,11 +3323,22 @@ function openYearReportModal(year){
 /* ---------- MODALS ---------- */
 var currentIncomeModalKey = null;
 var currentIncomeEditFees = null, currentIncomeEditId = null, currentIncomeEditDate = null, currentIncomeEditTs = null;
+var modalOpener = null;
 function openModal(html){
   currentIncomeModalKey = null;
   var root = document.getElementById('modalRoot');
-  root.innerHTML = '<div class="modal-overlay" data-act="close-modal"><div class="modal" id="modalBody" data-act="noop"></div></div>';
-  document.getElementById('modalBody').innerHTML = html;
+  // remember where focus was, unless we are only swapping one sheet for another
+  var ae = document.activeElement;
+  if(!document.getElementById('modalBody')) modalOpener = (ae && ae!==document.body && !root.contains(ae)) ? ae : null;
+  root.innerHTML = '<div class="modal-overlay" data-act="close-modal"><div class="modal" id="modalBody" data-act="noop" role="dialog" aria-modal="true" tabindex="-1"></div></div>';
+  var body = document.getElementById('modalBody');
+  body.innerHTML = html;
+  var title = body.querySelector('.modal-title');
+  // the sheet's name is its title without the ✕ inside it
+  if(title){ var tc = title.cloneNode(true), x = tc.querySelector('.close'); if(x) x.parentNode.removeChild(x); body.setAttribute('aria-label', tc.textContent.trim()); }
+  // screen readers stay inside the sheet; the page behind is out of reach until it closes
+  var app = document.querySelector('.app'); if(app) app.setAttribute('aria-hidden', 'true');
+  try{ body.focus({preventScroll:true}); }catch(e){ body.focus(); }
 }
 function computePreviewRecordFromForm(key){
   var def = platformDef(key);
@@ -3320,7 +3376,11 @@ function updateIncomePreview(){
     '<div class="stat-tile"><div class="lbl">實收</div><div class="val income num">'+fmtMoneyFor(currentIncomeModalKey, total)+'</div></div>'+
     '</div>';
 }
-function closeModal(){ pendingIncomeTripId = null; document.getElementById('modalRoot').innerHTML=''; renderAll(); setTimeout(function(){ if(typeof checkRestReminder==='function') checkRestReminder(); }, 800); }
+function closeModal(){ pendingIncomeTripId = null; document.getElementById('modalRoot').innerHTML='';
+  var app = document.querySelector('.app'); if(app) app.removeAttribute('aria-hidden');
+  renderAll();
+  if(modalOpener && document.contains(modalOpener)){ try{ modalOpener.focus({preventScroll:true}); }catch(e){} }
+  modalOpener = null; setTimeout(function(){ if(typeof checkRestReminder==='function') checkRestReminder(); }, 800); }
 
 function chipRowHtml(groupId, options, selectedDefault){
   var h = '<div class="chip-row" data-group="'+groupId+'">';
@@ -4405,7 +4465,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.7';
+var APP_VERSION = '2026.11.04.9';
 var WHATS_NEW = [
   '⚙️ 設定頁分成六類(基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享),點一類才展開,不用一直往下滑;「儲存設定」固定在最下面',
   '📱 記帳首頁可以自己排順序、隱藏用不到的區塊(⚙️「記帳首頁排列」);預設把平台按鈕移到路況上面',
@@ -4918,6 +4978,55 @@ function openFeeApplyModal(){
 }
 
 /* ---------- EVENT DELEGATION ---------- */
+/* ---------- screen readers and keyboards ----------
+   Screens are built from HTML strings, so after each change one pass fills in what the markup leaves out:
+   each form label is tied to its field, tappable boxes are announced and reachable as buttons,
+   and icon-only close buttons get a name. */
+var a11yQueued = false, a11yUid = 0;
+function a11yPass(){
+  a11yQueued = false;
+  var rows = document.querySelectorAll('.form-row');
+  for(var i=0;i<rows.length;i++){
+    var lab = rows[i].querySelector('label');
+    if(!lab || lab.htmlFor || lab.querySelector('input,select,textarea')) continue;
+    var ctl = rows[i].querySelector('input:not([type=hidden]),select,textarea');
+    if(!ctl) continue;
+    if(!ctl.id) ctl.id = 'a11y-f'+(++a11yUid);
+    lab.htmlFor = ctl.id;
+  }
+  var acts = document.querySelectorAll('[data-act]:not(button):not(input):not(select):not(textarea):not(label):not([role])');
+  for(var j=0;j<acts.length;j++){
+    var el = acts[j], act = el.getAttribute('data-act');
+    // the dimmed backdrop and the sheet itself are not controls; ✕ and Escape close the sheet
+    if(act==='noop' || el.classList.contains('modal-overlay')) continue;
+    if(el.tagName==='A' && el.hasAttribute('href')) continue;
+    el.setAttribute('role', 'button');
+    if(!el.hasAttribute('tabindex')) el.tabIndex = 0;
+  }
+  var closes = document.querySelectorAll('button.close:not([aria-label])');
+  for(var k=0;k<closes.length;k++) closes[k].setAttribute('aria-label', '關閉');
+}
+try{
+  new MutationObserver(function(){ if(!a11yQueued){ a11yQueued = true; Promise.resolve().then(a11yPass); } })
+    .observe(document.body, {childList:true, subtree:true});
+}catch(e){}
+document.addEventListener('keydown', function(e){
+  var t = e.target;
+  if((e.key==='Enter' || e.key===' ') && t && t.getAttribute && t.getAttribute('role')==='button' && t.hasAttribute('data-act')){
+    e.preventDefault(); t.click(); return;
+  }
+  var sheet = document.getElementById('modalBody');
+  if(!sheet) return;
+  if(e.key==='Escape'){ e.preventDefault(); closeModal(); return; }
+  if(e.key==='Tab'){
+    // keep Tab inside the open sheet
+    var f = Array.prototype.filter.call(sheet.querySelectorAll('button,input,select,textarea,a[href],[tabindex]:not([tabindex="-1"])'), function(x){ return !x.disabled && x.offsetParent!==null; });
+    if(!f.length){ e.preventDefault(); sheet.focus(); return; }
+    var first = f[0], last = f[f.length-1];
+    if(e.shiftKey && (document.activeElement===first || document.activeElement===sheet)){ e.preventDefault(); last.focus(); }
+    else if(!e.shiftKey && document.activeElement===last){ e.preventDefault(); first.focus(); }
+  }
+});
 document.addEventListener('click', function(e){
   var t = e.target.closest('[data-act]');
   if(!t) return;
