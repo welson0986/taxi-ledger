@@ -88,6 +88,9 @@ body{
   background:var(--surface);display:flex;align-items:center;justify-content:center;
   font-size:16px;cursor:pointer;color:var(--text);
 }
+.backup-btn{position:relative}
+.backup-btn .bk-days{position:absolute;top:-6px;right:-6px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:var(--text-muted);color:#fff;font-size:10px;font-weight:700;line-height:16px;text-align:center;font-style:normal}
+.backup-btn .bk-days.due{background:var(--expense)}
 .content{flex:1;overflow-y:auto;padding:14px 16px 24px;-webkit-overflow-scrolling:touch}
 .bottom-nav{
   position:sticky;bottom:0;z-index:20;
@@ -278,6 +281,7 @@ body{
     </div>
     <div class="topbar-right">
       <span id="todayNet" class="today-net"></span>
+      <button class="icon-btn backup-btn" id="backupBtn" data-act="quick-backup" title="備份" aria-label="備份" style="display:none">💾</button>
       <button class="icon-btn" data-act="open-settings" title="設定">⚙️</button>
     </div>
   </div>
@@ -1713,6 +1717,7 @@ function renderTopbar(){
   var el = document.getElementById('todayNet');
   el.textContent = (val>=0?'今日淨收入 +':'今日淨收入 ')+fmtMoney(val);
   el.className = 'today-net '+(val>=0?'pos':'neg');
+  renderBackupBtn();
   var nameEl = document.getElementById('appNameLabel');
   if(nameEl) nameEl.textContent = state.appName||'跑車人生';
   document.title = state.appName||'跑車人生';
@@ -2756,14 +2761,57 @@ function backupReminderHtml(){
     '<b style="color:var(--accent)">💾 '+(days!=null?'已經 '+days+' 天沒有存備份檔了':'還沒有存過備份檔')+'</b><br>你的帳只存在這支手機,手機遺失或壞掉就拿不回來。按下面按鈕存到 Google 雲端硬碟、iCloud 或「檔案」。'+
     '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" style="flex:2" data-act="export-file">立即存成備份檔</button><button class="btn btn-ghost" style="flex:1" data-act="backup-snooze">明天再提醒</button></div>'+backupHintHtml()+'</div>';
 }
-function backupHintHtml(){
+function phoneOs(){
   var ua = navigator.userAgent || '';
-  var ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
-  var android = /Android/.test(ua);
-  var line = ios ? '📱 跳出選單後點「儲存到檔案」→ 選 iCloud Drive → 儲存'
-    : android ? '🤖 跳出選單後點「雲端硬碟」→ 上傳'
-    : '📱 iPhone:點「儲存到檔案」→ iCloud Drive<br>🤖 安卓:點「雲端硬碟」→ 上傳';
+  if(/iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return 'ios';
+  return /Android/.test(ua) ? 'android' : 'other';
+}
+// where each phone can send the backup file; Android phones rarely have iCloud
+function backupDestChoices(){
+  var os = phoneOs();
+  if(os==='android') return [['gdrive','🟢 Google 雲端硬碟']];
+  return [['icloud','☁️ iCloud'],['gdrive','🟢 Google 雲端硬碟']];
+}
+function backupDest(){
+  var ch = backupDestChoices(), d = state.backupDest;
+  return ch.some(function(c){ return c[0]===d; }) ? d : ch[0][0];
+}
+function backupHintHtml(){
+  var os = phoneOs(), d = backupDest(), line;
+  if(os==='ios') line = d==='gdrive'
+    ? '📱 跳出選單後點「雲端硬碟」圖示 → 上傳<br><span style="opacity:.85">沒看到圖示:先安裝 Google 雲端硬碟 App,或在選單最右邊「更多」把它打開</span>'
+    : '📱 跳出選單後點「儲存到檔案」→ 選「iCloud Drive」→ 右上角「儲存」';
+  else if(os==='android') line = '🤖 跳出選單後點「雲端硬碟」→ 選資料夾 → 上傳';
+  else line = '💻 電腦會直接下載備份檔,再自己放到 '+(d==='gdrive'?'Google 雲端硬碟':'iCloud Drive');
   return '<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;line-height:1.6">'+line+'<br>不要只傳到 LINE,聊天室的檔案會過期。</div>';
+}
+function backupDaysAgo(){ return state.lastExportAt ? Math.floor((Date.now()-state.lastExportAt)/86400000) : null; }
+function renderBackupBtn(){
+  var b = document.getElementById('backupBtn');
+  if(!b) return;
+  var show = hasMeaningfulData();
+  b.style.display = show ? '' : 'none';
+  if(!show) return;
+  var days = backupDaysAgo(), due = days==null || days>=BACKUP_REMIND_DAYS;
+  var label = days==null ? '!' : (days>0 ? String(days>99?'99+':days) : '');
+  b.innerHTML = '💾'+(label ? '<i class="bk-days'+(due?' due':'')+'">'+label+'</i>' : '');
+  b.title = days==null ? '還沒有備份過' : (days ? days+' 天前備份' : '今天已備份');
+}
+function openQuickBackup(){
+  var days = backupDaysAgo(), d = backupDest(), ch = backupDestChoices();
+  var h = '<div class="modal-title">💾 備份<button class="close" data-act="close-modal">✕</button></div>';
+  h += '<div style="font-size:13px;margin-bottom:12px;color:'+(days==null||days>=BACKUP_REMIND_DAYS?'var(--expense)':'var(--text-muted)')+'">'+
+    (days==null ? '還沒有備份過' : (days ? '上次備份:'+days+' 天前' : '今天已經備份過了 ✓'))+'</div>';
+  if(ch.length > 1){
+    h += '<div style="font-size:12.5px;font-weight:700;margin-bottom:6px">存到哪裡</div>';
+    h += '<div class="segmented" style="margin-bottom:4px">'+ch.map(function(c){
+      return '<button class="'+(c[0]===d?'active':'')+'" data-act="backup-dest:'+c[0]+'">'+c[1]+'</button>';
+    }).join('')+'</div>';
+  }
+  h += backupHintHtml();
+  h += '<div class="btn-row" style="margin-top:14px"><button class="btn btn-primary" style="flex:1" data-act="export-file">存成備份檔</button></div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-top:12px;line-height:1.6">換手機或要還原:<a data-act="open-import" style="cursor:pointer;color:var(--accent)">匯入還原 ›</a></div>';
+  openModal(h);
 }
 function downloadBlob(filename, blob){
   var a = document.createElement('a');
@@ -3397,15 +3445,12 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.03';
+var APP_VERSION = '2026.11.03.2';
 var WHATS_NEW = [
-  '🧩 可以自己關掉用不到的功能:記收入要填的欄位、記帳頁、分析頁的區塊都能開關(⚙️ 最上面)',
-  '🟢 一鍵切換「簡單記帳」:點平台、打金額、儲存就好;想看完整分析隨時切回「🔵 完整分析」',
-  '🌓 外觀可以選淺色、深色,或跟著手機設定',
-  '⚡ BOLT 實收算到小數點兩位,跟 App 一樣用每趟的小數加總',
-  '📊 新增匿名使用人數統計(不含任何帳目),不想參與可以在 ⚙️ 取消勾選',
-  '🎨 改圖示更方便:在設定裡點平台或支出項目的圖示,直接從清單挑',
-  '👥 新增「車友熱區」:同意分享的車友,可以在分析頁看附近車友都在哪裡上車(不含精確位置、金額)'
+  '💾 右上角新增「備份」按鈕:一按就能存備份檔,可以選存到 iCloud 或 Google 雲端硬碟;按鈕上的數字是幾天沒備份,變紅色就該備份了',
+  '📍 取消分享「車友熱區」時,會一併刪除你分享過的資料',
+  '🛡️ 加強資料保護:萬一手機裡的帳本讀不出來,原本的資料會另外保留,不會被空白帳本蓋掉',
+  '📄 「關於跑車人生」新增隱私權政策'
 ];
 function maybeShowWhatsNew(){
   if(state.seenVersion===APP_VERSION) return false;
@@ -3980,6 +4025,8 @@ document.addEventListener('click', function(e){
     alert('已將 '+afFrom+' 起的 '+afN+' 筆記錄改用新手續費。');
   }
   else if(cmd==='do-restore'){ doCloudRestore(+arg); }
+  else if(cmd==='quick-backup'){ openQuickBackup(); }
+  else if(cmd==='backup-dest'){ state.backupDest = arg; save(); openQuickBackup(); }
   else if(cmd==='backup-snooze'){ state.backupSnoozeUntil = Date.now()+86400000; save(); renderAll(); }
   else if(cmd==='dismiss-tab-warning'){
     try{ sessionStorage.setItem('hideTabWarning','1'); }catch(err){}
@@ -3990,7 +4037,7 @@ document.addEventListener('click', function(e){
   else if(cmd==='export-file'){
     var stamp = todayStr().replace(/-/g,'');
     shareOrDownloadFile('跑車人生備份_'+stamp+'.json', packState(state), 'application/json').then(function(done){
-      if(done){ markExported(); renderAll(); showToast('備份檔已交給分享選單,記得選好存放位置。'); }
+      if(done){ markExported(); if(document.querySelector('[data-act^="backup-dest"]') || /💾 備份/.test((document.querySelector('.modal-title')||{}).textContent||'')) closeModal(); renderAll(); showToast('備份檔已交給分享選單,記得選好存放位置。'); }
     });
   }
   else if(cmd==='year-report'){ openYearReportModal(arg); }
