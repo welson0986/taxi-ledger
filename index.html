@@ -442,6 +442,7 @@ function isUberTaxiRec(r){ return r.platform==='uber' && r.subtype==='優步小�
 function applyCarType(p){
   if(isYellowCab() && TAXI_NO_SUBTYPE.indexOf(p.key)>=0){ delete p.subtypeOptions; delete p.allSubtypes; }
   if(isYellowCab() && p.key==='uber'){ p.hasAddOn = true; p.paymentOptions = ['現金','信用卡']; }
+  if(isYellowCab() && p.key==='linego') p.paymentOptions = ['現金','信用卡','LINE Pay','悠遊卡'];
   if(isYellowCab() && p.key==='uber') p.hasCoupon = true;
   if(p.key==='metro' && state.metroPlan==='zero'){ delete p.discountOptions; p.dispatchOptions = ['12.5%','20%','25%']; }
   return p;
@@ -577,7 +578,7 @@ function load(){
     return s;
   }catch(e){ if(raw) corruptRaw = raw; return defaultState(); }
 }
-var FEE_DEFAULTS = {tdcFlat:0,metroPct:0,yoxiFlat:0,linegoFlat:0,tdc:15,yoxiCash:10,yoxiCreditExtra:2,linego:19.5,metroFlat:25,metroCredit:3,metroEnterprise:6,uber:25,uberTaxi:15,hailyellowCredit:3,tdcTicket:3,tdcCard:0,metroTicket:3,hailyellowTicket:3,boltFlat:20,boltPct:10,boltThreshold:15,boltThresholdEnabled:true};
+var FEE_DEFAULTS = {tdcFlat:0,metroPct:0,yoxiFlat:0,linegoFlat:0,tdc:15,yoxiCash:10,yoxiCreditExtra:2,linego:19.5,metroFlat:25,metroCredit:3,metroEnterprise:6,uber:25,uberTaxi:15,hailyellowCredit:3,tdcTicket:3,tdcCard:0,linegoTaxiTier:200,linegoTaxiFlat:10,linegoTaxiPct:10,linegoTaxiCard:2.5,linegoTaxiCap:3000,metroTicket:3,hailyellowTicket:3,boltFlat:20,boltPct:10,boltThreshold:15,boltThresholdEnabled:true};
 // Each record keeps the fee rules in force when it was entered. Identical rule sets are written once
 // in feeTable and records point at them with feesRef; in memory every record still has r.fees.
 function packState(st){
@@ -798,6 +799,7 @@ function resolvedFeeRules(){
   var fr = state.feeRules||{}, out = {};
   for(var k in FEE_DEFAULTS){ out[k] = (fr[k]!=null) ? fr[k] : FEE_DEFAULTS[k]; }
   if(!isYellowCab()) out.tdcCard = 0;
+  out.linegoTaxi = isYellowCab();
   return out;
 }
 function stampMissingFeeSnapshots(){
@@ -826,6 +828,22 @@ function netBeforeCoupon(r){
   var n = rawNet(r), g = +r.revenue||0;
   if(g>0 && (ROUND_FEE_PLATS.indexOf(r.platform)>=0 || /^custom_/.test(r.platform))) n = g - Math.round(g - n + 1e-9);
   return n;
+}
+function linegoDispatchFee(gross, fees){
+  var tier = fees.linegoTaxiTier!=null ? +fees.linegoTaxiTier : 200;
+  return gross < tier ? (fees.linegoTaxiFlat!=null ? +fees.linegoTaxiFlat : 10) : gross*(fees.linegoTaxiPct!=null ? +fees.linegoTaxiPct : 10)/100;
+}
+// LINE GO 小黃 dispatch fees already charged this calendar month before trip r (for the monthly cap)
+function linegoMonthDispatchBefore(r){
+  var d = r.date || currentEntryDate(), ym = d.slice(0,7), ts = r.ts || Date.now(), sum = 0;
+  state.records.forEach(function(x){
+    if(x.platform!=='linego' || x.id===r.id || !x.date || x.date.slice(0,7)!==ym) return;
+    if(!(x.fees ? x.fees.linegoTaxi : isYellowCab())) return;
+    if(x.date>d || (x.date===d && (x.ts||0)>=ts)) return;
+    var g = +x.revenue||0;
+    if(g>0) sum += linegoDispatchFee(g, x.fees||resolvedFeeRules());
+  });
+  return sum;
 }
 function isTicketPay(p){ return p==='悠遊卡' || p==='愛心卡'; }
 function rawNet(r){
@@ -872,6 +890,13 @@ function rawNet(r){
     return Math.max(0, gross*(1-pct/100) - (+fees.tdcFlat||0));
   }
   if(r.platform==='yoxi') return Math.max(0, yoxiNet(r, gross, fees) - (+fees.yoxiFlat||0));
+  if(r.platform==='linego' && fees.linegoTaxi){
+    var feeL = linegoDispatchFee(gross, fees);
+    var capL = fees.linegoTaxiCap!=null ? +fees.linegoTaxiCap : 3000;
+    if(capL>0) feeL = Math.min(feeL, Math.max(0, capL - linegoMonthDispatchBefore(r)));
+    if(r.payment && r.payment!=='現金') feeL += gross*(fees.linegoTaxiCard!=null ? +fees.linegoTaxiCard : 2.5)/100;
+    return Math.max(0, gross - feeL);
+  }
   if(r.platform==='linego'){
     var pct3 = fees.linego!=null?fees.linego:19.5;
     return Math.max(0, gross*(1-pct3/100) - (+fees.linegoFlat||0));
@@ -3115,7 +3140,7 @@ function openYearReportModal(year){
 
 /* ---------- MODALS ---------- */
 var currentIncomeModalKey = null;
-var currentIncomeEditFees = null;
+var currentIncomeEditFees = null, currentIncomeEditId = null, currentIncomeEditDate = null, currentIncomeEditTs = null;
 function openModal(html){
   currentIncomeModalKey = null;
   var root = document.getElementById('modalRoot');
@@ -3125,7 +3150,7 @@ function openModal(html){
 function computePreviewRecordFromForm(key){
   var def = platformDef(key);
   function grab(id){ var el=document.getElementById(id); return el?el.value:null; }
-  var rec = {platform:key, fees:currentIncomeEditFees||undefined};
+  var rec = {platform:key, fees:currentIncomeEditFees||resolvedFeeRules(), id:currentIncomeEditId||undefined, date:currentIncomeEditDate||undefined, ts:currentIncomeEditTs||undefined};
   rec.revenue = +grab('f-revenue')||0;
   var tf0 = tipFromForm(); rec.tip = tf0 ? tf0.tip : 0;
   if(def.fareTypeOptions){ var fte=document.getElementById('chip-fareType'); rec.fareType = fte?fte.value:def.fareTypeOptions[0]; }
@@ -3271,6 +3296,9 @@ function openIncomeModal(key, editId){
   openModal(h);
   currentIncomeModalKey = key;
   currentIncomeEditFees = existing ? (existing.fees||null) : null;
+  currentIncomeEditId = existing ? existing.id : null;
+  currentIncomeEditDate = existing ? existing.date : null;
+  currentIncomeEditTs = existing ? existing.ts : null;
   updateIncomePreview();
   setTimeout(function(){ var el=document.getElementById('f-revenue')||document.getElementById('f-tip'); if(el) el.focus(); }, 50);
 }
@@ -3488,7 +3516,12 @@ function feeSettingsHtml(fr){
     inp('f-fee-metroticket','悠遊卡/愛心卡手續費 %','metroTicket',0.1)+'</div>');
   h += block('yoxi', '<div class="form-grid2">'+inp('f-fee-yoxiflat','每單扣 $(沒有留空)','yoxiFlat',1,true)+inp('f-fee-yoxicash','基本手續費 %(現金/企業簽單)','yoxiCash',0.1,true)+
     inp('f-fee-yoxicreditextra','信用卡服務費 %','yoxiCreditExtra',0.1)+'</div>');
-  h += block('linego', '<div class="form-grid2">'+inp('f-fee-linegoflat','每單扣 $(沒有留空)','linegoFlat',1,true)+inp('f-fee-linego','手續費 %(含信用卡服務費 2.5%)','linego',0.1,true)+'</div>');
+  h += block('linego', isYellowCab() ?
+    '<div class="form-grid2">'+inp('f-fee-linegotaxitier','分界車資 $(這個金額以上抽 %)','linegoTaxiTier',1)+inp('f-fee-linegotaxiflat','分界以下每趟扣 $','linegoTaxiFlat',1)+
+    inp('f-fee-linegotaxipct','分界以上抽 %','linegoTaxiPct',0.1)+inp('f-fee-linegotaxicard','刷卡/LINE Pay/悠遊卡另扣 %','linegoTaxiCard',0.1)+
+    inp('f-fee-linegotaxicap','每月派遣費上限 $(0 = 沒有上限)','linegoTaxiCap',1)+'</div>'+
+    '<div style="font-size:11px;color:var(--text-muted);margin:-4px 0 8px;line-height:1.5">小黃預設:車資 $199 以下每趟扣 $10,$200 以上抽 10%;非現金另扣 2.5%,付現金不扣。派遣費每月(1 號到月底)累計到 $3,000 後不再扣,非現金的 2.5% 照扣。</div>' :
+    '<div class="form-grid2">'+inp('f-fee-linegoflat','每單扣 $(沒有留空)','linegoFlat',1,true)+inp('f-fee-linego','手續費 %(含信用卡服務費 2.5%)','linego',0.1,true)+'</div>');
   h += block('uber', '<div'+(isYellowCab()?' hidden':'')+'><div class="form-grid2">'+inp('f-fee-uber','手續費 %','uber',0.1)+'</div>'+
     '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.5">Uber 多元輸入 App 顯示的實收(已扣手續費),這個 % 用來算出未扣手續費的車資,不會再扣一次。</div></div>'+
     '<div'+(isYellowCab()?'':' hidden')+'><div class="form-grid2">'+inp('f-fee-ubertaxi','優步小黃手續費 %','uberTaxi',0.1)+'</div>'+
@@ -3887,6 +3920,7 @@ var HELP = [
   ['設定與外觀', [
     ['簡單記帳 / 完整分析', '⚙️ 最上面一鍵切換,也可以一項一項開關;關掉不會刪資料。'],
     ['平台、車種、支出項目', '⚙️ 平台管理:隱藏、排序、改名稱、顏色、圖示;車種和支出項目也可以隱藏、新增。'],
+    ['LINE GO 小黃的手續費', '⚙️「平台手續費設定」→ Line Go(我的車選小黃才有):車資 $199 以下每趟扣 $10、$200 以上抽 10%,刷卡、LINE Pay、悠遊卡另扣 2.5%,付現金不扣;派遣費每月累計到 $3,000 就不再扣;都可以改。記帳時選付款方式。'],
     ['台灣大小黃的手續費', '⚙️「平台手續費設定」→ 台灣大車隊(我的車選小黃才有信用卡那格):多平台小黃填手續費 %(已含刷卡費);台灣大正式隊員填每單扣 $,刷卡、綁定支付另扣的 % 填在「信用卡/綁定支付手續費 %」。月費、電話費記在固定成本。'],
     ['手續費設定', '⚙️「平台手續費設定」:每單扣 $ 和 %,沒有的留空;月費記在固定成本。從某天起換方案可以套用到那天以後的帳。接電單:台灣大照台灣大的設定,大都會照方案(0 月費 12.5%)、綁定支付另扣刷卡 %。'],
     ['自己的車行、車隊', '⚙️ 平台管理「+ 新增平台」,可以設派遣費 % 和 / 或每趟扣 $(R 牌車行常用),也可以選「車行收款後撥給我」,撥款頁就會出現這個平台;之後在平台手續費設定、撥款設定改。'],
@@ -4178,8 +4212,9 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.03.17';
+var APP_VERSION = '2026.11.03.19';
 var WHATS_NEW = [
+  '💬 LINE GO 小黃改成兩段手續費:$199 以下每趟扣 $10、$200 以上抽 10%,非現金另扣 2.5%,派遣費每月最多 $3,000;記帳可選付款方式',
   '🚖 台灣大小黃可以填「信用卡/綁定支付手續費 %」(正式隊員刷卡另扣的),在 ⚙️ 平台手續費設定',
   '🔠 可以調字體大小了:⚙️「字體大小」選標準 / 大 / 特大 / 超大,字、圖示、按鈕一起放大',
   '💳 台灣大、大都會、呼叫小黃的付款方式新增「悠遊卡」「愛心卡」,算車隊撥款,手續費預設 3%(⚙️ 平台手續費設定可改)',
@@ -4554,8 +4589,15 @@ function saveSettings(){
   state.feeRules.yoxiCash = g0('f-fee-yoxicash');
   state.feeRules.yoxiFlat = g0('f-fee-yoxiflat');
   state.feeRules.yoxiCreditExtra = g('f-fee-yoxicreditextra');
-  state.feeRules.linego = g0('f-fee-linego');
-  state.feeRules.linegoFlat = g0('f-fee-linegoflat');
+  var lgEl = document.getElementById('f-fee-linego');
+  if(lgEl){ state.feeRules.linego = g0('f-fee-linego'); state.feeRules.linegoFlat = g0('f-fee-linegoflat'); }
+  else {
+    state.feeRules.linegoTaxiTier = g('f-fee-linegotaxitier');
+    state.feeRules.linegoTaxiFlat = g('f-fee-linegotaxiflat');
+    state.feeRules.linegoTaxiPct = g('f-fee-linegotaxipct');
+    state.feeRules.linegoTaxiCard = g('f-fee-linegotaxicard');
+    state.feeRules.linegoTaxiCap = g('f-fee-linegotaxicap');
+  }
   state.feeRules.metroFlat = g0('f-fee-metroflat');
   state.feeRules.metroPct = g0('f-fee-metropct');
   state.feeRules.metroCredit = g('f-fee-metrocredit');
