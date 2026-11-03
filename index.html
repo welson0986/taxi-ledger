@@ -1067,8 +1067,8 @@ function cloudAuthCheck(after){
     else if(res && res.error==='unauthorized') cloudAuthStatus = 'bad';
     else if(res && res.ok) cloudAuthStatus = 'open';
     else cloudAuthStatus = 'unreachable';
-    if(cloudAuthStatus==='bad'){ state.lastCloudPushOk = 0; writeStore(); }
-    if(prev==='bad' && cloudAuthStatus==='ok'){ state.lastCloudPushOk = 0; cloudSyncIfBehind(); }
+    if(cloudAuthStatus==='bad'){ state.lastCloudConfirmAt = 0; writeStore(); }
+    if(prev==='bad' && cloudAuthStatus==='ok'){ state.lastCloudConfirmAt = 0; cloudSyncIfBehind(); }
     if(currentTab==='entry' && !document.getElementById('modalBody')) renderAll();
     if(after) after();
   }).catch(function(){ cloudAuthStatus='unreachable'; if(after) after(); });
@@ -1082,33 +1082,59 @@ function cloudStatusText(){
     unknown:'尚未檢查'
   }[cloudAuthStatus] || '';
 }
-// the sheet answers no-cors posts with nothing we can read, so look for the new backup in its list:
-// made after this snapshot was built (10 min slack for a wrong phone clock) with the same counts
-function confirmCloudBackup(builtAt, ic, ec, onResult){
-  cloudGet({action:'list'}).then(function(res){
-    var ok = !!(res && res.ok && (res.versions||[]).some(function(v){ return +v.time >= builtAt-600000 && +v.income===ic && +v.expense===ec; }));
-    // only what was in the snapshot counts as backed up; later changes stay pending
-    if(ok && builtAt > (state.lastCloudPushOk||0)) state.lastCloudPushOk = builtAt;
-    writeStore();
-    if(onResult) onResult(ok);
-  }).catch(function(){ writeStore(); if(onResult) onResult(false); });
+// the sheet answers no-cors posts with nothing we can read. So before sending, note which backups the sheet
+// already has; afterwards only a backup that was not there before, with this snapshot's counts, proves it got saved.
+// (an older backup with the same counts says nothing about an edited amount)
+var cloudPushBusy = false, cloudPushAgain = false, cloudPushWaiters = [];
+function cloudListVersions(){
+  return cloudGet({action:'list'}).then(function(res){
+    if(!res || !res.ok) throw new Error('list');
+    return res.versions || [];
+  });
 }
+function confirmCloudBackup(before, builtAt, ic, ec, onResult, retried){
+  cloudListVersions().then(function(vs){
+    var ok = vs.some(function(v){ return !before[+v.time] && +v.income===ic && +v.expense===ec; });
+    // the sheet's list can lag a moment behind the save
+    if(!ok && !retried){ setTimeout(function(){ confirmCloudBackup(before, builtAt, ic, ec, onResult, true); }, 4000); return; }
+    // only what was in the snapshot counts as backed up; later changes stay pending
+    if(ok && builtAt > (state.lastCloudConfirmAt||0)) state.lastCloudConfirmAt = builtAt;
+    writeStore();
+    onResult(ok);
+  }).catch(function(){ writeStore(); onResult(false); });
+}
+// one send at a time, so two overlapping sends cannot claim each other's backup; a change made meanwhile goes in the next one
 function pushCloudSnapshot(onResult){
   if(!state.syncUrl || cloudSyncSuspended || storageStale || !hasMeaningfulData()) return false;
-  try{
-    var snap = buildCloudSnapshot(), builtAt = Date.now();
-    snap.key = getCloudKey();
-    fetch(state.syncUrl, {
+  if(onResult) cloudPushWaiters.push(onResult);
+  if(cloudPushBusy){ cloudPushAgain = true; return true; }
+  cloudPushBusy = true;
+  var waiters = cloudPushWaiters.splice(0);
+  function done(ok){
+    cloudPushBusy = false;
+    settleWaiters(waiters, ok);
+    if(cloudPushAgain){ cloudPushAgain = false; pushCloudSnapshot(); }
+  }
+  var snap, builtAt;
+  try{ snap = buildCloudSnapshot(); builtAt = Date.now(); snap.key = getCloudKey(); }catch(e){ done(false); return false; }
+  cloudListVersions().then(function(vs){
+    var before = {};
+    vs.forEach(function(v){ before[+v.time] = true; });
+    return before;
+  }, function(){ return null; }).then(function(before){
+    // without the list we still send (it may get through), but it cannot be confirmed
+    return fetch(state.syncUrl, {
       method:'POST', mode:'no-cors',
       headers:{'Content-Type':'text/plain;charset=utf-8'},
       body: JSON.stringify(snap)
     }).then(function(){
-      if(cloudAuthStatus==='bad'){ if(onResult) onResult(false); return; }
+      if(cloudAuthStatus==='bad'){ done(false); return; }
       state.lastCloudSendAt = builtAt;
-      confirmCloudBackup(builtAt, snap.incomeCount, snap.expenseCount, onResult);
-    }).catch(function(){ if(onResult) onResult(false); });
-    return true;
-  }catch(e){ return false; }
+      if(!before){ writeStore(); done(false); return; }
+      confirmCloudBackup(before, builtAt, snap.incomeCount, snap.expenseCount, done);
+    });
+  }).catch(function(){ done(false); });
+  return true;
 }
 function scheduleCloudSync(){
   if(!state.syncUrl) return;
@@ -1117,7 +1143,7 @@ function scheduleCloudSync(){
 }
 function cloudSyncIfBehind(){
   if(!state.syncUrl || !hasMeaningfulData()) return;
-  if(!state.lastCloudPushOk || (state.lastChangeAt||0) > state.lastCloudPushOk) pushCloudSnapshot();
+  if(!state.lastCloudConfirmAt || (state.lastChangeAt||0) > state.lastCloudConfirmAt) pushCloudSnapshot();
 }
 window.addEventListener('online', function(){ setTimeout(cloudSyncIfBehind, 1500); });
 function flushCloudSync(){
@@ -3057,7 +3083,7 @@ var BACKUP_REMIND_DAYS = 7;
 function markExported(){ state.lastExportAt = Date.now(); save(); }
 function backupReminderDue(){
   // the cloud reminder takes over only once the sheet has confirmed a backup
-  if((state.syncUrl && state.lastCloudPushOk) || !hasMeaningfulData()) return false;
+  if((state.syncUrl && state.lastCloudConfirmAt) || !hasMeaningfulData()) return false;
   var now = Date.now();
   if(state.backupSnoozeUntil && now < state.backupSnoozeUntil) return false;
   var since = state.lastExportAt;
@@ -3068,10 +3094,10 @@ function backupReminderDue(){
   return now - since >= BACKUP_REMIND_DAYS*86400000;
 }
 function cloudStaleHtml(){
-  if(!state.syncUrl || !state.lastCloudPushOk || cloudAuthStatus==='bad') return '';
-  if((state.lastChangeAt||0) <= state.lastCloudPushOk) return '';
+  if(!state.syncUrl || !state.lastCloudConfirmAt || cloudAuthStatus==='bad') return '';
+  if((state.lastChangeAt||0) <= state.lastCloudConfirmAt) return '';
   if(state.backupSnoozeUntil && Date.now() < state.backupSnoozeUntil) return '';
-  var days = Math.floor((Date.now()-state.lastCloudPushOk)/86400000);
+  var days = Math.floor((Date.now()-state.lastCloudConfirmAt)/86400000);
   if(days < 3) return '';
   return '<div class="card" style="border-color:var(--expense);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6">'+
     '<b style="color:var(--expense)">☁️ 雲端已經 '+days+' 天沒有同步成功</b><br>這幾天記的帳還沒送到雲端。請確認有網路、到 ⚙️ 看「雲端同步」;先存一份備份檔比較保險。'+
@@ -4338,7 +4364,7 @@ function openSettingsModal(){
 
   h += '<div style="height:10px"></div>';
   h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="sync-all">立即同步到雲端</button><button class="btn btn-ghost" style="flex:1" data-act="open-restore">從雲端還原</button></div>';
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">'+(state.lastCloudPushOk?('上次確認雲端存好:'+fmtTs(state.lastCloudPushOk)):'這個瀏覽器還沒有確認過雲端備份')+((state.lastCloudSendAt||0)>(state.lastCloudPushOk||0)?' · 最近一次已送出、尚未確認':'')+((state.lastChangeAt||0)>(state.lastCloudPushOk||0)&&state.lastCloudPushOk?' · 之後的變動還沒確認備份':'')+'</div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">'+(state.lastCloudConfirmAt?('上次確認雲端存好:'+fmtTs(state.lastCloudConfirmAt)):'這個瀏覽器還沒有確認過雲端備份')+((state.lastCloudSendAt||0)>(state.lastCloudConfirmAt||0)?' · 最近一次已送出、尚未確認':'')+((state.lastChangeAt||0)>(state.lastCloudConfirmAt||0)&&state.lastCloudConfirmAt?' · 之後的變動還沒確認備份':'')+'</div>';
   h += '<div id="syncStatus" style="font-size:12px;color:var(--text-muted);margin-top:8px;text-align:center"></div>';
   h += '<div style="height:14px"></div>';
 
@@ -4353,7 +4379,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.5';
+var APP_VERSION = '2026.11.04.6';
 var WHATS_NEW = [
   '⚙️ 設定頁分成六類(基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享),點一類才展開,不用一直往下滑;「儲存設定」固定在最下面',
   '📱 記帳首頁可以自己排順序、隱藏用不到的區塊(⚙️「記帳首頁排列」);預設把平台按鈕移到路況上面',
@@ -4804,7 +4830,7 @@ function saveSettings(){
   state.syncUrl = document.getElementById('f-sync-url').value.trim();
   var keyBefore = getCloudKey();
   setCloudKey(document.getElementById('f-cloud-key').value.trim());
-  if(getCloudKey()!==keyBefore || state.syncUrl!==prevSyncUrl){ state.lastCloudPushOk = 0; setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(); }); }, 300); }
+  if(getCloudKey()!==keyBefore || state.syncUrl!==prevSyncUrl){ state.lastCloudConfirmAt = 0; setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(); }); }, 300); }
   save(); closeModal(); renderAll();
   if(state.syncUrl && state.syncUrl!==prevSyncUrl && !hasMeaningfulData()){
     if(confirm('這個瀏覽器目前沒有任何記帳資料。要從雲端還原之前的資料嗎?')) openCloudRestoreModal();
@@ -5003,10 +5029,11 @@ document.addEventListener('click', function(e){
     if(cloudSyncTimer){ clearTimeout(cloudSyncTimer); cloudSyncTimer=null; }
     var nI = state.records.length, nE = state.expenses.length;
     if(statusEl) statusEl.textContent = '送出中,正在確認雲端有沒有存好…';
-    pushCloudSnapshot(function(ok){
+    var sent = pushCloudSnapshot(function(ok){
       var el = document.getElementById('syncStatus'); if(!el) return;
       el.textContent = ok ? '✓ 雲端已確認存好('+nI+' 筆收入、'+nE+' 筆支出)' : '已送出,但還沒確認雲端有存好。請確認網路和密碼,稍後再按一次。';
     });
+    if(!sent && statusEl) statusEl.textContent = '現在沒辦法送出(資料正在另一個畫面使用中)。請關掉其他記帳本畫面,重新開啟後再按一次。';
   }
   else if(cmd==='open-restore'){ openCloudRestoreModal(); }
   else if(cmd==='test-cloud'){
