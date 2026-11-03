@@ -2605,6 +2605,7 @@ function isLocalHost(){ return /^(localhost|127\.0\.0\.1|\[::1\])$/.test(locatio
 function hotSharePush(){
   if(!HOT_URL || state.shareHot!==true || isLocalHost()) return;
   var yest = addDays(todayStr(), -1);
+  if(!state.shareHourBackfill){ state.shareHourBackfill = true; state.shareSentUntil = null; }
   var from = state.shareSentUntil ? addDays(state.shareSentUntil, 1) : addDays(yest, -13);
   if(from > yest) return;
   var days = timedTripsByDay(from, yest), sid = shareIdOf();
@@ -2612,8 +2613,11 @@ function hotSharePush(){
     var cells = {};
     days[d].forEach(function(o){
       var pk = o.pickup; if(pk.lat==null || pk.lng==null) return;
-      var k = cellKeyOf(pk.lat, pk.lng)+'|'+hourSlot(pk.ts);
+      var cell = cellKeyOf(pk.lat, pk.lng);
+      var k = cell+'|'+hourSlot(pk.ts);
       cells[k] = (cells[k]||0)+1;
+      var kh = cell+'|w'+calWd(pk.ts)+'h'+new Date(pk.ts).getHours();
+      cells[kh] = (cells[kh]||0)+1;
     });
     var x = Object.keys(cells).map(function(k){ return k+'|'+cells[k]; }).join(';');
     var wd = (new Date(d+'T00:00:00').getDay()+6)%7+1;
@@ -2641,24 +2645,44 @@ function loadFriendHot(slot){
     friendHot[slot] = j && j.ok ? {status:'ok', data:j} : {status:'err', error:(j&&j.error)||''};
   }, function(){ friendHot[slot] = {status:'err'}; }).then(function(){ if(currentTab==='analytics') renderAll(); });
 }
+// while few drivers share, say so instead of letting an empty list look like "nothing happens here"
+var HOT_EARLY_NOTE = true;
+// the driver's own trips in each 1 km cell over the last 90 days, same time filter as the list
+function myCellStats(){
+  var nowW = hotspotSlot==='now' ? nowWindow() : null, days = timedTripsByDay(addDays(todayStr(), -90), todayStr()), out = {};
+  Object.keys(days).forEach(function(d){ days[d].forEach(function(o){
+    var p = o.pickup; if(p.lat==null || p.lng==null) return;
+    if(nowW){ if(!inNowWindow(p.ts, nowW)) return; }
+    else if(hotspotSlot!=='all' && hourSlot(p.ts)!==hotspotSlot) return;
+    var k = cellKeyOf(p.lat, p.lng), c = out[k] || (out[k] = {n:0, fareN:0, fare:0});
+    c.n++;
+    if(o.rec){ c.fareN++; c.fare += computeNetRevenue(o.rec)+(+o.rec.tip||0); }
+  }); });
+  return out;
+}
 function friendHotHtml(){
   var muted = 'font-size:12.5px;color:var(--text-muted);line-height:1.7;padding:6px 0';
   if(state.shareHot!==true){
     return '<div style="'+muted+'">分享你的上車熱區,就能看到附近車友都在哪裡上車。<br>只送約 1 公里一格的區域和時段,不送精確位置、金額、平台;有 3 位以上車友都上過車的地方才會顯示。</div>'+
       '<div class="btn-row" style="margin-top:6px"><button class="btn btn-primary" data-act="share-hot-on">👍 同意分享,看車友熱區</button></div>';
   }
-  var f = friendHot[hotspotSlot];
-  if(!f){ loadFriendHot(hotspotSlot); f = friendHot[hotspotSlot]; }
+  var fk = hotspotSlot;
+  if(fk==='now'){ var nw = nowWindow(); fk = 'w'+nw.wd+'h'+nw.h; }
+  var f = friendHot[fk];
+  if(!f){ loadFriendHot(fk); f = friendHot[fk]; }
   if(f.status==='loading') return '<div style="'+muted+'">讀取車友熱區中…</div>';
   if(f.status==='err') return '<div style="'+muted+'">'+(f.error==='not_sharing'?'你的分享資料還沒送到(每天會送前一天的),明天再來看看。':'暫時讀不到車友熱區,請確認網路後')+' <a data-act="hot-reload" style="cursor:pointer;color:var(--accent)">重新讀取</a></div>';
-  var j = f.data, list = j.cells||[];
+  var j = f.data, list = j.cells||[], mine = myCellStats();
   var h = '';
+  if(HOT_EARLY_NOTE) h += '<div style="font-size:11.5px;line-height:1.6;color:var(--text-muted);background:var(--surface-sunken);border-radius:8px;padding:7px 10px;margin-bottom:8px">🌱 車友熱區剛起步,一起分享的車友還不多,能顯示的地點會比較少。分享的人越多就越準,歡迎揪車友一起用!</div>';
+  if(hotspotSlot==='now') h += '<div style="font-size:12px;color:var(--text-muted);margin:-2px 0 6px">最近幾週的'+nowWindowLabel(nowWindow())+',附近車友上車的地方</div>';
   if(!list.length) h += '<div style="'+muted+'">附近還沒有 '+j.min+' 位以上車友都上過車的地點。一起用的車友越多,這裡就越準。</div>';
   h += list.slice(0,6).map(function(c,i){
     var lat = (+c.lat).toFixed(4), lng = (+c.lng).toFixed(4);
     var name = hotspotName(c.k, lat, lng);
     return '<div class="list-item"><div class="li-body"><div class="li-title">車友熱區 '+(i+1)+' · '+(name?esc(name):'<span style="color:var(--text-muted);font-weight:400">查詢地名中…</span>')+'</div>'+
-      '<div class="li-sub">'+c.drivers+' 位車友 · '+c.trips+' 趟</div></div>'+
+      '<div class="li-sub">'+c.drivers+' 位車友 · '+c.trips+' 趟</div>'+
+      '<div class="li-sub" style="color:'+(mine[c.k]?'var(--income)':'var(--text-muted)')+'">'+(mine[c.k] ? '你在這裡:'+mine[c.k].n+' 趟'+(mine[c.k].fareN?' · 平均實收 '+fmtMoney(mine[c.k].fare/mine[c.k].fareN):'') : '你還沒在這裡載過客')+'</div></div>'+
       '<a class="li-amt" style="color:var(--accent);font-size:13px;text-decoration:none;flex:none" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query='+lat+','+lng+'">看地圖 ›</a></div>';
   }).join('');
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">範圍:你最常上車的地方方圓 '+j.radius+' 公里。只顯示 '+j.min+' 位以上車友都上過車的地點(約 1 公里一格),資料延遲 '+j.delay+' 天,看不到任何人的個人紀錄。依「幾位車友」排名。</div>';
@@ -2682,7 +2706,22 @@ function maybeAskShareHot(){
   openShareHotAsk();
   return true;
 }
-var HOT_SLOTS = [['all','全部'],['day','白天 6–18'],['eve','晚上 18–24'],['late','深夜 0–6']];
+var HOT_SLOTS = [['now','⏰ 現在'],['all','全部'],['day','白天 6–18'],['eve','晚上 18–24'],['late','深夜 0–6']];
+// "now" = the same weekday as today, one hour either side of the current hour (calendar time, Mon=1..Sun=7)
+var WEEKDAY_TW = ['','一','二','三','四','五','六','日'];
+function calWd(ts){ return (new Date(ts).getDay()+6)%7+1; }
+function nowWindow(){ var d = new Date(); return {wd:calWd(d.getTime()), h:d.getHours()}; }
+function inNowWindow(ts, w){
+  var d = new Date(ts), wd = calWd(ts), h = d.getHours();
+  for(var k=-1; k<=1; k++){
+    var hh = w.h + k, ww = w.wd;
+    if(hh < 0){ hh += 24; ww = ww===1 ? 7 : ww-1; }
+    if(hh > 23){ hh -= 24; ww = ww===7 ? 1 : ww+1; }
+    if(wd===ww && h===hh) return true;
+  }
+  return false;
+}
+function nowWindowLabel(w){ var a = (w.h+23)%24, b = (w.h+2)%24; return '星期'+WEEKDAY_TW[w.wd]+' '+a+'–'+(b===0?24:b)+' 點'; }
 function hourSlot(ts){ var hh = new Date(ts).getHours(); return hh<6 ? 'late' : (hh<18 ? 'day' : 'eve'); }
 /* area names from OpenStreetMap, looked up once per 1 km cell and kept in the ledger */
 var placeQueue = [], placeBusy = false, placeTried = {};
@@ -2724,12 +2763,14 @@ function hotspotName(key, lat, lng){
   return '';
 }
 function hotspotHtml(days, dayKeys){
-  var cells = {}, any = false;
+  var cells = {}, any = false, nowW = hotspotSlot==='now' ? nowWindow() : null;
+  if(nowW){ days = timedTripsByDay(addDays(todayStr(), -84), todayStr()); dayKeys = Object.keys(days); }
   dayKeys.forEach(function(d){
     days[d].forEach(function(o){
       var p = o.pickup; if(p.lat==null || p.lng==null) return;
       any = true;
-      if(hotspotSlot!=='all' && hourSlot(p.ts)!==hotspotSlot) return;
+      if(nowW){ if(!inNowWindow(p.ts, nowW)) return; }
+      else if(hotspotSlot!=='all' && hourSlot(p.ts)!==hotspotSlot) return;
       var key = (Math.round(p.lat*100)/100).toFixed(2)+','+(Math.round(p.lng*100)/100).toFixed(2);
       var c = cells[key] || (cells[key] = {n:0, lat:0, lng:0, min:0, fareN:0, fare:0});
       c.n++; c.lat += p.lat; c.lng += p.lng; c.min += tripMin(o.pickup,o.dropoff);
@@ -2742,7 +2783,8 @@ function hotspotHtml(days, dayKeys){
   if(HOT_URL) h += '<div class="segmented" style="margin-bottom:8px"><button class="'+(hotSource==='mine'?'active':'')+'" data-act="hot-src:mine">我的熱區</button><button class="'+(hotSource==='friends'?'active':'')+'" data-act="hot-src:friends">👥 車友熱區</button></div>';
   h += '<div class="segmented" style="margin-bottom:8px">'+HOT_SLOTS.map(function(s){ return '<button class="'+(hotspotSlot===s[0]?'active':'')+'" data-act="hot-slot:'+s[0]+'">'+s[1]+'</button>'; }).join('')+'</div>';
   if(HOT_URL && hotSource==='friends') return h + friendHotHtml() + '</div></div>';
-  if(!list.length) h += '<div style="font-size:12.5px;color:var(--text-muted);padding:8px 0">這段期間的這個時段沒有上車紀錄。</div>';
+  if(nowW) h += '<div style="font-size:12px;color:var(--text-muted);margin:-2px 0 6px">過去 12 週的'+nowWindowLabel(nowW)+',你最常上車的地方</div>';
+  if(!list.length) h += '<div style="font-size:12.5px;color:var(--text-muted);padding:8px 0">'+(nowW?'過去 12 週的這個時段還沒有上車紀錄,多跑幾週就會出現。':'這段期間的這個時段沒有上車紀錄。')+'</div>';
   h += list.map(function(c,i){
     var lat = (c.lat/c.n).toFixed(4), lng = (c.lng/c.n).toFixed(4);
     var name = hotspotName(c.key, lat, lng);
@@ -3719,8 +3761,8 @@ var HELP = [
   ['載客與熱區', [
     ['上車 / 下車', '客人上車按「上車」,下車按「下車」→ 選平台、打車資;還不知道車資可以「稍後再填」。位置只在按下那一刻記一次。', 'trips'],
     ['接到單了', '⚙️「進階:記錄接單時間」打勾後出現,分析頁會分出等單和接駁各花多久;活動追蹤也用這個時間算趟數。'],
-    ['📍 上車熱區', '分析頁看你最常上車的地方,可篩白天 / 晚上 / 深夜,點 ✏️ 取名。', 'hotspot'],
-    ['👥 車友熱區', '同意分享上車熱區才能看附近車友都在哪裡上車;只分享約 1 公里一格,不含精確位置、金額;取消分享會刪除你分享過的資料。'],
+    ['📍 上車熱區', '分析頁看你最常上車的地方,可篩白天 / 晚上 / 深夜,點 ✏️ 取名。「⏰ 現在」看過去 12 週同一個星期幾、現在前後一小時最常上車的地方。', 'hotspot'],
+    ['👥 車友熱區', '同意分享上車熱區才能看附近車友都在哪裡上車,每個地點也會顯示你自己在那裡載過幾趟、平均實收多少;只分享約 1 公里一格,不含精確位置、金額;取消分享會刪除你分享過的資料。'],
     ['即時路況', '記帳頁「看即時路況」開 Google 地圖;常用地點可以新增、排序。停車或紅燈時再看。', 'traffic']
   ]],
   ['分析', [
@@ -3990,8 +4032,10 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.03.8';
+var APP_VERSION = '2026.11.03.10';
 var WHATS_NEW = [
+  '⏰ 上車熱區新增「現在」:看過去幾週的「星期幾+這個時段」最常在哪裡上車,我的熱區和車友熱區都有',
+  '👥 車友熱區的每個地點,會顯示你自己在那裡載過幾趟、平均實收多少',
   '📖 ⚙️ 最上面新增「功能說明」:每個功能在哪裡、怎麼用,可以搜尋,關著的功能可以直接打開',
   '⏱️ 今日行車顯示「目前時薪」;可以打開「休息提醒」,連續開太久會提醒你休息',
   '🎯 新增「活動獎勵追蹤」:車隊有趟趟加給、跑滿 N 趟獎金時建一張活動卡,記帳本自動算趟數和獎勵(⚙️ 功能開關打開)',
