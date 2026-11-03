@@ -453,6 +453,8 @@ function allPlatforms(){
 var TAXI_NO_SUBTYPE = ['uber','bolt','linego'];
 function isYellowCab(){ return state.carType==='yellow'; }
 function isUberTaxiRec(r){ return r.platform==='uber' && r.subtype==='優步小黃'; }
+// Uber 多元 is entered as what the driver received; its fare and fee are worked back from the fee % (estimates)
+function isUberNetRec(r){ return r.platform==='uber' && !isUberTaxiRec(r); }
 function applyCarType(p){
   if(isYellowCab() && TAXI_NO_SUBTYPE.indexOf(p.key)>=0){ delete p.subtypeOptions; delete p.allSubtypes; }
   if(isYellowCab() && p.key==='uber'){ p.hasAddOn = true; p.paymentOptions = ['現金','信用卡']; }
@@ -552,8 +554,11 @@ function catInfo(key){
   return all.filter(function(c){ return c.key==='other'; })[0] || {key:'other', label:'其他', icon:'📝'};
 }
 
+// version of the saved ledger layout; a backup made by a newer version is refused, never guessed at
+var LEDGER_FMT = 1;
 function defaultState(){
   return {
+    fmt:LEDGER_FMT,
     appName:'跑車人生',
     records:[],
     expenses:[],
@@ -1145,11 +1150,11 @@ function cloudSyncIfBehind(){
   if(!state.syncUrl || !hasMeaningfulData()) return;
   if(!state.lastCloudConfirmAt || (state.lastChangeAt||0) > state.lastCloudConfirmAt) pushCloudSnapshot();
 }
-window.addEventListener('online', function(){ setTimeout(cloudSyncIfBehind, 1500); });
+window.addEventListener('online', function(){ setTimeout(cloudSyncIfBehind, 1500); setTimeout(hotDeleteFlush, 2000); });
 function flushCloudSync(){
   if(cloudSyncTimer){ clearTimeout(cloudSyncTimer); cloudSyncTimer=null; pushCloudSnapshot(); }
 }
-document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='hidden') flushCloudSync(); else { statPing(); hotSharePush(); } });
+document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='hidden') flushCloudSync(); else { statPing(); hotSharePush(); hotDeleteFlush(); } });
 
 /* ---------- 匿名使用人數統計 ----------
    once per calendar day: a random device id, date, version, mode, phone OS. Never any amounts, platforms or locations.
@@ -1988,7 +1993,7 @@ function renderEntry(){
   B.cashFlow = '';
   if(todayRecs.length && uiShow('cashFlow')){
     B.cashFlow = '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">'+
-      '<div class="stat-tile"><div class="lbl">今日現金收入(應在身上)</div><div class="val num">'+fmtMoney(todayFlow.cash)+'</div></div>'+
+      '<div class="stat-tile"><div class="lbl">今日現金收入(未扣現金支出)</div><div class="val num">'+fmtMoney(todayFlow.cash)+'</div></div>'+
       '<div class="stat-tile"><div class="lbl">今日非現金單(待撥款)</div><div class="val num">'+fmtMoney(todayFlow.noncash)+'</div></div>'+
       '</div>'+
       (todayFlow.feeNetted>0?'<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px">今日現金單手續費 '+fmtMoney(todayFlow.feeNetted)+',會從之後的撥款扣回去</div>':'')+
@@ -2120,8 +2125,8 @@ function renderDayList(dateStr){
     var desc = describeRecord(r);
     var parts = [];
     if(desc && uiShow('recDesc')) parts.push(esc(desc));
-    if(grossEst) parts.push((r.platform==='bonus'?'金額 ':'車資 ')+fmtMoney(grossEst-(+r.tripBonus||0)));
-    if(fee>0.5) parts.push('抽成 '+fmtMoney(fee));
+    if(grossEst) parts.push((r.platform==='bonus'?'金額 ':isUberNetRec(r)?'估算車資 ':'車資 ')+fmtMoney(grossEst-(+r.tripBonus||0)));
+    if(fee>0.5) parts.push((isUberNetRec(r)?'估算抽成 ':'抽成 ')+fmtMoney(fee));
     if(r.tip) parts.push('小費 '+fmtMoney(r.tip));
     if(r.note) parts.push(esc(r.note));
     var subLine = parts.join(' · ');
@@ -2531,7 +2536,9 @@ function renderAnalytics(){
     h += '<div class="stat-tile"><div class="lbl">平台手續費</div><div class="val expense num">'+fmtMoney(feeTotal)+'</div></div>';
   }
   h += '<div class="stat-tile"><div class="lbl">實收</div><div class="val income num">'+fmtMoney(net.total)+'</div></div>';
-  h += '</div></div>';
+  h += '</div>';
+  if(uiShow('grossFees') && recordsInRange(range.from, range.to).some(isUberNetRec)) h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">含 Uber 多元:它的車資和手續費是用你設定的 % 從實收反推的估算值。</div>';
+  h += '</div>';
   h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
   h += '<div class="stat-tile"><div class="lbl">總支出(含固定攤提)</div><div class="val expense num">'+fmtMoney(totalExp)+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">淨利</div><div class="val num">'+fmtMoney(profit)+'</div></div>';
@@ -2769,12 +2776,30 @@ function shareIdOf(){
   }
   return state.shareId;
 }
-// turning sharing off erases everything this phone uploaded; a later opt-in starts over with a new id
+// turning sharing off stops uploads at once and erases everything this phone uploaded; a later opt-in starts
+// over with a new id. The deletion request stays on the phone until the server answers that it is done,
+// so being offline when switching off only delays it
 function hotShareDelete(){
   var sid = state.shareId;
   state.shareId = null; state.shareSentUntil = null;
-  if(!HOT_URL || !sid || isLocalHost()) return;
-  fetch(HOT_URL+'?action=del&who='+sid, {mode:'no-cors', cache:'no-store'}).catch(function(){});
+  if(sid) state.hotDelPending = (state.hotDelPending||[]).filter(function(x){ return x!==sid; }).concat(sid);
+  save();
+  hotDeleteFlush();
+}
+var hotDelBusy = false;
+function hotDeleteFlush(){
+  var list = state.hotDelPending || [];
+  if(!HOT_URL || !list.length || hotDelBusy || isLocalHost()) return;
+  hotDelBusy = true;
+  var chain = Promise.resolve();
+  list.slice().forEach(function(sid){
+    chain = chain.then(function(){
+      return fetch(HOT_URL+'?action=del&who='+sid, {cache:'no-store'}).then(function(r){ return r.json(); }).then(function(j){
+        if(j && j.ok){ state.hotDelPending = (state.hotDelPending||[]).filter(function(x){ return x!==sid; }); save(); }
+      }, function(){});
+    });
+  });
+  chain.then(function(){ hotDelBusy = false; });
 }
 function isLocalHost(){ return /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname); }
 // sends each finished day once (up to 14 days back), only cell + time slot + trip count
@@ -3290,8 +3315,8 @@ function updateIncomePreview(){
   var fee = gross-net;
   var total = net+rec.tip;
   el.innerHTML = '<div class="summary-row" style="grid-template-columns:1fr 1fr 1fr">'+
-    '<div class="stat-tile"><div class="lbl">車資</div><div class="val num">'+fmtMoney(gross)+'</div></div>'+
-    '<div class="stat-tile"><div class="lbl">抽成</div><div class="val expense num">'+(fee>0.5?fmtMoney(fee):'—')+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">'+(isUberNetRec(rec)?'估算車資':'車資')+'</div><div class="val num">'+fmtMoney(gross)+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">'+(isUberNetRec(rec)?'估算抽成':'抽成')+'</div><div class="val expense num">'+(fee>0.5?fmtMoney(fee):'—')+'</div></div>'+
     '<div class="stat-tile"><div class="lbl">實收</div><div class="val income num">'+fmtMoneyFor(currentIncomeModalKey, total)+'</div></div>'+
     '</div>';
 }
@@ -4338,6 +4363,7 @@ function openSettingsModal(){
   S.basic += h; h = '';
   h += '<div class="form-row" style="margin-top:6px"><label>進階:記錄接單時間</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-track-accept" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.trackAccept?' checked':'')+'>打開後,下車後的大按鈕會變成「📲 接到單了」。接單時按一下,客人上車再按「上車」,分析頁就能把空檔拆成「等單」和「接駁」兩段。不打開就跟原本一樣。</label></div>';
   if(HOT_URL) h += '<div class="form-row"><label>分享上車熱區(車友熱區)</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-share-hot" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.shareHot===true?' checked':'')+'><span>分享你的上車熱區,就能在分析頁看「車友熱區」。只送約 1 公里一格的區域、日期、時段、趟數,<b>不送精確位置、金額、平台</b>;3 位以上車友都上過車的地方才會顯示。取消勾選會一併刪除你分享過的資料。</span></label></div>';
+  if(HOT_URL && (state.hotDelPending||[]).length) h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-6px 0 12px;line-height:1.6">⏳ 已停止分享。之前分享的資料還在等網路刪除,連上網後會自動再送,不用重新打開分享。</div>';
   h += '<div class="form-row"><label>不具名使用人數統計</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-stat-on" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.statOptOut?'':' checked')+'><span>參與不具名統計,幫製作者知道有多少司機在用。每天只送一次:隨機編號、日期、版本、簡單/完整模式、手機系統、是否從主畫面打開。<b>不含任何金額、平台、位置或個人資料。</b></span></label></div>';
   S.privacy = h; h = '';
   h += '<div class="form-row" style="margin-top:2px"><label>💾 備份檔(每個人都建議用)</label>'+
@@ -4379,7 +4405,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.6';
+var APP_VERSION = '2026.11.04.7';
 var WHATS_NEW = [
   '⚙️ 設定頁分成六類(基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享),點一類才展開,不用一直往下滑;「儲存設定」固定在最下面',
   '📱 記帳首頁可以自己排順序、隱藏用不到的區塊(⚙️「記帳首頁排列」);預設把平台按鈕移到路況上面',
@@ -4550,15 +4576,9 @@ function doCloudRestore(i){
   cloudGet({action:'get', time:v.time}).then(function(res){
     if(!res || !res.ok || !res.state) throw new Error('empty');
     var parsed = unpackState(JSON.parse(res.state));
-    if(!parsed || !Array.isArray(parsed.records)) throw new Error('bad');
-    var d = defaultState();
-    for(var k in d){ if(!(k in parsed)) parsed[k]=d[k]; }
-    parsed.syncUrl = state.syncUrl;
-    state = parsed;
-    stampMissingFeeSnapshots();
-    storageStale = false;
-    save(); closeModal(); renderAll();
-    alert('已從雲端還原(收入 '+state.records.length+' 筆、支出 '+state.expenses.length+' 筆)。');
+    if(!replaceLedger(parsed, '雲端還原', function(){ return '已從雲端還原(收入 '+state.records.length+' 筆、支出 '+state.expenses.length+' 筆)。\n\n如果選錯了,到 ⚙️「雲端與備份」→「匯入還原」按「↩️ 復原到雲端還原前的資料」。'; })){
+      if(el) el.textContent = '這份雲端備份的格式不對,沒有還原。';
+    } else if(el) el.textContent = '還原中…';
   }).catch(function(){
     if(el) el.textContent = '還原失敗,請稍後再試一次。';
   });
@@ -4600,14 +4620,76 @@ function ledgerSummary(st){
   return {recs:recs.length, exps:(st.expenses||[]).length, from:dates[0]||'', to:dates[dates.length-1]||''};
 }
 function summaryLine(x){ return '收入 '+x.recs+' 筆、支出 '+x.exps+' 筆'+(x.from?(','+x.from+' ~ '+x.to):''); }
-// the ledger as it was before a restore or a full clear, so a mistake can be undone
-function keepUndoCopy(label){
-  try{
-    var copy = JSON.stringify({at:Date.now(), label:label, data:packState(state)});
-    if(__BOOT.idb) __BOOT.idb.transaction('kv','readwrite').objectStore('kv').put(copy, 'state_undo');
-    else localStorage.setItem(STORAGE_KEY+'_undo', copy);
-    localStorage.setItem('taxi_undo_info', JSON.stringify({at:Date.now(), label:label}));
-  }catch(e){}
+// the ledger as it was before a restore or a full clear, so a mistake can be undone.
+// done(true) only once the copy is really stored; the undo link appears only then
+function keepUndoCopy(label, done){
+  var at = Date.now(), copy;
+  function fin(ok){
+    if(ok){ try{ localStorage.setItem('taxi_undo_info', JSON.stringify({at:at, label:label})); }catch(e){} }
+    if(done) done(ok);
+  }
+  try{ copy = JSON.stringify({at:at, label:label, data:packState(state)}); }catch(e){ fin(false); return; }
+  if(__BOOT.idb){
+    try{
+      var tx = __BOOT.idb.transaction('kv','readwrite');
+      tx.objectStore('kv').put(copy, 'state_undo');
+      tx.oncomplete = function(){ fin(true); };
+      tx.onerror = tx.onabort = function(){ fin(false); };
+    }catch(e){ fin(false); }
+  } else { try{ localStorage.setItem(STORAGE_KEY+'_undo', copy); fin(true); }catch(e){ fin(false); } }
+}
+// settings that belong to this phone, not to the ledger: a restored backup must not switch sharing or
+// statistics back on, bring back an old sharing id, or claim this phone's cloud backup state
+var DEVICE_KEYS = ['syncUrl','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale'];
+var LEDGER_PART_NAMES = {expenses:'支出', dailyMeta:'每日工時與里程', fixedCosts:'固定成本', fixedOverrides:'固定成本覆寫', targets:'目標', feeRules:'手續費設定', platformOverrides:'平台設定', customPlatforms:'自訂平台', platformOrder:'平台排列', payoutSettings:'撥款設定', payouts:'撥款核對', pendingTrips:'行程'};
+// '' when the data can be used as a ledger, otherwise what is wrong with it
+function ledgerProblem(p){
+  if(!p || typeof p!=='object' || Array.isArray(p)) return '這不是記帳本的備份資料';
+  if(+p.fmt > LEDGER_FMT) return '這份備份是比較新版的記帳本做的,請先更新記帳本(完全關掉再打開)再還原';
+  if(!Array.isArray(p.records)) return '找不到收入資料';
+  var d = defaultState();
+  for(var k in d){
+    if(!(k in p) || d[k]===null || typeof d[k]!=='object') continue;
+    if(p[k]===null || typeof p[k]!=='object' || Array.isArray(p[k])!==Array.isArray(d[k])) return '「'+(LEDGER_PART_NAMES[k]||k)+'」這部分的格式不對';
+  }
+  function badList(list, what, amountKey){
+    for(var i=0;i<list.length;i++){
+      var x = list[i];
+      if(!x || typeof x!=='object' || !/^\d{4}-\d{2}-\d{2}$/.test(String(x.date||''))) return what+'第 '+(i+1)+' 筆的日期格式不對';
+      if(x[amountKey]!=null && !isFinite(+x[amountKey])) return what+'第 '+(i+1)+' 筆的金額格式不對';
+    }
+    return '';
+  }
+  return badList(p.records, '收入', 'revenue') || badList(p.expenses||[], '支出', 'amount');
+}
+// every way of swapping in a whole ledger (backup file, cloud backup, undo, clear) goes through here:
+// check it, keep the current ledger aside, and say it worked only once the phone has really stored it.
+// If anything fails the current ledger stays as it was.
+function replaceLedger(parsed, undoLabel, okMsg){
+  var prob = ledgerProblem(parsed);
+  if(prob){ alert('這份資料不能還原:'+prob+'。\n\n目前的帳沒有任何改變。'); return false; }
+  keepUndoCopy(undoLabel, function(kept){
+    if(!kept){ alert('沒辦法先把目前的帳另外保留一份(手機空間可能不夠),所以這次沒有還原。\n\n目前的帳沒有任何改變。'); return; }
+    var d = defaultState();
+    for(var k in d){ if(!(k in parsed)) parsed[k] = d[k]; }
+    DEVICE_KEYS.forEach(function(k){ if(k in state) parsed[k] = state[k]; else delete parsed[k]; });
+    parsed.fmt = LEDGER_FMT;
+    var prev = state, prevStale = storageStale, prevFailed = saveFailed, prevAlerted = saveFailAlerted;
+    state = parsed; stampMissingFeeSnapshots(); storageStale = false;
+    saveFailAlerted = true;  // this flow explains a failure itself; the "this entry was not saved" alert would mislead
+    save(function(ok){
+      saveFailAlerted = prevAlerted;
+      if(!ok){
+        // nothing reached storage, so it still holds exactly the ledger we go back to
+        state = prev; storageStale = prevStale; saveFailed = prevFailed; closeModal();
+        alert('資料沒有存進手機,這次沒有還原。\n\n目前的帳沒有任何改變;請確認手機空間後再試一次。');
+        return;
+      }
+      closeModal();
+      alert(okMsg());
+    });
+  });
+  return true;
 }
 function undoInfo(){ try{ return JSON.parse(localStorage.getItem('taxi_undo_info')||'null'); }catch(e){ return null; } }
 function undoRestore(){
@@ -4616,12 +4698,7 @@ function undoRestore(){
   function apply(raw){
     var o, parsed;
     try{ o = JSON.parse(raw); parsed = unpackState(JSON.parse(o.data)); }catch(e){ alert('找不到可以復原的資料。'); return; }
-    keepUndoCopy('復原');
-    var d = defaultState();
-    for(var k in d){ if(!(k in parsed)) parsed[k]=d[k]; }
-    state = parsed; storageStale = false;
-    save(); closeModal(); renderAll();
-    alert('已經復原。');
+    replaceLedger(parsed, '復原', function(){ return '已經復原。'; });
   }
   if(__BOOT.idb){
     var g = __BOOT.idb.transaction('kv','readonly').objectStore('kv').get('state_undo');
@@ -4633,20 +4710,14 @@ function doImportData(){
   if(!ta || !ta.value.trim()){ alert('請先貼上備份文字。'); return; }
   var parsed;
   try{ parsed = unpackState(JSON.parse(ta.value.trim())); }catch(err){ alert('這段文字看起來不是有效的備份資料,請確認有整段複製完整。'); return; }
-  if(!parsed || typeof parsed!=='object' || !Array.isArray(parsed.records)){ alert('這段文字看起來不是有效的備份資料。'); return; }
+  var prob = ledgerProblem(parsed);
+  if(prob){ alert('這份資料不能還原:'+prob+'。\n\n目前的帳沒有任何改變。'); return; }
   var inFile = ledgerSummary(parsed), now = ledgerSummary(state);
   var older = now.to && inFile.to < now.to;
   if(!confirm('請確認要還原的資料:\n\n📄 備份檔:'+summaryLine(inFile)+'\n📱 目前手機:'+summaryLine(now)+'\n\n'+
     (older ? '⚠️ 備份檔比目前的資料舊,'+inFile.to+' 以後記的帳會不見!\n\n' : '')+
-    '確定要用備份檔取代目前的資料嗎?(目前的資料會先另外保留一份,還原錯了可以復原)')) return;
-  keepUndoCopy('匯入還原');
-  var d = defaultState();
-  for(var k in d){ if(!(k in parsed)) parsed[k]=d[k]; }
-  state = parsed;
-  stampMissingFeeSnapshots();
-  storageStale = false;
-  save(); closeModal(); renderAll();
-  alert('資料已還原。\n\n如果選錯檔案,到 ⚙️ →「匯入還原」按「↩️ 復原到匯入還原前的資料」。');
+    '確定要用備份檔取代目前的資料嗎?(目前的資料會先另外保留一份,還原錯了可以復原)\n\n熱區分享、統計、雲端同步等這支手機的設定不會被備份檔改掉。')) return;
+  replaceLedger(parsed, '匯入還原', function(){ return '資料已還原。\n\n如果選錯檔案,到 ⚙️ →「匯入還原」按「↩️ 復原到匯入還原前的資料」。'; });
 }
 function openNewPlatformModal(){
   var h = '<div class="modal-title">新增平台<button class="close" data-act="close-modal">✕</button></div>';
@@ -5151,9 +5222,7 @@ document.addEventListener('click', function(e){
     var typed = prompt('確定要清除,請輸入「清除」兩個字:');
     if(typed===null) return;
     if(typed.trim()!=='清除'){ alert('輸入的不是「清除」,沒有清除任何資料。'); return; }
-    keepUndoCopy('清除所有資料');
-    state=defaultState(); save(); closeModal(); renderAll();
-    alert('已清除。\n如果是按錯了,到 ⚙️ →「匯入還原」可以復原。');
+    replaceLedger(defaultState(), '清除所有資料', function(){ return '已清除。\n如果是按錯了,到 ⚙️ →「匯入還原」可以復原。'; });
   }
   else if(cmd==='icon-pick'){ toggleIconPicker(arg); }
   else if(cmd==='icon-set'){
@@ -5285,6 +5354,7 @@ applyFontScale();
 try{ if('serviceWorker' in navigator && (location.protocol==='https:' || isLocalHost())) navigator.serviceWorker.register('sw.js').catch(function(){}); }catch(e){}
 renderAll();
 setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(); }); }, 1500);
+setTimeout(hotDeleteFlush, 2500);
 setTimeout(statPing, 4000);
 setTimeout(hotSharePush, 6000);
 var _staleShiftDate = findStaleOpenShiftDate();
