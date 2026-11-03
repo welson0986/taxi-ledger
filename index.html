@@ -422,9 +422,11 @@ function allPlatforms(){
 // 小黃 drivers only get taxi trips: Uber/BOLT/LINE GO have no car classes to pick, and Uber taxi trips can carry a passenger add-on
 var TAXI_NO_SUBTYPE = ['uber','bolt','linego'];
 function isYellowCab(){ return state.carType==='yellow'; }
+function isUberTaxiRec(r){ return r.platform==='uber' && r.subtype==='優步小黃'; }
 function applyCarType(p){
   if(isYellowCab() && TAXI_NO_SUBTYPE.indexOf(p.key)>=0){ delete p.subtypeOptions; delete p.allSubtypes; }
-  if(isYellowCab() && p.key==='uber') p.hasAddOn = true;
+  if(isYellowCab() && p.key==='uber'){ p.hasAddOn = true; p.paymentOptions = ['現金','信用卡']; }
+  if(p.key==='tdc' || p.key==='yoxi' || (isYellowCab() && p.key==='uber')) p.hasCoupon = true;
   return p;
 }
 // 車種/屬性: person's order first, hidden ones left out of the entry form (kept for editing old records)
@@ -524,7 +526,7 @@ function defaultState(){
     fixedCosts:[],
     fixedOverrides:{},
     targets:{daily:0,weekly:0,monthly:0},
-    feeRules:{tdc:null,yoxiCash:null,yoxiOther:null,yoxiCreditExtra:null,linego:null,metroFlat:null,metroCredit:null,metroEnterprise:null,uber:null,boltFlat:null,boltPct:null,boltThreshold:null,boltThresholdEnabled:true},
+    feeRules:{tdc:null,yoxiCash:null,yoxiOther:null,yoxiCreditExtra:null,linego:null,metroFlat:null,metroCredit:null,metroEnterprise:null,uber:null,uberTaxi:null,boltFlat:null,boltPct:null,boltThreshold:null,boltThresholdEnabled:true},
     platformOverrides:{},
     customPlatforms:[],
     platformOrder:PLATFORM_DEFS.map(function(p){return p.key;}),
@@ -555,7 +557,7 @@ function load(){
     return s;
   }catch(e){ if(raw) corruptRaw = raw; return defaultState(); }
 }
-var FEE_DEFAULTS = {tdcFlat:0,metroPct:0,yoxiFlat:0,linegoFlat:0,tdc:15,yoxiCash:10,yoxiCreditExtra:2,linego:19.5,metroFlat:25,metroCredit:3,metroEnterprise:6,uber:25,boltFlat:20,boltPct:10,boltThreshold:15,boltThresholdEnabled:true};
+var FEE_DEFAULTS = {tdcFlat:0,metroPct:0,yoxiFlat:0,linegoFlat:0,tdc:15,yoxiCash:10,yoxiCreditExtra:2,linego:19.5,metroFlat:25,metroCredit:3,metroEnterprise:6,uber:25,uberTaxi:15,boltFlat:20,boltPct:10,boltThreshold:15,boltThresholdEnabled:true};
 // Each record keeps the fee rules in force when it was entered. Identical rule sets are written once
 // in feeTable and records point at them with feesRef; in memory every record still has r.fees.
 function packState(st){
@@ -782,12 +784,20 @@ function stampMissingFeeSnapshots(){
   state.records.forEach(function(r){ if(!r.fees || r.fees.tdc==null){ snap = snap || resolvedFeeRules(); r.fees = snap; n++; } });
   return n;
 }
+// a coupon the driver has to swallow lowers what they earn; one the platform pays back does not
 function computeNetRevenue(r){
+  var n = netBeforeCoupon(r);
+  if(r.coupon>0 && r.couponType==='absorb') n = Math.max(0, n - r.coupon);
+  return n;
+}
+function netBeforeCoupon(r){
   var gross = +r.revenue||0;
   if(gross<=0) return 0;
   if(r.platform==='bonus') return gross;
   var fees = r.fees||state.feeRules||{};
   if(r.platform==='uber'){
+    // Uber 小黃: the meter fare goes in and the fleet's share comes off; other Uber trips are entered already net
+    if(isUberTaxiRec(r)){ var pctT = fees.uberTaxi!=null?fees.uberTaxi:15; return gross*(1-pctT/100); }
     return gross;
   }
   if(r.platform==='bolt'){
@@ -863,7 +873,7 @@ function computeGrossRevenue(r){
   if(v<=0) return 0;
   if(r.platform==='bonus') return v;
   var fees = r.fees||state.feeRules||{};
-  if(r.platform==='uber'){
+  if(r.platform==='uber' && !isUberTaxiRec(r)){
     var pctU = fees.uber!=null?fees.uber:25;
     return v/(1-pctU/100);
   }
@@ -884,6 +894,7 @@ function describeRecord(r){
   if(r.markupPercent) parts.push('加成'+r.markupPercent+'%');
   if(r.markupAmount) parts.push('加成$'+r.markupAmount);
   if(r.addOn) parts.push('加價$'+r.addOn);
+  if(r.coupon) parts.push('優惠券$'+r.coupon+(r.couponType==='absorb'?'(自己吸收)':'(平台補回)'));
   if(r.pickup && r.dropoff) parts.push('🚕'+Math.round((r.dropoff.ts-r.pickup.ts)/60000)+'分');
   if(r.area) parts.push('📍'+r.area);
   if(r.event) parts.push('🎉'+r.event);
@@ -1263,7 +1274,7 @@ function payoutCfg(key){
 function isCashRecord(r){
   if(r.platform==='bonus') return payoutCfg(payKey(r)).collect==='cash' && !platformDef(payKey(r)).paymentOptions;
   var def = platformDef(r.platform);
-  if(def.paymentOptions){
+  if(def.paymentOptions || isUberTaxiRec(r)){
     if(r.payment) return r.payment==='現金';
     return r.fareType==='據點叫車';
   }
@@ -1273,10 +1284,12 @@ function moneyFlow(r){
   var tip = +r.tip||0;
   var net = computeNetRevenue(r);
   var cfg = payoutCfg(payKey(r));
+  var coupon = r.coupon>0 ? +r.coupon : 0;
   if(isCashRecord(r)){
-    var fee = Math.max(0, (+r.revenue||0) - net);
+    var fee = Math.max(0, (+r.revenue||0) - netBeforeCoupon(r));
     var netted = cfg.cashFeeFromPayout && cfg.schedule!=='none';
-    return {cash:(+r.revenue||0)+tip, noncash:0, cashFee:fee, netted:netted};
+    // the passenger paid the coupon part with the platform's money: less cash, and the platform owes it
+    return {cash:(+r.revenue||0)-coupon+tip, noncash:(r.couponType==='absorb'?0:coupon), cashFee:fee, netted:netted};
   }
   return {cash:0, noncash:net+tip, cashFee:0, netted:false};
 }
@@ -1340,7 +1353,7 @@ function payoutLedger(){
     var owed = 0;
     recs.forEach(function(x){
       var r = x.r, f = moneyFlow(r);
-      if(f.cashFee && f.netted){ owed += f.cashFee; return; }
+      if(f.cashFee && f.netted) owed += f.cashFee;
       if(!f.noncash) return;
       var b = payoutBatchOf(r); if(!b) return;
       var ded = Math.min(owed, f.noncash);
@@ -2986,6 +2999,9 @@ function computePreviewRecordFromForm(key){
   if(def.discountOptions){ var de=document.getElementById('chip-discountTier'); rec.discountTier = de?de.value:def.discountOptions[0]; rec.discountFinal = true; }
   if(def.enterpriseDiscountOptions){ var ee=document.getElementById('chip-enterpriseDiscount'); rec.enterpriseDiscount = ee?ee.value:def.enterpriseDiscountOptions[0]; }
   if(def.hasStationFee){ rec.stationFee = +grab('f-station-fee')||0; }
+  if(key==='uber' && isYellowCab()) rec.subtype = '優步小黃';
+  var cpv0 = +grab('f-coupon')||0;
+  if(cpv0>0){ rec.coupon = cpv0; rec.couponType = grab('chip-couponType')==='自己吸收' ? 'absorb' : 'refund'; }
   return rec;
 }
 function updateIncomePreview(){
@@ -3064,6 +3080,12 @@ function buildIncomeForm(key, existing){
     h += '<div class="form-row" id="sec-addOn"><label>加價金額(選填)</label><input class="num-input" id="f-addon" type="number" min="0" step="1" inputmode="numeric" placeholder="0" value="'+((existing&&existing.addOn)||'')+'">'+
       '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">乘客加價叫車的金額。已經含在車資裡,不會重複計算,只用來統計加價單多賺多少</div></div>';
   }
+  if(def.hasCoupon && uiOn('coupon')){
+    var cpType = (existing && existing.coupon>0) ? existing.couponType : ((state.couponPref||{})[key] || 'refund');
+    h += '<div class="form-row"><label>優惠券折抵(選填)</label><input class="num-input" id="f-coupon" type="number" min="0" step="1" inputmode="numeric" placeholder="0" value="'+((existing&&existing.coupon)||'')+'">'+
+      '<div style="margin-top:6px">'+chipRowHtml('couponType', ['平台會補回','自己吸收'], cpType==='absorb'?'自己吸收':'平台會補回')+'</div>'+
+      '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">乘客用優惠券少付的錢。車資照跳表全額打;平台會補回的,實收不變、算進撥款;自己吸收的,從實收扣掉</div></div>';
+  }
   if(def.hasMarkupMultiplier && uiOn('markup')) h += '<div class="form-row"><label>加成倍率(選填,例如 1.2)</label><input class="num-input" id="f-markup-multiplier" type="number" min="0" step="0.1" placeholder="1.0" value="'+((existing&&existing.markupMultiplier)||'')+'"></div>';
   if(def.markupPercent && uiOn('markup')) h += '<div class="form-row"><label>加成 %(選填,App 顯示 70% 就填 70)</label><input class="num-input" id="f-markup-percent" type="number" min="0" step="1" inputmode="numeric" placeholder="0" value="'+((existing&&existing.markupPercent)||'')+'"></div>';
   if(def.subPlatformOptions){
@@ -3092,7 +3114,7 @@ function openIncomeModal(key, editId){
   } else if(def.tipOnly){
     h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-tip" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.tip)||'')+'"></div>';
   } else {
-    var revLabel = (key==='uber') ? 'App 顯示金額(已扣手續費的實收)' : (key==='bolt' ? '車資金額(未扣手續費)' : '車資金額');
+    var revLabel = (key==='uber') ? (isYellowCab() ? '跳表金額' : 'App 顯示金額(已扣手續費的實收)') : (key==='bolt' ? '車資金額(未扣手續費)' : '車資金額');
     h += '<div class="form-row"><label>'+revLabel+'</label><input class="num-input" id="f-revenue" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.revenue)||'')+'"></div>';
     if(uiOn('tip')) h += '<div class="form-row"><label>小費(選填)</label><input class="num-input" id="f-tip" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.tip)||'')+'"></div>';
     h += '<div id="incomePreview" style="margin-bottom:12px"></div>';
@@ -3136,6 +3158,13 @@ function saveIncome(key, editId){
   if(def.hasStationFee && rec.fareType==='據點叫車'){ var sf=grab('f-station-fee'); rec.stationFee = (sf!=null && sf!=='') ? +sf : undefined; } else if(def.hasStationFee) rec.stationFee = undefined;
   if(def.estimateTypeOptions && rec.fareType==='預估車資') rec.estimateType = grab('chip-estimateType'); else if(def.estimateTypeOptions) rec.estimateType = undefined;
   var ma = grab('f-markup-amount'); if(ma!=null) rec.markupAmount = ma!=='' ? +ma : undefined;
+  var cpEl = document.getElementById('f-coupon');
+  if(cpEl){
+    var cpv = +cpEl.value||0;
+    rec.coupon = cpv>0 ? cpv : undefined;
+    rec.couponType = cpv>0 ? (grab('chip-couponType')==='自己吸收' ? 'absorb' : 'refund') : undefined;
+    if(cpv>0){ state.couponPref = state.couponPref||{}; state.couponPref[key] = rec.couponType; }
+  }
   var aoSec = document.getElementById('sec-addOn');
   if(aoSec){ var ao = aoSec.hidden ? '' : grab('f-addon'); rec.addOn = (ao!=null && ao!=='' && +ao>0) ? +ao : undefined; }
   // a field that is not on this form leaves the old value alone (LINE GO records from before the switch to %)
@@ -3297,8 +3326,10 @@ function feeSettingsHtml(fr){
   h += block('yoxi', '<div class="form-grid2">'+inp('f-fee-yoxiflat','每單扣 $(沒有留空)','yoxiFlat',1,true)+inp('f-fee-yoxicash','基本手續費 %(現金/企業簽單)','yoxiCash',0.1,true)+
     inp('f-fee-yoxicreditextra','信用卡服務費 %','yoxiCreditExtra',0.1)+'</div>');
   h += block('linego', '<div class="form-grid2">'+inp('f-fee-linegoflat','每單扣 $(沒有留空)','linegoFlat',1,true)+inp('f-fee-linego','手續費 %(含信用卡服務費 2.5%)','linego',0.1,true)+'</div>');
-  h += block('uber', '<div class="form-grid2">'+inp('f-fee-uber','手續費 %(只用來回推車資)','uber',0.1)+'</div>'+
-    '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.5">Uber 你輸入的是 App 顯示的實收(已扣手續費),這個 % 只用來回推「扣手續費前的車資」,不會再扣一次。</div>');
+  h += block('uber', '<div'+(isYellowCab()?' hidden':'')+'><div class="form-grid2">'+inp('f-fee-uber','手續費 %','uber',0.1)+'</div>'+
+    '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.5">Uber 多元輸入 App 顯示的實收(已扣手續費),這個 % 用來算出未扣手續費的車資,不會再扣一次。</div></div>'+
+    '<div'+(isYellowCab()?'':' hidden')+'><div class="form-grid2">'+inp('f-fee-ubertaxi','優步小黃手續費 %','uberTaxi',0.1)+'</div>'+
+    '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.5">優步小黃輸入跳表金額,系統扣這個 % 算實收。各地合作車隊抽成可能不同,請改成你的。</div></div>');
   var bolt = '<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;line-height:1.5">BOLT 輸入的是還沒扣手續費的原始車資,系統會自動扣。</div>';
   bolt += '<div class="form-grid2">'+inp('f-fee-boltflat','手續費 %','boltFlat',0.1)+'</div>';
   bolt += '<label style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;color:var(--text-muted);margin-bottom:8px"><input type="checkbox" id="f-fee-boltthresholdenabled" style="width:17px;height:17px" '+(fr.boltThresholdEnabled!==false?'checked':'')+'>開啟車貼獎勵門檻(沒有貼車貼就不用勾,一律用上面的 %)</label>';
@@ -3315,10 +3346,10 @@ function wireFeePlatToggle(){
   });
 }
 /* ---------- 顯示模式與功能開關 ---------- */
-var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['tip','小費'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
+var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(台灣大、YOXI、Uber 小黃)'],['tip','小費'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
 var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['dayReport','下班打卡後顯示今日跑車報告']];
 var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度']];
-var UI_SIMPLE_OFF = ['subtype','fareType','payment','discount','markup','addOn','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
+var UI_SIMPLE_OFF = ['subtype','fareType','payment','discount','markup','addOn','coupon','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
 function uiOn(k){ return !state.ui || state.ui[k]!==false; }
 // sections that only have data when another feature is on
 function uiShow(k){
@@ -3552,14 +3583,15 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.03.4';
+var APP_VERSION = '2026.11.03.5';
 var WHATS_NEW = [
   '📶 沒有網路也能打開記帳本(例如地下停車場),記的帳一樣存在手機裡',
   '🚕 下班打卡後會跳出「今日跑車報告」:實收、時薪、趟數,還會跟前 7 天比較',
   '🛡️ 匯入還原前,會先比對備份檔和手機裡的資料;還原或清除錯了可以復原',
   '🖼️ 新的主畫面圖示:之後新加入主畫面的人會看到。已經加過的不用重新加,刪掉圖示可能讓資料不見',
   '💰 新增「加價金額」(選填):台灣大、大都會、YOXI、Uber 小黃的乘客加價叫車單,可以記下加價多少,分析頁「本期概況」會統計加價單多收多少。不需要的可以在 ⚙️ 功能開關關掉',
-  '🚕 開小黃的司機:到 ⚙️ 最上面「我的車」選「小黃」,Uber、BOLT、LINE GO 記帳時就不用再選車種',
+  '🚕 開小黃的司機:到 ⚙️ 最上面「我的車」選「小黃」,Uber、BOLT、LINE GO 記帳時就不用再選車種;Uber 小黃改打跳表金額,自動扣 15%(可在手續費設定改)',
+  '🎟️ 新增「優惠券折抵」(選填):乘客用優惠券少付的錢,可選平台會補回或自己吸收,今日現金和撥款會跟著算對',
   '💾 右上角新增「備份」按鈕:一按就能存備份檔,可以選存到 iCloud 或 Google 雲端硬碟;按鈕上的數字是幾天沒備份,變紅色就該備份了'
 ];
 function maybeShowWhatsNew(){
@@ -3907,6 +3939,7 @@ function saveSettings(){
   state.feeRules.metroCredit = g('f-fee-metrocredit');
   state.feeRules.metroEnterprise = g('f-fee-metroenterprise');
   state.feeRules.uber = g('f-fee-uber');
+  state.feeRules.uberTaxi = g('f-fee-ubertaxi');
   state.feeRules.boltFlat = g('f-fee-boltflat');
   state.feeRules.boltPct = g('f-fee-boltpct');
   state.feeRules.boltThreshold = g('f-fee-boltthreshold');
