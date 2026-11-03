@@ -3879,7 +3879,7 @@ function filterHelp(q){
   var none = document.getElementById('help-none'); if(none) none.hidden = any;
 }
 /* ---------- foreign-currency tips: reference rate from ExchangeRate-API (daily mid-market), editable ---------- */
-var FX_CURS = [['TWD','新台幣'],['USD','美金'],['JPY','日圓'],['KRW','韓元'],['HKD','港幣'],['CNY','人民幣'],['EUR','歐元'],['SGD','新加坡幣'],['GBP','英鎊'],['AUD','澳幣'],['THB','泰銖'],['MYR','馬幣']];
+var FX_CURS = [['TWD','新台幣','🇹🇼'],['USD','美金','🇺🇸'],['JPY','日圓','🇯🇵'],['KRW','韓元','🇰🇷'],['HKD','港幣','🇭🇰'],['CNY','人民幣','🇨🇳'],['EUR','歐元','🇪🇺'],['SGD','新加坡幣','🇸🇬'],['GBP','英鎊','🇬🇧'],['AUD','澳幣','🇦🇺'],['THB','泰銖','🇹🇭'],['MYR','馬幣','🇲🇾']];
 var fxLoading = false;
 // NT$ for one unit of the currency, from the last fetched table
 function fxRate(cur){
@@ -3899,7 +3899,7 @@ function tipFieldHtml(label, existing){
   var h = '<div class="form-row"><label>'+label+'</label><div style="display:flex;gap:6px"><input class="num-input" id="f-tip" type="number" min="0" step="any" placeholder="0" inputmode="decimal" style="flex:1;min-width:0" value="'+val+'">';
   if(uiOn('fxTip')){
     var cur = fx ? fx.cur : 'TWD';
-    h += '<select id="f-tip-cur" style="width:auto;flex:none">'+FX_CURS.map(function(c){ return '<option value="'+c[0]+'"'+(c[0]===cur?' selected':'')+'>'+c[1]+'</option>'; }).join('')+'</select>';
+    h += '<select id="f-tip-cur" style="width:auto;flex:none">'+FX_CURS.map(function(c){ return '<option value="'+c[0]+'"'+(c[0]===cur?' selected':'')+'>'+c[2]+' '+c[1]+'</option>'; }).join('')+'</select>';
     h += '</div><div id="f-tip-fx"'+(cur==='TWD'?' hidden':'')+' style="font-size:12px;color:var(--text-muted);margin-top:6px;line-height:1.6">匯率 1 = NT$ <input id="f-tip-rate" type="number" min="0" step="any" inputmode="decimal" style="width:90px;display:inline-block;padding:4px 6px" value="'+(fx?fx.rate:(cur!=='TWD'&&fxRate(cur))||'')+'">'+
       ' <span id="f-tip-twd"></span><br>預設是國際參考匯率(ExchangeRate-API,每天更新);拿去台灣銀行換的話,可以改成實際換到的匯率</div></div>';
     setTimeout(function(){ fxRefresh(); tipFxUpdate(); }, 0);
