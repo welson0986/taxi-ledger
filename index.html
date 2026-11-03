@@ -245,6 +245,8 @@ body{
 .set-sec.open .set-sec-hd{border-bottom:1px solid var(--border)}
 .set-chev{font-size:14px;color:var(--text-muted);flex:none}
 .set-sec-bd{padding:8px 12px 12px}
+.adv-sync{border:1px dashed var(--border);border-radius:12px;padding:10px 12px;margin-top:6px}
+.adv-sync>summary{font-size:13px;font-weight:700;cursor:pointer;color:var(--text-muted)}
 .set-sec-bd .form-grid2>*{min-width:0}
 .set-sec-bd input:not([type=checkbox]):not([type=color]),.set-sec-bd select,.set-sec-bd textarea{max-width:100%;box-sizing:border-box}
 .settings-save{position:sticky;bottom:calc(-18px - env(safe-area-inset-bottom,0px));background:var(--surface);padding:10px 0 calc(12px + env(safe-area-inset-bottom,0px));margin-top:10px;border-top:1px solid var(--border);z-index:2}
@@ -394,8 +396,8 @@ function holidayBlockDays(b){
 /* ---------- platform definitions ---------- */
 var PLATFORM_DEFS = [
   {key:'uber', label:'Uber', icon:'🚙', color:'#000000', subtypeOptions:['菁英X','樂聚XL','毛孩優步','舒適優步','尊榮優步','純電優步','加大樂聚XXL'], hasMarkupAmount:true},
-  {key:'tdc', label:'台灣大車隊', icon:'🚕', color:'#1E5FA8', fareTypeOptions:['跳表','預估車資'], paymentOptions:['現金','信用卡','悠遊卡','愛心卡','企業簽單','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true, hasAddOn:true},
-  {key:'metro', label:'大都會', icon:'🚗', color:'#FFFFFF', fareTypeOptions:['跳表','預估車資'], discountOptions:['原價','婦派','海派','鑽派','超派'], paymentOptions:['現金','信用卡','悠遊卡','愛心卡','企業簽單','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true, hasAddOn:true},
+  {key:'tdc', label:'台灣大車隊', icon:'🚕', color:'#1E5FA8', fareTypeOptions:['跳表','預估車資'], paymentOptions:['現金','信用卡','企業簽單','悠遊卡','愛心卡','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true, hasAddOn:true},
+  {key:'metro', label:'大都會', icon:'🚗', color:'#FFFFFF', fareTypeOptions:['跳表','預估車資'], discountOptions:['原價','婦派','海派','鑽派','超派'], paymentOptions:['現金','信用卡','企業簽單','悠遊卡','愛心卡','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true, hasAddOn:true},
   {key:'bolt', label:'BOLT', icon:'⚡', color:'#1B5E20', subtypeOptions:['經典博特','舒適博特','揪團博特','寵物博特','尊榮博特'], hasMarkupMultiplier:true},
   {key:'yoxi', label:'YOXI', icon:'🚐', color:'#90CAF9', fareTypeOptions:['跳表','預估車資','據點叫車'], paymentOptions:['現金','企業簽單','信用卡'], enterpriseDiscountOptions:['原價','95折','92折','85折'], estimateTypeOptions:['一般多元','樂聚多元','減碳多元'], estimateHasMarkupMultiplier:true, hasStationFee:true, hasAddOn:true},
   {key:'linego', label:'Line Go', icon:'💬', color:'#06C755', subtypeOptions:['一般','六人座'], markupPercent:true},
@@ -3569,7 +3571,6 @@ function feeSettingsHtml(fr){
     return '<div data-fee-plat="'+key+'"'+(p.hidden?' hidden':'')+'><div style="font-size:12.5px;font-weight:700;margin:6px 0 4px">'+esc((p.icon||'')+' '+p.label)+'</div>'+inner+'</div>';
   }
   var h = '<div class="form-row"><label>平台手續費設定</label></div>';
-  h += '<div style="font-size:11px;color:var(--text-muted);margin:-6px 0 8px;line-height:1.6">接電單:台灣大照台灣大的設定;大都會照大都會的方案(0 月費方案用 12.5%),綁定支付另扣信用卡 %。</div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin:-4px 0 6px;line-height:1.6">悠遊卡、愛心卡預設扣 3%(整趟跳表金額,愛心卡政府補助的部分也算),各車隊合約不同,請改成你的。</div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin:-4px 0 6px;line-height:1.6">每家分「每單扣 $」和「抽 %」兩種,用哪種填哪種,<b>沒有的可以直接留空或填 0</b>(兩種都有就都填)。月費或行政費的部分請記在「支出」頁的固定成本。隱藏的平台不會顯示在這裡。</div>';
   h += block('tdc', '<div class="form-grid2">'+inp('f-fee-tdcflat','每單扣 $(沒有留空)','tdcFlat',1,true)+inp('f-fee-tdc','手續費 %(沒有留空)','tdc',0.1,true)+
@@ -3982,7 +3983,8 @@ var HELP = [
   ]],
   ['備份與資料', [
     ['💾 備份', '右上角 💾 → 選 iCloud 或 Google 雲端硬碟 → 存成備份檔。數字 = 幾天沒備份,變紅色就該備份了。不要只傳到 LINE,檔案會過期。'],
-    ['換手機、還原', '新手機 ⚙️「匯入還原」→ 選擇備份檔。還原前會先比對資料;還原或清除錯了,可以按「↩️ 復原」。'],
+    ['雲端自動同步(進階)', '⚙️「雲端與備份」→「進階:自動同步到自己的 Google 試算表」。要自己建立 Google 試算表和 Apps Script,適合會設定的人;一般司機用右上角 💾 存備份檔就夠了。設定方式請問製作者。'],
+    ['換手機、還原', '新手機 ⚙️「雲端與備份」→「匯入還原」→ 選擇備份檔。還原前會先比對資料;還原或清除錯了,可以按「↩️ 復原」。'],
     ['沒有網路', '打開過一次之後,沒網路也能打開、記帳。'],
     ['清除所有資料', '⚙️ 最下面,要輸入「清除」兩個字才會執行。']
   ]],
@@ -4292,9 +4294,25 @@ function openSettingsModal(){
     '</select></div>';
   S.basic += h; h = '';
   h += '<div class="form-row" style="margin-top:6px"><label>進階:記錄接單時間</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-track-accept" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.trackAccept?' checked':'')+'>打開後,下車後的大按鈕會變成「📲 接到單了」。接單時按一下,客人上車再按「上車」,分析頁就能把空檔拆成「等單」和「接駁」兩段。不打開就跟原本一樣。</label></div>';
-  if(HOT_URL) h += '<div class="form-row"><label>分享上車熱區(車友熱區)</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-share-hot" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.shareHot===true?' checked':'')+'>分享你的上車熱區,就能在分析頁看「車友熱區」。只送約 1 公里一格的區域、日期、時段、趟數,<b>不送精確位置、金額、平台</b>;3 位以上車友都上過車的地方才會顯示。取消勾選會一併刪除你分享過的資料。</label></div>';
-  h += '<div class="form-row"><label>不具名使用人數統計</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-stat-on" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.statOptOut?'':' checked')+'>參與不具名統計,幫製作者知道有多少司機在用。每天只送一次:隨機編號、日期、版本、簡單/完整模式、手機系統、是否從主畫面打開。<b>不含任何金額、平台、位置或個人資料。</b></label></div>';
+  if(HOT_URL) h += '<div class="form-row"><label>分享上車熱區(車友熱區)</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-share-hot" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.shareHot===true?' checked':'')+'><span>分享你的上車熱區,就能在分析頁看「車友熱區」。只送約 1 公里一格的區域、日期、時段、趟數,<b>不送精確位置、金額、平台</b>;3 位以上車友都上過車的地方才會顯示。取消勾選會一併刪除你分享過的資料。</span></label></div>';
+  h += '<div class="form-row"><label>不具名使用人數統計</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-stat-on" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.statOptOut?'':' checked')+'><span>參與不具名統計,幫製作者知道有多少司機在用。每天只送一次:隨機編號、日期、版本、簡單/完整模式、手機系統、是否從主畫面打開。<b>不含任何金額、平台、位置或個人資料。</b></span></label></div>';
   S.privacy = h; h = '';
+  h += '<div class="form-row" style="margin-top:2px"><label>💾 備份檔(每個人都建議用)</label>'+
+    '<div style="font-size:11.5px;color:var(--text-muted);margin:-2px 0 8px;line-height:1.6">帳只存在這支手機。換手機、刪掉主畫面圖示前,一定要先存備份檔;新手機按「匯入還原」選這個檔就回來了。右上角 💾 也是同一個功能。</div>'+
+    '<div class="btn-row" style="gap:8px"><button class="btn btn-primary" style="flex:1" data-act="quick-backup">💾 存成備份檔</button><button class="btn btn-ghost" style="flex:1" data-act="open-import">匯入還原</button></div>'+
+    '<div style="text-align:right;margin-top:6px"><a data-act="open-export" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">其他匯出方式(複製文字)</a></div></div>';
+  h += '<div style="height:8px"></div>';
+  h += '<div class="form-row" style="margin-top:6px"><label>報表</label></div>';
+  h += '<div class="btn-row"><button class="btn btn-ghost" data-act="year-report">📊 年度報表(可匯出 Excel)</button></div>';
+  h += '<div style="height:14px"></div>';
+
+  var dsz = dataSizeChars(), dmb = dsz/1048576, bigStore = !!__BOOT.idb, dpct = bigStore ? 0 : Math.min(100, dsz/(2.5*1048576)*100);
+  h += '<div class="form-row" style="margin-top:6px"><label>資料用量</label>'+
+    '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px"><span>目前資料約 <b class="num">'+(dmb<0.1?fmtNum(dsz/1024,0)+' KB':fmtNum(dmb,2)+' MB')+'</b>(收入 '+state.records.length+' 筆、支出 '+state.expenses.length+' 筆)</span>'+(bigStore?'':'<span class="num" style="color:'+(dpct>=80?'var(--expense)':'var(--text-muted)')+'">'+Math.round(dpct)+'%</span>')+'</div>'+
+    (bigStore?'':'<div class="progress-bar"><div class="progress-fill" style="width:'+dpct.toFixed(1)+'%'+(dpct>=80?';background:var(--expense)':'')+'"></div></div>')+
+    '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">'+(bigStore?'存在手機的大容量資料庫(IndexedDB),不受 5 MB 限制。':'這支手機的瀏覽器不支援大容量資料庫,百分比以保守估計的上限 2.5 MB 計算。')+(saveFailed?'<b style="color:var(--expense)">最近一次存檔失敗,請立刻匯出備份檔。</b>':(dpct>=60?'<b style="color:var(--expense)">已經用掉不少,要盡快換成更大的存放空間。</b>':''))+'</div></div>';
+  h += '<details class="adv-sync"'+(state.syncUrl?' open':'')+'><summary>進階:自動同步到自己的 Google 試算表</summary>'+
+    '<div style="font-size:11.5px;color:var(--text-muted);margin:8px 0 10px;line-height:1.6">一般司機用上面的 💾 備份檔就夠了。這個功能要自己建立 Google 試算表和 Apps Script,適合會設定的人;設定方式請問製作者。</div>';
   h += '<div class="form-row" style="margin-top:6px"><label>Google Sheet 同步網址</label><input id="f-sync-url" type="text" placeholder="https://script.google.com/macros/s/.../exec" value="'+esc(state.syncUrl||'')+'"></div>';
   h += '<div class="form-row"><label>雲端密碼(要跟 Apps Script 指令碼屬性 TAXI_KEY 一樣)</label><input id="f-cloud-key" type="password" autocomplete="off" placeholder="尚未設定" value="'+esc(getCloudKey())+'">'+
     '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);margin-top:6px;font-weight:400"><input type="checkbox" id="f-cloud-key-show" style="width:16px;height:16px">顯示密碼</label>'+
@@ -4307,20 +4325,9 @@ function openSettingsModal(){
   h += '<div id="syncStatus" style="font-size:12px;color:var(--text-muted);margin-top:8px;text-align:center"></div>';
   h += '<div style="height:14px"></div>';
 
-  var dsz = dataSizeChars(), dmb = dsz/1048576, bigStore = !!__BOOT.idb, dpct = bigStore ? 0 : Math.min(100, dsz/(2.5*1048576)*100);
-  h += '<div class="form-row" style="margin-top:6px"><label>資料用量</label>'+
-    '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px"><span>目前資料約 <b class="num">'+(dmb<0.1?fmtNum(dsz/1024,0)+' KB':fmtNum(dmb,2)+' MB')+'</b>(收入 '+state.records.length+' 筆、支出 '+state.expenses.length+' 筆)</span>'+(bigStore?'':'<span class="num" style="color:'+(dpct>=80?'var(--expense)':'var(--text-muted)')+'">'+Math.round(dpct)+'%</span>')+'</div>'+
-    (bigStore?'':'<div class="progress-bar"><div class="progress-fill" style="width:'+dpct.toFixed(1)+'%'+(dpct>=80?';background:var(--expense)':'')+'"></div></div>')+
-    '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">'+(bigStore?'存在手機的大容量資料庫(IndexedDB),不受 5 MB 限制。':'這支手機的瀏覽器不支援大容量資料庫,百分比以保守估計的上限 2.5 MB 計算。')+(saveFailed?'<b style="color:var(--expense)">最近一次存檔失敗,請立刻匯出備份檔。</b>':(dpct>=60?'<b style="color:var(--expense)">已經用掉不少,要盡快換成更大的存放空間。</b>':''))+'</div></div>';
-  h += '<div class="form-row" style="margin-top:6px"><label>資料備份與還原(兩台裝置或兩個瀏覽器資料對不起來時使用)</label></div>';
-  h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="open-export">匯出備份</button><button class="btn btn-ghost" style="flex:1" data-act="open-import">匯入還原</button></div>';
-  h += '<div style="height:14px"></div>';
-  h += '<div class="form-row" style="margin-top:6px"><label>報表</label></div>';
-  h += '<div class="btn-row"><button class="btn btn-ghost" data-act="year-report">📊 年度報表(可匯出 Excel)</button></div>';
-  h += '<div style="height:14px"></div>';
-
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.6">設定 Google Sheet 網址後,每次新增、修改、刪除後停 30 秒(或打下班卡、切出記帳本時)會自動把完整資料同步到雲端(表單會整份更新,不會重複,刪除也會同步),雲端另外保留最近 60 次、90 天內每天一份、24 個月內每月一份完整備份(Apps Script v5 起存在 Google 雲端硬碟),換手機或資料不見時可以用「從雲端還原」拿回來。</div>';
+  h += '</details><div style="height:14px"></div>';
   h += '<div class="btn-row"><button class="btn btn-danger" data-act="reset-all">清除所有資料</button></div>';
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.6">資料儲存在這支手機的瀏覽器裡。設定 Google Sheet 網址後,每次新增、修改、刪除後停 30 秒(或打下班卡、切出記帳本時)會自動把完整資料同步到雲端(表單會整份更新,不會重複,刪除也會同步),雲端另外保留最近 60 次、90 天內每天一份、24 個月內每月一份完整備份(Apps Script v5 起存在 Google 雲端硬碟),換手機或資料不見時可以用「從雲端還原」拿回來。</div>';
   S.cloud = h;
   S.about = aboutHtml();
   h = hdr + settingsSectionsHtml(S);
@@ -4329,7 +4336,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.1';
+var APP_VERSION = '2026.11.04.3';
 var WHATS_NEW = [
   '⚙️ 設定頁分成六類(基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享),點一類才展開,不用一直往下滑;「儲存設定」固定在最下面',
   '📱 記帳首頁可以自己排順序、隱藏用不到的區塊(⚙️「記帳首頁排列」);預設把平台按鈕移到路況上面',
@@ -4411,7 +4418,7 @@ function aboutHtml(){
   h += para('📍 車友熱區', '同意分享的人,記帳本每天會送出前一天的「約 1 公里一格的上車區域、時段、趟數」,不含精確位置、金額、平台。至少 3 位車友都上過車的地方才會顯示給有分享的人看,看不到任何人的個人紀錄。可以隨時在上面取消分享。');
   h += para('💬 建議與問題回報', '有任何建議或使用上的問題,歡迎來信:<br>'+
     '✉️ <a style="'+link+'" href="mailto:ridewithwelson@gmail.com">ridewithwelson@gmail.com</a>');
-  h += para('ℹ️ 版本資訊', '版本:'+APP_VERSION+'<br>製作者:Welson 威爾森(REALWAY CO., LTD.)<br>© 2026 REALWAY CO., LTD.');
+  h += para('ℹ️ 版本資訊', '版本:'+APP_VERSION+'<br>製作者:Welson(REALWAY CO., LTD.)<br>© 2026 REALWAY CO., LTD.');
   return h+'</div>';
 }
 function wirePlatformDrag(){
