@@ -2754,7 +2754,16 @@ function backupReminderHtml(){
   var days = state.lastExportAt ? Math.floor((Date.now()-state.lastExportAt)/86400000) : null;
   return '<div class="card" style="border-color:var(--accent);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6">'+
     '<b style="color:var(--accent)">💾 '+(days!=null?'已經 '+days+' 天沒有存備份檔了':'還沒有存過備份檔')+'</b><br>你的帳只存在這支手機,手機遺失或壞掉就拿不回來。按下面按鈕存到 Google 雲端硬碟、iCloud 或「檔案」。'+
-    '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" style="flex:2" data-act="export-file">立即存成備份檔</button><button class="btn btn-ghost" style="flex:1" data-act="backup-snooze">明天再提醒</button></div></div>';
+    '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" style="flex:2" data-act="export-file">立即存成備份檔</button><button class="btn btn-ghost" style="flex:1" data-act="backup-snooze">明天再提醒</button></div>'+backupHintHtml()+'</div>';
+}
+function backupHintHtml(){
+  var ua = navigator.userAgent || '';
+  var ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  var android = /Android/.test(ua);
+  var line = ios ? '📱 跳出選單後點「儲存到檔案」→ 選 iCloud Drive → 儲存'
+    : android ? '🤖 跳出選單後點「雲端硬碟」→ 上傳'
+    : '📱 iPhone:點「儲存到檔案」→ iCloud Drive<br>🤖 安卓:點「雲端硬碟」→ 上傳';
+  return '<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;line-height:1.6">'+line+'<br>不要只傳到 LINE,聊天室的檔案會過期。</div>';
 }
 function downloadBlob(filename, blob){
   var a = document.createElement('a');
@@ -3421,7 +3430,7 @@ function aboutHtml(){
   h += para('📍 車友熱區', '同意分享的人,記帳本每天會送出前一天的「約 1 公里一格的上車區域、時段、趟數」,不含精確位置、金額、平台。至少 3 位車友都上過車的地方才會顯示給有分享的人看,看不到任何人的個人紀錄。可以隨時在上面取消分享。');
   h += para('💬 建議與問題回報', '有任何建議或使用上的問題,歡迎來信:<br>'+
     '✉️ <a style="'+link+'" href="mailto:ridewithwelson@gmail.com">ridewithwelson@gmail.com</a>');
-  h += para('ℹ️ 版本資訊', '版本:'+APP_VERSION+'<br>製作者:Welson 威爾森(瑞威興業有限公司)<br>© 2026 瑞威興業有限公司 版權所有');
+  h += para('ℹ️ 版本資訊', '版本:'+APP_VERSION+'<br>製作者:Welson 威爾森(REALWAY CO., LTD.)<br>© 2026 REALWAY CO., LTD.');
   return h+'</div>';
 }
 function wirePlatformDrag(){
@@ -3460,8 +3469,8 @@ function wirePlatformDrag(){
 function openExportModal(){
   var json = packState(state);
   var h = '<div class="modal-title">匯出備份<button class="close" data-act="close-modal">✕</button></div>';
-  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6"><b>建議用「存成備份檔」</b>:會跳出分享選單,可以存到 Google 雲端硬碟、iCloud 或「檔案」(LINE 聊天室的檔案會過期,不適合長期保存)。要還原時到「匯入還原」選這個檔案。</div>';
-  h += '<div class="btn-row" style="margin-bottom:12px"><button class="btn btn-primary" data-act="export-file">存成備份檔</button></div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6"><b>建議用「存成備份檔」</b>:會跳出分享選單,存到 iCloud 或 Google 雲端硬碟,換手機也拿得回來。要還原時到「匯入還原」選這個檔案。</div>';
+  h += '<div class="btn-row" style="margin-bottom:12px"><button class="btn btn-primary" data-act="export-file">存成備份檔</button></div>'+backupHintHtml()+'';
   h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;line-height:1.6">或複製下面整段文字貼到備忘錄(資料多時文字很長,LINE 訊息可能貼不下)。</div>';
   h += '<textarea id="exportText" readonly style="width:100%;height:160px;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface-sunken);color:var(--text);box-sizing:border-box" onclick="this.focus();this.select()">'+esc(json)+'</textarea>';
   h += '<div class="btn-row" style="margin-top:10px"><button class="btn btn-ghost" data-act="copy-export">複製文字</button></div>';
