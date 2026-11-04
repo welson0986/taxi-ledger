@@ -672,16 +672,17 @@ function writeStore(){
       };
       tx.oncomplete = function(){
         if(conflict){ settleWaiters(waiters, false); reloadFromStore(true); return; }
-        onSaveOk();
-        settleWaiters(waiters, true);
+        finishWrite(str, rev, waiters);
         try{ if(ledgerChannel) ledgerChannel.postMessage(rev); }catch(e){}
         try{ if(!localStorage.getItem(IDB_MIGRATED_FLAG)) localStorage.setItem(IDB_MIGRATED_FLAG, '1'); }catch(e){}
       };
-      tx.onerror = tx.onabort = function(){ onSaveFail(); settleWaiters(waiters, false); };
+      // in the app the file is the copy that counts, so a web view storage failure alone does not lose the save
+      tx.onerror = tx.onabort = function(){ if(NATIVE_FS) finishWrite(str, rev, waiters); else { onSaveFail(); settleWaiters(waiters, false); } };
     }catch(e){ onSaveFail(); settleWaiters(waiters, false); }
     return;
   }
-  try{ localStorage.setItem(STORAGE_KEY, str); onSaveOk(); settleWaiters(waiters, true); }catch(e){ onSaveFail(); settleWaiters(waiters, false); }
+  try{ localStorage.setItem(STORAGE_KEY, str); }catch(e){ if(!NATIVE_FS){ onSaveFail(); settleWaiters(waiters, false); return; } }
+  finishWrite(str, rev, waiters);
 }
 function reloadFromStore(afterConflict){
   if(!__BOOT.idb) return;
@@ -714,6 +715,7 @@ document.addEventListener('visibilitychange', function(){ if(document.visibility
 if(__BOOT.idb && __BOOT.state==null && !storageStale){ writeStore(); }
 noteHadData();
 if(stampMissingFeeSnapshots()) writeStore();
+else if(__BOOT.fromFile && __BOOT.idb) writeStore();
 try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){}
 // onDone(true) once this change is in the phone's storage, onDone(false) if it did not get there
 function save(onDone){
@@ -724,6 +726,22 @@ function save(onDone){
   scheduleCloudSync();
 }
 function settleWaiters(list, ok){ list.forEach(function(f){ try{ f(ok); }catch(e){} }); }
+// writes one at a time and alternates the two slots, starting with the one not holding the copy just loaded
+var nativeChain = Promise.resolve(), nativeNext = (__BOOT.nativeSlot===NATIVE_SLOTS[0]) ? 1 : 0;
+function nativeWriteLedger(str, rev){
+  var job = nativeChain.then(function(){
+    var f = NATIVE_SLOTS[nativeNext];
+    return NATIVE_FS.writeFile({path:f, directory:'DATA', encoding:'utf8', data:JSON.stringify({rev:rev, savedAt:Date.now(), data:str})})
+      .then(function(){ nativeNext = 1 - nativeNext; });
+  });
+  nativeChain = job.catch(function(){});
+  return job;
+}
+function finishWrite(str, rev, waiters){
+  if(!NATIVE_FS){ onSaveOk(); settleWaiters(waiters, true); return; }
+  nativeWriteLedger(str, rev).then(function(){ onSaveOk(); settleWaiters(waiters, true); },
+    function(){ onSaveFail(); settleWaiters(waiters, false); });
+}
 function flushWrite(){ if(!writePending) return; writePending = false; writeStore(); }
 window.addEventListener('pagehide', flushWrite);
 document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='hidden') flushWrite(); });
@@ -3194,6 +3212,17 @@ function openTrafficSpotsModal(){
 
 /* ---------- file share/download + yearly report ---------- */
 function shareOrDownloadFile(filename, text, mime){
+  // the app cannot download into the phone like a browser; it writes the file and opens the share sheet
+  var capShare = NATIVE_FS && window.Capacitor.Plugins.Share;
+  if(capShare){
+    return NATIVE_FS.writeFile({path:filename, directory:'CACHE', encoding:'utf8', data:text}).then(function(w){
+      return capShare.share({title:filename, files:[w.uri], dialogTitle:'把檔案存到…(雲端硬碟、檔案、LINE 都可以)'});
+    }).then(function(){ return true; }, function(err){
+      if(/cancel/i.test(String(err && (err.message||err)))) return false;
+      alert('沒辦法存出檔案:'+String(err && (err.message||err)));
+      return false;
+    });
+  }
   var blob = new Blob([text], {type:mime});
   var file = null;
   try{ file = new File([blob], filename, {type:mime}); }catch(e){}
@@ -4377,6 +4406,7 @@ function openModeChooser(){
   var h = '<div class="modal-title">歡迎使用 🚕</div>';
   h += '<div style="font-size:13px;line-height:1.7;margin-bottom:12px">你想怎麼記帳?之後隨時可以在右上角 ⚙️ 改。</div>';
   h += '<button style="'+big+'" data-act="ui-choose:simple"><b style="font-size:15px">🟢 簡單記帳</b><br><span style="font-size:12px;color:var(--text-muted)">只記每個平台跑了多少錢。點平台 → 打金額 → 儲存,其他都不用選。</span></button>';
+  if(isNativeApp()) h += '<button style="'+big+';border-color:var(--accent)" data-act="move-from-web"><b style="font-size:15px">📲 我有在用網頁版,把帳搬過來</b><br><span style="font-size:12px;color:var(--text-muted)">用網頁版存的備份檔,一分鐘搬完。帳、設定、模式都會一起過來。</span></button>';
   h += '<button style="'+big+'" data-act="ui-choose:full"><b style="font-size:15px">🔵 完整分析</b><br><span style="font-size:12px;color:var(--text-muted)">記車種、付款方式、上下車時間,分析時薪、熱區、載客率。</span></button>';
   openModal(h);
 }
@@ -4563,7 +4593,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.14';
+var APP_VERSION = '2026.11.04.15';
 var WHATS_NEW = [
   '⚙️ 設定頁分成六類(基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享),點一類才展開,不用一直往下滑;「儲存設定」固定在最下面',
   '📱 記帳首頁可以自己排順序、隱藏用不到的區塊(⚙️「記帳首頁排列」);預設把平台按鈕移到路況上面',
@@ -5461,6 +5491,16 @@ document.addEventListener('click', function(e){
   else if(cmd==='year-report'){ openYearReportModal(arg); }
   else if(cmd==='year-report-csv'){ shareOrDownloadFile('跑車人生_'+arg+'年度報表.csv', yearReportCsv(+arg), 'text/csv'); }
   else if(cmd==='open-import'){ openImportModal(); }
+  else if(cmd==='move-from-web'){
+    var mh = '<div class="modal-title">從網頁版搬過來<button class="close" data-act="close-modal">✕</button></div>';
+    mh += '<div style="font-size:13.5px;line-height:1.8">'+
+      '<b>1.</b> 打開<b>網頁版</b>記帳本,按右上角 <b>💾</b>「存成備份檔」,存到手機(雲端硬碟、檔案、LINE 傳給自己都可以)。<br>'+
+      '<b>2.</b> 回到這裡,按下面的「選擇備份檔」,選剛剛那個檔案。<br>'+
+      '<b>3.</b> 看一下筆數和日期對不對,按「還原這份資料」。</div>'+
+      '<div style="font-size:12px;color:var(--text-muted);margin:10px 0 14px;line-height:1.6">有設定雲端同步的,也可以先選模式,再到 ⚙️「雲端與備份」→「從雲端還原」。網頁版的帳不會被刪掉,搬完確認沒問題再停用網頁版就好。</div>'+
+      '<div class="btn-row"><button class="btn btn-primary" data-act="open-import">選擇備份檔</button></div>';
+    openModal(mh);
+  }
   else if(cmd==='do-import'){ doImportData(); }
   else if(cmd==='undo-restore'){ undoRestore(); }
   else if(cmd==='reset-all'){
@@ -5620,12 +5660,46 @@ if(_staleShiftDate){ openStaleShiftModal(_staleShiftDate); }
 else if(!state.uiMode && !hasMeaningfulData()){ state.seenVersion = APP_VERSION; openModeChooser(); }
 else { if(!state.uiMode){ state.uiMode = uiModeOf(state.ui||{}); save(); } var _missingKmDate = findMissingKmDate(); if(_missingKmDate) openMissingKmModal(_missingKmDate); else if(!maybeShowWhatsNew()) maybeAskShareHot(); }
 }
+/* ---------- the installed app's own copy of the ledger ----------
+   Inside the app the phone may clear the web view's storage on its own (iOS can), so the ledger is also
+   kept as a file in the app's private data folder, and that file is what the app trusts. Two files take
+   turns, each carrying its revision: a write cut short can only spoil the one being written, while the
+   other still holds the previous save. The website does not use any of this. */
+var NATIVE_FS = (function(){
+  try{ return (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform() && window.Capacitor.Plugins.Filesystem) || null; }catch(e){ return null; }
+})();
+var NATIVE_SLOTS = ['ledger-a.json', 'ledger-b.json'];
+// the newest readable slot, or null
+function nativeReadLedger(){
+  return Promise.all(NATIVE_SLOTS.map(function(f){
+    return NATIVE_FS.readFile({path:f, directory:'DATA', encoding:'utf8'}).then(function(r){
+      var o = JSON.parse(r.data);
+      return (o && typeof o.data==='string') ? {rev:+o.rev||0, data:o.data, slot:f} : null;
+    }, function(){ return null; }).catch(function(){ return null; });
+  })).then(function(list){
+    var best = null;
+    list.forEach(function(x){ if(x && (!best || x.rev > best.rev)) best = x; });
+    return best;
+  });
+}
 // Load saved data from IndexedDB (large storage) first, then start the app with it.
 // If IndexedDB is unavailable the app falls back to localStorage like before.
 var __BOOT = {state:null, idb:null, idbError:false};
 (function(){
   var started = false;
-  function go(){ if(started) return; started = true; __taxiMain(); }
+  function start(){ if(started) return; started = true; __taxiMain(); }
+  // in the app, the ledger file wins over the web view's copy unless that one is newer
+  function go(){
+    if(started) return;
+    if(!NATIVE_FS){ start(); return; }
+    var t = setTimeout(start, 4000);
+    nativeReadLedger().then(function(best){
+      if(best && (__BOOT.state==null || best.rev >= (+__BOOT.rev||0))){
+        __BOOT.state = best.data; __BOOT.rev = best.rev; __BOOT.nativeSlot = best.slot; __BOOT.fromFile = true;
+      }
+      clearTimeout(t); start();
+    }, function(){ clearTimeout(t); start(); });
+  }
   if(!window.indexedDB){ go(); return; }
   try{
     var req = indexedDB.open('taxi_ledger', 1);
