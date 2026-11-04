@@ -591,26 +591,40 @@ var IDB_MIGRATED_FLAG = 'taxi_ledger_idb';
 // After moving to IndexedDB, localStorage keeps a frozen copy from the move; reading it alone would show stale data
 var storageStale = false;
 var corruptRaw = null;  // ledger text that failed to load; kept aside so the blank ledger never overwrites it
+function nativeUse(pick){
+  var ps = pick.ps, dn = defaultState();
+  for(var kn in dn){ if(!(kn in ps)) ps[kn] = dn[kn]; }
+  __BOOT.nativeSlot = pick.cand.slot; __BOOT.rev = Math.max(pick.rev, +__BOOT.rev||0); __BOOT.fromFile = true;
+  return ps;
+}
 function load(){
-  // In the app: try the ledger files newest first and take the first one that passes the full restore check.
+  // In the app: try the ledger files newest first and take the newest finished save that passes the full
+  // restore check (nativeReadSlot says how the index counts).
   // If none does, stop here (the start-up shows what is wrong) instead of opening an empty ledger that would
   // then be saved over them.
   if(__BOOT.nativeCandidates){
-    var newer = false;
+    var best = null, rescue = null;
     for(var ci=0; ci<__BOOT.nativeCandidates.length; ci++){
       var cand = __BOOT.nativeCandidates[ci];
       if(cand.data==null) throw {nativeNeed:cand};
       try{
         var ps = unpackState(JSON.parse(cand.data));
-        if(ps && +ps.fmt > LEDGER_FMT){ newer = true; continue; }
+        // a newer app saved this: never fall back to an older ledger and later save over the newer one
+        if(ps && +ps.fmt > LEDGER_FMT) throw {nativeBad:true, kind:'newer'};
         if(ledgerProblem(ps)) continue;
-        var dn = defaultState();
-        for(var kn in dn){ if(!(kn in ps)) ps[kn] = dn[kn]; }
-        __BOOT.nativeSlot = cand.slot; __BOOT.rev = Math.max(cand.rev, +__BOOT.rev||0); __BOOT.fromFile = true;
-        return ps;
-      }catch(e){}
+        var pr = isFinite(+ps.rev) ? +ps.rev : cand.rev;
+        // the ledger is ahead of its index: that save was cut off before it finished and was never reported
+        // as saved, so it is only a last resort
+        if(cand.metaRev!=null && pr > cand.metaRev){ if(!rescue) rescue = {ps:ps, cand:cand, rev:pr}; continue; }
+        // the index claims more than the ledger holds: the index is wrong, the ledger counts as what it is
+        // (a slot read later may still be newer)
+        if(cand.metaRev!=null && pr < cand.metaRev){ if(!best || pr > best.rev) best = {ps:ps, cand:cand, rev:pr}; continue; }
+        // index and ledger agree (or there is no index): nothing unread can be newer than this
+        return nativeUse(best && best.rev > pr ? best : {ps:ps, cand:cand, rev:pr});
+      }catch(e){ if(e && e.nativeBad) throw e; }
     }
-    throw {nativeBad:true, kind: newer ? 'newer' : 'bad'};
+    if(best || rescue) return nativeUse(best || rescue);
+    throw {nativeBad:true, kind:'bad'};
   }
   var raw = null;
   try{
@@ -4742,7 +4756,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.23';
+var APP_VERSION = '2026.11.04.25';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -5871,8 +5885,11 @@ function nativeSlotOk(o){
   if(o.len!=null && o.len!==o.data.length) return false;
   return true;
 }
-// one slot -> {rev, data, slot} or null. Older files are a JSON envelope {rev,len,data}; newer ones are the
-// compressed ledger itself, whose revision and length come from the index file.
+// one slot -> {rev, data, slot, metaRev} or null. Older files are a JSON envelope {rev,len,data}; newer ones are
+// the compressed ledger itself (gzip's own check catches a cut-off file). Its index file is the commit mark,
+// written only after the ledger: load() compares the revision inside the ledger with it. Equal: a finished save.
+// Ledger ahead: that save was cut off and never reported as saved, used only if nothing else is readable.
+// Index ahead, unreadable or missing: the index is what is wrong, so the ledger counts at its own revision.
 function nativeReadSlot(f, meta){
   return NATIVE_FS.readFile({path:f, directory:'DATA'}).then(function(r){
     return bytesToText(base64ToBytes(r.data));
@@ -5881,8 +5898,9 @@ function nativeReadSlot(f, meta){
       var o = JSON.parse(text);
       return nativeSlotOk(o) ? {rev:+o.rev, data:o.data, slot:f} : null;
     }
-    if(!meta || !isFinite(meta.rev) || (meta.len!=null && meta.len!==text.length)) return null;
-    return {rev:+meta.rev, data:text, slot:f};
+    if(meta) return {rev:+meta.rev, data:text, slot:f, metaRev:+meta.rev};
+    var inner = JSON.parse(text);
+    return (inner && isFinite(inner.rev)) ? {rev:+inner.rev, data:text, slot:f} : null;
   }).catch(function(){ return null; });
 }
 // -> {state:'none'} when the folder listing shows no ledger files (a new install, or a phone still on its
@@ -5896,7 +5914,11 @@ function nativeReadLedger(){
     if(!present.length) return {state:'none'};
     return Promise.all(present.map(function(f){
       if(names.indexOf(nativeMetaName(f))<0) return null;
-      return NATIVE_FS.readFile({path:nativeMetaName(f), directory:'DATA', encoding:'utf8'}).then(function(m){ return JSON.parse(m.data); }).catch(function(){ return null; });
+      // an index counts only with a whole-number revision; anything else is treated as no index
+      return NATIVE_FS.readFile({path:nativeMetaName(f), directory:'DATA', encoding:'utf8'}).then(function(m){
+        var o = JSON.parse(m.data);
+        return (o && typeof o.rev==='number' && isFinite(o.rev) && Math.floor(o.rev)===o.rev && o.rev>=0 && (o.len==null || typeof o.len==='number')) ? o : null;
+      }).catch(function(){ return null; });
     })).then(function(metas){
       var slots = present.map(function(f, i){ return {slot:f, meta:metas[i]}; });
       // a slot without a readable index (files from before, or an index write that was cut off) is read in full
@@ -5910,7 +5932,7 @@ function nativeReadLedger(){
           if(i>=slots.length) return list.length ? {state:'ok', candidates:list} : {state:'bad'};
           var x = slots[i];
           if(!x.meta){ if(x.cand) list.push(x.cand); return next(i+1); }
-          if(list.length){ list.push({slot:x.slot, rev:x.rev, meta:x.meta, data:null}); return next(i+1); }
+          if(list.length){ list.push({slot:x.slot, rev:x.rev, meta:x.meta, metaRev:+x.meta.rev, data:null}); return next(i+1); }
           return nativeReadSlot(x.slot, x.meta).then(function(c){ if(c) list.push(c); return next(i+1); });
         }
         return next(0);
@@ -5944,7 +5966,7 @@ var __BOOT = {state:null, idb:null, idbError:false};
         var c = e.nativeNeed;
         nativeReadSlot(c.slot, c.meta).then(function(got){
           var list = __BOOT.nativeCandidates;
-          if(got){ c.data = got.data; c.rev = got.rev; } else list.splice(list.indexOf(c), 1);
+          if(got){ c.data = got.data; c.rev = got.rev; c.metaRev = got.metaRev; } else list.splice(list.indexOf(c), 1);
           started = false; start();
         });
         return;
