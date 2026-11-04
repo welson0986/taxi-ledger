@@ -486,9 +486,17 @@ function isRental(){ return state.carType==='rental'; }
 function visiblePlatforms(){
   return allPlatforms().filter(function(p){ return !p.hidden && !(isRental() && RENTAL_HIDE.indexOf(p.key)>=0); });
 }
+// Lookups computed from the whole ledger or the platform settings are kept until the next save (every change
+// goes through save()) or until the ledger itself is swapped. Several years of trips made rebuilding them on
+// every screen redraw take seconds.
+var dataGen = 0;
+var platMemo = null;
 function platformDef(key){
-  var found = allPlatforms().filter(function(p){return p.key===key;})[0];
-  return found || {key:key, label:key};
+  if(!platMemo || platMemo.gen!==dataGen || platMemo.st!==state){
+    var m = {}; allPlatforms().forEach(function(p){ if(!(p.key in m)) m[p.key] = p; });
+    platMemo = {gen:dataGen, st:state, map:m};
+  }
+  return platMemo.map[key] || {key:key, label:key};
 }
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -750,6 +758,7 @@ try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persis
 // onDone(true) once this change is in the phone's storage, onDone(false) if it did not get there
 function save(onDone){
   state.lastChangeAt = Date.now();
+  dataGen++;
   tripIndexStamp = null;  // any change may move a trip between weeks or months
   noteHadData();
   if(onDone) saveWaiters.push(onDone);
@@ -1656,7 +1665,16 @@ function payoutBatchOf(r){
   var mon = weekMonday(sd);
   return {id:pk+'|wk'+mon, payDate:null, weekFrom:mon};
 }
+var payoutMemo = null;
 function payoutLedger(){
+  // also redone every 10 minutes: what is due depends on the clock
+  var tick = Math.floor(Date.now()/600000);
+  if(payoutMemo && payoutMemo.gen===dataGen && payoutMemo.st===state && payoutMemo.tick===tick) return payoutMemo.val;
+  var val = payoutLedgerCompute();
+  payoutMemo = {gen:dataGen, st:state, tick:tick, val:val};
+  return val;
+}
+function payoutLedgerCompute(){
   var byPlat = {};
   state.records.forEach(function(r){
     var pk = payKey(r), cfg = payoutCfg(pk);
@@ -4714,7 +4732,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.20';
+var APP_VERSION = '2026.11.04.21';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
