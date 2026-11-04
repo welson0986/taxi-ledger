@@ -819,7 +819,7 @@ function nativeWriteLedger(str, rev){
     var f = NATIVE_SLOTS[nativeNext];
     return gzipBase64(str).then(function(b64){
       return b64 ? NATIVE_FS.writeFile({path:f, directory:'DATA', data:b64})
-        : NATIVE_FS.writeFile({path:f, directory:'DATA', encoding:'utf8', data:JSON.stringify({rev:rev, len:str.length, savedAt:Date.now(), data:str})});
+        : NATIVE_FS.writeFile({path:f, directory:'DATA', encoding:'utf8', data:JSON.stringify({rev:rev, len:str.length, savedAt:Date.now(), commit:'meta', data:str})});
     }).then(function(){
       return NATIVE_FS.writeFile({path:nativeMetaName(f), directory:'DATA', encoding:'utf8', data:JSON.stringify({rev:rev, len:str.length})});
     }).then(function(){ nativeNext = 1 - nativeNext; });
@@ -838,6 +838,7 @@ function dataSizeChars(){ try{ return packState(state).length; }catch(e){ return
 function saveFailBannerHtml(){
   if(storageStale) return '<div class="card" style="border-color:var(--expense);background:var(--expense-soft);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 這次沒有讀到最新的資料</b><br>手機的資料庫暫時打不開,畫面上可能是舊資料。<b>請先不要記帳</b>,把記帳本完全關掉(從多工畫面滑掉)再重新打開。這段期間不會同步到雲端,雲端資料是安全的。重開後還是這樣的話,請到 ⚙️ 設定用「從雲端還原」或「匯入還原」拿回資料。</div>';
   if(!saveFailed) return '';
+  if(typeof nativeHold!=='undefined' && nativeHold) return '<div class="card" style="border-color:var(--expense);background:var(--expense-soft);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 最新的資料沒有存進手機</b><br>為了保留一份較新、但沒確認存好的帳本,記帳本暫停存檔(那份帳本的副本存不起來)。請先不要清除 App 資料,按下面按鈕把畫面上的帳存成檔案並確認找得到,再把記帳本完全關掉重新打開,讓它再試一次;還是不行請聯絡客服。'+(state.syncUrl?'雲端同步仍會繼續送出。':'')+'<div style="margin-top:8px"><button class="btn btn-primary" data-act="export-file">立即存成備份檔</button></div></div>';
   return '<div class="card" style="border-color:var(--expense);background:var(--expense-soft);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 最新的資料沒有存進手機</b><br>手機存放空間可能滿了。請先不要關閉記帳本,按下面按鈕先把資料存成檔案。'+(state.syncUrl?'雲端同步仍會繼續送出。':'')+'<div style="margin-top:8px"><button class="btn btn-primary" data-act="export-file">立即存成備份檔</button></div></div>';
 }
 function dm(dateStr){
@@ -4799,7 +4800,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.31';
+var APP_VERSION = '2026.11.04.32';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -4943,7 +4944,9 @@ function copyExportText(){
   var statusEl = document.getElementById('exportCopyStatus');
   if(!ta) return;
   ta.focus(); ta.select();
-  function ok(){ if(statusEl) statusEl.textContent = '已複製!'; markExported(); }
+  function ok(){
+    if(statusEl) statusEl.innerHTML = '已複製。請貼到 LINE 傳給自己或備忘錄,確認存好、之後找得到。<br><a data-act="copy-saved" style="cursor:pointer;color:var(--accent);font-weight:700">我已經貼好、確認存好了</a>';
+  }
   function fail(){ if(statusEl) statusEl.textContent = '自動複製失敗,請手動長按文字選取後複製。'; }
   if(navigator.clipboard && navigator.clipboard.writeText){
     navigator.clipboard.writeText(ta.value).then(ok, fail);
@@ -5727,6 +5730,7 @@ document.addEventListener('click', function(e){
   }
   else if(cmd==='open-export'){ openExportModal(); }
   else if(cmd==='copy-export'){ copyExportText(); }
+  else if(cmd==='copy-saved'){ markExported(); var cs = document.getElementById('exportCopyStatus'); if(cs) cs.textContent = '好,已記下這次備份。'; }
   else if(cmd==='export-file'){
     var stamp = todayStr().replace(/-/g,'');
     shareOrDownloadFile('跑車人生備份_'+stamp+'.json', packState(state), 'application/json').then(function(done){
@@ -5949,7 +5953,8 @@ function nativeSlotOk(o){
   return true;
 }
 // one slot -> {rev, data, slot, metaRev, envelope} or null. Older files are a JSON envelope {rev,len,data}, each
-// written whole by the older app and counted as finished. Newer ones are the compressed ledger itself (gzip's own
+// written whole by the older app and counted as finished. This app writes the same envelope when the web view
+// cannot compress, marked commit:'meta': that one is finished only when its index agrees, like a compressed one. Newer ones are the compressed ledger itself (gzip's own
 // check catches a cut-off file) with an index file as the commit mark, written only after the ledger: a save is
 // finished only when a readable index names the revision inside the ledger. load() makes that comparison.
 function nativeReadSlot(f, meta){
@@ -5958,7 +5963,9 @@ function nativeReadSlot(f, meta){
   }).then(function(text){
     if(text.slice(0,7)==='{"rev":'){
       var o = JSON.parse(text);
-      return nativeSlotOk(o) ? {rev:+o.rev, data:o.data, slot:f, envelope:true} : null;
+      if(!nativeSlotOk(o)) return null;
+      if(o.commit==='meta') return {rev:+o.rev, data:o.data, slot:f, metaRev:(meta ? +meta.rev : undefined)};
+      return {rev:+o.rev, data:o.data, slot:f, envelope:true};
     }
     if(meta) return {rev:+meta.rev, data:text, slot:f, metaRev:+meta.rev};
     var inner = JSON.parse(text);
