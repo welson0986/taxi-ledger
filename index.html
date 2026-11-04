@@ -1075,7 +1075,7 @@ function cloudAuthCheck(after){
     else cloudAuthStatus = 'unreachable';
     if(res && res.ok) cloudServerV = +res.v || 0;
     if(cloudAuthStatus==='bad'){ state.lastCloudConfirmAt = 0; writeStore(); }
-    if(prev==='bad' && cloudAuthStatus==='ok'){ state.lastCloudConfirmAt = 0; cloudSyncIfBehind(); }
+    if(prev==='bad' && cloudAuthStatus==='ok'){ state.lastCloudConfirmAt = 0; cloudSyncIfBehind(true); }
     if(currentTab==='entry' && !document.getElementById('modalBody')) renderAll();
     if(after) after();
   }).catch(function(){ cloudAuthStatus='unreachable'; if(after) after(); });
@@ -1186,20 +1186,41 @@ function pushCloudSnapshot(onResult){
   }).catch(function(){ done(false); });
   return true;
 }
+// Automatic backups go out at most once per chosen interval (each one is a file in the driver's Drive),
+// half a minute after the latest change so a burst of edits travels together. Clocking out and the
+// 立即同步 button send at once. Nothing new since the last confirmed backup: nothing is sent.
+var SYNC_EVERY_OPTIONS = [15, 30, 60], cloudSyncDue = 0;
+function syncEveryMin(){ var m = +state.syncEvery; return SYNC_EVERY_OPTIONS.indexOf(m)>=0 ? m : 30; }
+function cloudBehind(){ return !state.lastCloudConfirmAt || (state.lastChangeAt||0) > state.lastCloudConfirmAt; }
 function scheduleCloudSync(){
   if(!state.syncUrl) return;
   if(cloudSyncTimer) clearTimeout(cloudSyncTimer);
-  cloudSyncTimer = setTimeout(function(){ cloudSyncTimer=null; pushCloudSnapshot(); }, 30000);
+  cloudSyncDue = Math.max(Date.now()+30000, (state.lastCloudSendAt||0) + syncEveryMin()*60000);
+  cloudSyncTimer = setTimeout(cloudSyncTick, cloudSyncDue - Date.now());
 }
-function cloudSyncIfBehind(){
-  if(!state.syncUrl || !hasMeaningfulData()) return;
-  if(!state.lastCloudConfirmAt || (state.lastChangeAt||0) > state.lastCloudConfirmAt) pushCloudSnapshot();
+function cloudSyncTick(){
+  if(cloudSyncTimer) clearTimeout(cloudSyncTimer);
+  cloudSyncTimer = null; cloudSyncDue = 0;
+  if(state.syncUrl && hasMeaningfulData() && cloudBehind()) pushCloudSnapshot();
+}
+// force: send now (new address or password, clocking out); otherwise wait for the interval
+function cloudSyncIfBehind(force){
+  if(!state.syncUrl || !hasMeaningfulData() || !cloudBehind()) return;
+  if(force===true) cloudSyncTick(); else scheduleCloudSync();
 }
 window.addEventListener('online', function(){ setTimeout(cloudSyncIfBehind, 1500); setTimeout(hotDeleteFlush, 2000); });
+// leaving the app: a phone may freeze the page, so send now if the interval has passed
 function flushCloudSync(){
-  if(cloudSyncTimer){ clearTimeout(cloudSyncTimer); cloudSyncTimer=null; pushCloudSnapshot(); }
+  if(cloudSyncTimer && Date.now() >= (state.lastCloudSendAt||0) + syncEveryMin()*60000) cloudSyncTick();
 }
-document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='hidden') flushCloudSync(); else { statPing(); hotSharePush(); hotDeleteFlush(); } });
+document.addEventListener('visibilitychange', function(){
+  if(document.visibilityState==='hidden') flushCloudSync();
+  else {
+    statPing(); hotSharePush(); hotDeleteFlush();
+    // a timer may not have run while the page was frozen
+    if(cloudSyncTimer && Date.now() >= cloudSyncDue) cloudSyncTick();
+  }
+});
 
 /* ---------- 匿名使用人數統計 ----------
    once per calendar day: a random device id, date, version, mode, phone OS. Never any amounts, platforms or locations.
@@ -4454,7 +4475,10 @@ function openSettingsModal(){
   h += '<div id="syncStatus" style="font-size:12px;color:var(--text-muted);margin-top:8px;text-align:center"></div>';
   h += '<div style="height:14px"></div>';
 
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.6">設定 Google Sheet 網址後,每次新增、修改、刪除後停 30 秒(或打下班卡、切出記帳本時)會自動把完整資料同步到雲端(表單會整份更新,不會重複,刪除也會同步),雲端另外保留最近 60 次、90 天內每天一份、24 個月內每月一份完整備份(Apps Script v5 起存在 Google 雲端硬碟),換手機或資料不見時可以用「從雲端還原」拿回來。</div>';
+  h += '<div class="form-row" style="margin-top:10px"><label>自動備份間隔</label><select id="f-sync-every">'+
+    SYNC_EVERY_OPTIONS.map(function(m){ return '<option value="'+m+'"'+(syncEveryMin()===m?' selected':'')+'>'+(m===60?'1 小時':m+' 分鐘')+(m===30?'(建議)':'')+'</option>'; }).join('')+'</select>'+
+    '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.6">最多多久自動備份一次。有記新的帳才會送;打下班卡、按「立即同步到雲端」會馬上送。間隔越短,雲端硬碟裡的備份檔越多(舊的會自動清掉)。</div></div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.6">設定 Google Sheet 網址後,有新增、修改、刪除時,會依「自動備份間隔」自動把完整資料同步到雲端(打下班卡時馬上同步)(表單會整份更新,不會重複,刪除也會同步),雲端另外保留最近 60 次、90 天內每天一份、24 個月內每月一份完整備份(Apps Script v5 起存在 Google 雲端硬碟),換手機或資料不見時可以用「從雲端還原」拿回來。</div>';
   h += '</details><div style="height:14px"></div>';
   h += '<div class="btn-row"><button class="btn btn-danger" data-act="reset-all">清除所有資料</button></div>';
   S.cloud = h;
@@ -4465,7 +4489,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.9';
+var APP_VERSION = '2026.11.04.10';
 var WHATS_NEW = [
   '⚙️ 設定頁分成六類(基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享),點一類才展開,不用一直往下滑;「儲存設定」固定在最下面',
   '📱 記帳首頁可以自己排順序、隱藏用不到的區塊(⚙️「記帳首頁排列」);預設把平台按鈕移到路況上面',
@@ -4700,7 +4724,7 @@ function keepUndoCopy(label, done){
 }
 // settings that belong to this phone, not to the ledger: a restored backup must not switch sharing or
 // statistics back on, bring back an old sharing id, or claim this phone's cloud backup state
-var DEVICE_KEYS = ['syncUrl','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale'];
+var DEVICE_KEYS = ['syncUrl','syncEvery','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale'];
 var LEDGER_PART_NAMES = {expenses:'支出', dailyMeta:'每日工時與里程', fixedCosts:'固定成本', fixedOverrides:'固定成本覆寫', targets:'目標', feeRules:'手續費設定', platformOverrides:'平台設定', customPlatforms:'自訂平台', platformOrder:'平台排列', payoutSettings:'撥款設定', payouts:'撥款核對', pendingTrips:'行程'};
 // '' when the data can be used as a ledger, otherwise what is wrong with it
 function ledgerProblem(p){
@@ -4961,7 +4985,9 @@ function saveSettings(){
   state.syncUrl = document.getElementById('f-sync-url').value.trim();
   var keyBefore = getCloudKey();
   setCloudKey(document.getElementById('f-cloud-key').value.trim());
-  if(getCloudKey()!==keyBefore || state.syncUrl!==prevSyncUrl){ state.lastCloudConfirmAt = 0; setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(); }); }, 300); }
+  var seEl = document.getElementById('f-sync-every');
+  if(seEl && +seEl.value!==syncEveryMin()){ state.syncEvery = +seEl.value; if(cloudSyncTimer) scheduleCloudSync(); }
+  if(getCloudKey()!==keyBefore || state.syncUrl!==prevSyncUrl){ state.lastCloudConfirmAt = 0; setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(true); }); }, 300); }
   save(); closeModal(); renderAll();
   if(state.syncUrl && state.syncUrl!==prevSyncUrl && !hasMeaningfulData()){
     if(confirm('這個瀏覽器目前沒有任何記帳資料。要從雲端還原之前的資料嗎?')) openCloudRestoreModal();
@@ -5100,7 +5126,7 @@ document.addEventListener('click', function(e){
     if(m2.onBreak && m2.breakStart){ m2.breakMs += (Date.now()-m2.breakStart); m2.breakStart=null; m2.onBreak=false; }
     if(m2.segmentStart){ m2.workedMs += (Date.now()-m2.segmentStart); m2.segmentStart=null; }
     m2.activeShiftStart=null;
-    save(); flushCloudSync(); renderAll();
+    save(); cloudSyncIfBehind(true); renderAll();
     if(uiShow('dayReport')) openDayReport(todayStr());
   }
   else if(cmd==='break-start'){
@@ -5206,7 +5232,7 @@ document.addEventListener('click', function(e){
     if(!state.syncUrl){ alert('請先在上面填入 Google Sheet 同步網址,再按儲存設定。'); return; }
     var statusEl = document.getElementById('syncStatus');
     if(!hasMeaningfulData()){ if(statusEl) statusEl.textContent = '這個瀏覽器目前沒有任何收入或支出資料,為了避免空資料蓋掉雲端,不會上傳。若要拿回資料請按「從雲端還原」。'; return; }
-    if(cloudSyncTimer){ clearTimeout(cloudSyncTimer); cloudSyncTimer=null; }
+    if(cloudSyncTimer){ clearTimeout(cloudSyncTimer); cloudSyncTimer=null; cloudSyncDue=0; }
     var nI = state.records.length, nE = state.expenses.length;
     if(statusEl) statusEl.textContent = '送出中,正在確認雲端有沒有存好…';
     var sent = pushCloudSnapshot(function(ok){
