@@ -1834,8 +1834,7 @@ function tripAccept(){
   if(state.activeTrip || state.pendingAccept) return;
   var now = Date.now(), note = ensureShiftRunning(now);
   state.pendingAccept = {ts:now};
-  save(); renderAll();
-  showToast('已記錄接單時間,到上車點客人上車再按「上車」'+note, note?5000:3500);
+  save(function(ok){ if(ok) showToast('已記錄接單時間,到上車點客人上車再按「上車」'+note, note?5000:3500); }); renderAll();
   geoCapture(function(loc){
     if(!loc) return;
     // the fix can land after 上車 was already pressed, so look for this accept wherever it went
@@ -1850,8 +1849,7 @@ function tripStart(){
   var t = {id:uid(), pickup:{ts:now}};
   if(state.pendingAccept){ t.accept = state.pendingAccept; state.pendingAccept = null; }
   state.activeTrip = t;
-  save(); renderAll();
-  showToast('已記錄上車時間,定位中…'+note, note?5000:3500);
+  save(function(ok){ if(ok) showToast('已記錄上車時間,定位中…'+note, note?5000:3500); }); renderAll();
   captureFor(t.id, 'pickup', null, note);
 }
 function tripEnd(){
@@ -1870,8 +1868,7 @@ function tripResume(tripId){
   delete t.dropoff;
   state.pendingTrips = (state.pendingTrips||[]).filter(function(x){ return x.id!==t.id; });
   state.activeTrip = t;
-  save(); closeModal(); renderAll();
-  showToast('已恢復成載客中,真正下車時再按「下車」', 4500);
+  save(function(ok){ if(ok) showToast('已恢復成載客中,真正下車時再按「下車」', 4500); }); closeModal(); renderAll();
 }
 function findPendingTrip(id){ return (state.pendingTrips||[]).filter(function(t){ return t.id===id; })[0]; }
 function attachTripToRecord(t, rec){
@@ -2049,7 +2046,7 @@ function renderEntry(){
   }
   var B = {};
   B.stats = '<div class="section"><div class="summary-row" style="grid-template-columns:'+(uiShow('grossTile')?'1fr 1fr 1fr':'1fr 1fr')+'">'+
-    '<div class="stat-tile"><div class="lbl">今日實收(含小費)</div><div class="val income num">'+fmtMoney(net.total)+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">今日實收(含小費) <span data-act="open-help:實收" aria-label="實收是什麼" style="cursor:pointer;opacity:.7">ⓘ</span></div><div class="val income num">'+fmtMoney(net.total)+'</div></div>'+
     (uiShow('grossTile') ? '<div class="stat-tile"><div class="lbl">今日車資(未扣手續費)</div><div class="val num">'+fmtMoney(gross.total)+'</div></div>' : '')+
     '<div class="stat-tile"><div class="lbl">今日支出</div><div class="val expense num">'+fmtMoney(exp)+'</div></div></div></div>';
   // an unfinished trip stays visible even after the buttons are switched off
@@ -3521,6 +3518,30 @@ function openIncomeModal(key, editId){
   setTimeout(function(){ var el=document.getElementById('f-revenue')||document.getElementById('f-tip'); if(el) el.focus(); }, 50);
 }
 var DUP_WINDOW_MS = 2*60000;
+// An extra 0 is the commonest typo. With the trip's pickup and drop-off we can say roughly what the meter
+// would show (Taiwan meters run about $100 to start and $25 a km; roads are ~1.4x the straight line);
+// without them we compare with the driver's own recent fares. Only asks: a real surge or a long trip goes through.
+function fareLooksTooHigh(revenue, trip, platformKey){
+  if(!(revenue>=500)) return '';
+  if(trip && trip.pickup && trip.dropoff){
+    var km = straightKm(trip.pickup, trip.dropoff), mins = (trip.dropoff.ts && trip.pickup.ts) ? tripMin(trip.pickup, trip.dropoff) : null;
+    var byKm = km!=null ? 100 + km*1.4*25 : 0, byMin = mins!=null && mins>0 ? 85 + mins*15 : 0;
+    var est = Math.max(byKm, byMin);
+    if(est>0 && revenue > est*3){
+      var what = [];
+      if(km!=null) what.push('上下車直線距離約 '+fmtNum(km,1)+' 公里');
+      if(mins!=null && mins>0) what.push('搭乘 '+Math.round(mins)+' 分鐘');
+      return '這趟'+what.join('、')+',跳表大約 '+fmtMoney(Math.round(est/10)*10)+' 左右。\n\n'+fmtMoney(revenue)+' 比預期高很多,確定金額沒打錯嗎?(有大幅加成就按「確定」)';
+    }
+    if(est>0) return '';
+  }
+  var recent = state.records.filter(function(r){ return !platformDef(r.platform).tipOnly && r.platform!=='bonus' && (+r.revenue||0)>0; })
+    .slice(-100).map(function(r){ return +r.revenue; }).sort(function(a,b){ return a-b; });
+  if(recent.length<10) return revenue>=3000 ? fmtMoney(revenue)+' 是一筆很大的金額,確定沒有多打一個 0 嗎?' : '';
+  var median = recent[Math.floor(recent.length/2)];
+  if(revenue >= Math.max(1500, median*6)) return fmtMoney(revenue)+' 比你平常一趟高很多(你最近每趟車資的中間值約 '+fmtMoney(median)+')。\n\n確定金額沒打錯嗎?(長途或有加成就按「確定」)';
+  return '';
+}
 function saveIncome(key, editId){
   var def = platformDef(key);
   function grab(id){ var el=document.getElementById(id); return el? el.value : null; }
@@ -3536,6 +3557,12 @@ function saveIncome(key, editId){
     var dupAgo = Date.now() - DUP_WINDOW_MS;
     var dup = state.records.filter(function(r){ return r.platform===key && (+r.revenue||0)===revenue && (+r.tip||0)===tip && (r.ts||0)>=dupAgo; })[0];
     if(dup && !confirm('這筆跟 '+hhmm(dup.ts)+' 剛記的那筆一模一樣('+platformDef(key).label+' '+fmtMoney(revenue||tip)+')。\n\n確定要再記一次嗎?')) return;
+  }
+  if(!def.tipOnly && !def.bonus && !(existing && (+existing.revenue||0)===revenue)){
+    var linkEl = document.getElementById('f-trip-link'), linkV = linkEl ? linkEl.value : '';
+    var tripForCheck = existing && existing.pickup ? existing : (linkV && linkV!=='none' ? findPendingTrip(linkV) : null);
+    var tooHigh = fareLooksTooHigh(revenue, tripForCheck, key);
+    if(tooHigh && !confirm(tooHigh)) return;
   }
   var rec = existing || {id:uid(), date:currentEntryDate(), ts:Date.now(), platform:key, fees:resolvedFeeRules()};
   rec.revenue = revenue; rec.tip = tip; rec.note = note;
@@ -4043,8 +4070,7 @@ function settleCampaign(id, take){
       bonusPlatform:c.platform, bonusType:'趟次獎勵', campaignId:c.id, fees:resolvedFeeRules()});
   }
   c.settled = true;
-  save(); renderAll();
-  if(take) showToast('已記入活動獎勵');
+  save(function(ok){ if(ok && take) showToast('已記入活動獎勵'); }); renderAll();
 }
 /* ---------- rest reminder: shown while the ledger is open (a web page cannot pop up from the background) ---------- */
 function restHours(){ return state.restHours>0 ? +state.restHours : 2; }
@@ -4132,6 +4158,7 @@ var HELP = [
   ]],
   ['備份與資料', [
     ['💾 備份', '右上角 💾 → 選 iCloud 或 Google 雲端硬碟 → 存成備份檔。數字 = 幾天沒備份,變紅色就該備份了。不要只傳到 LINE,檔案會過期。'],
+    ['實收、今日現金收入、待撥款是什麼', '「實收」= 扣完平台手續費後你賺到的錢(含小費),也包含還沒撥款的非現金單。「今日現金收入」= 今天乘客直接付你的現金,還沒扣掉現金支出(例如停車費、加油)。「待撥款」= 刷卡、App 付款這些非現金單,平台之後才撥給你,到「撥款」頁看預計入帳日、核對實際入帳。Uber 多元輸入的是 App 顯示的實收,車資和抽成是用你設定的 % 反推的估算值。'],
     ['雲端自動同步(進階)', '⚙️「雲端與備份」→「進階:自動同步到自己的 Google 試算表」。要自己建立 Google 試算表和 Apps Script,適合會設定的人;一般司機用右上角 💾 存備份檔就夠了。設定方式請問製作者。'],
     ['換手機、還原', '新手機 ⚙️「雲端與備份」→「匯入還原」→ 選擇備份檔。還原前會先比對資料;還原或清除錯了,可以按「↩️ 復原」。'],
     ['沒有網路', '打開過一次之後,沒網路也能打開、記帳。'],
@@ -4266,8 +4293,7 @@ function saveShiftFix(){
     }
     m.workedMs -= brk; m.breakMs += brk;
   }
-  save(); closeModal(); renderAll();
-  showToast('已補登上班時間');
+  save(function(ok){ if(ok) showToast('已補登上班時間'); }); closeModal(); renderAll();
 }
 function openDayReport(t){
   var recs = recordsInRange(t, t);
@@ -4489,7 +4515,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.12';
+var APP_VERSION = '2026.11.04.13';
 var WHATS_NEW = [
   '⚙️ 設定頁分成六類(基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享),點一類才展開,不用一直往下滑;「儲存設定」固定在最下面',
   '📱 記帳首頁可以自己排順序、隱藏用不到的區塊(⚙️「記帳首頁排列」);預設把平台按鈕移到路況上面',
@@ -5141,7 +5167,7 @@ document.addEventListener('click', function(e){
       save(); renderAll();
     }
   }
-  else if(cmd==='open-help'){ openHelp(); }
+  else if(cmd==='open-help'){ openHelp(arg||''); }
   else if(cmd==='help-on'){
     if(!state.ui) state.ui = uiPreset(state.uiMode==='simple'?'simple':'full');
     state.ui[arg] = true; if(arg==='liveRate'||arg==='restRemind'||arg==='shiftFix'||arg==='dayReport') state.ui.shift = true;
@@ -5304,7 +5330,7 @@ document.addEventListener('click', function(e){
     var tat = arg.split(':');
     var tTrip = findPendingTrip(tat[0]);
     var tRec = state.records.filter(function(r){ return r.id===tat[1]; })[0];
-    if(tTrip && tRec){ attachTripToRecord(tTrip, tRec); save(); closeModal(); renderAll(); showToast('已連結到這筆收入'); }
+    if(tTrip && tRec){ attachTripToRecord(tTrip, tRec); save(function(ok){ if(ok) showToast('已連結到這筆收入'); }); closeModal(); renderAll(); }
   }
   else if(cmd==='trip-delete'){
     if(confirm('刪除這趟上下車紀錄?(不會刪到任何收入)')){ state.pendingTrips=(state.pendingTrips||[]).filter(function(x){ return x.id!==arg; }); save(); closeModal(); renderAll(); }
@@ -5333,8 +5359,7 @@ document.addEventListener('click', function(e){
     if(!afFrom){ alert('請選擇日期。'); return; }
     var afSnap = resolvedFeeRules(), afN = 0;
     state.records.forEach(function(r){ if(r.date>=afFrom){ r.fees = afSnap; afN++; } });
-    save(); closeModal();
-    alert('已將 '+afFrom+' 起的 '+afN+' 筆記錄改用新手續費。');
+    save(function(ok){ if(ok) alert('已將 '+afFrom+' 起的 '+afN+' 筆記錄改用新手續費。'); }); closeModal();
   }
   else if(cmd==='do-restore'){ doCloudRestore(+arg); }
   else if(cmd==='quick-backup'){ openQuickBackup(); }
