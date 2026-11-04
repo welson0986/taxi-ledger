@@ -4289,13 +4289,14 @@ function saveCampaign(id){
 }
 function settleCampaign(id, take){
   var c = (state.campaigns||[]).filter(function(x){ return x.id===id; })[0]; if(!c) return;
-  if(take){
-    var amt = campReward(c, campTrips(c));
+  var amt = take ? campReward(c, campTrips(c)) : 0;
+  // nothing earned: close the card without writing a $0 bonus into the ledger
+  if(take && amt>0){
     state.records.push({id:uid(), date:businessDayOf(c.to), ts:c.to, platform:'bonus', revenue:amt, tip:0, note:'🎯 '+campRuleLabel(c),
       bonusPlatform:c.platform, bonusType:c.type==='pct' ? '車資回饋' : '趟次獎勵', campaignId:c.id, fees:resolvedFeeRules()});
   }
   c.settled = true;
-  save(function(ok){ if(ok && take) showToast('已記入活動獎勵'); }); renderAll();
+  save(function(ok){ if(ok && take && amt>0) showToast('已記入活動獎勵'); }); renderAll();
 }
 /* ---------- rest reminder: shown while the ledger is open (a web page cannot pop up from the background) ---------- */
 function restHours(){ return state.restHours>0 ? +state.restHours : 2; }
@@ -4741,7 +4742,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.22';
+var APP_VERSION = '2026.11.04.23';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
