@@ -728,6 +728,7 @@ try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persis
 // onDone(true) once this change is in the phone's storage, onDone(false) if it did not get there
 function save(onDone){
   state.lastChangeAt = Date.now();
+  tripIndexStamp = null;  // any change may move a trip between weeks or months
   noteHadData();
   if(onDone) saveWaiters.push(onDone);
   if(!writePending){ writePending = true; setTimeout(flushWrite, 0); }
@@ -837,15 +838,33 @@ var customTo = todayStr();
 function currentEntryDate(){ return currentTab==='history' ? selectedDay : todayStr(); }
 
 /* ---------- fee / net revenue ---------- */
-function boltWeekTripCount(dateStr){
+function weekStartOf(dateStr){
   var d = new Date(dateStr+'T00:00:00');
-  var day = (d.getDay()+6)%7;
-  var mon = new Date(d); mon.setDate(d.getDate()-day);
-  var sun = new Date(mon); sun.setDate(mon.getDate()+6);
-  var from = toDateStr(mon), to = toDateStr(sun);
-  var count = 0;
-  state.records.forEach(function(r){ if(r.platform==='bolt' && r.date>=from && r.date<=to) count++; });
-  return count;
+  d.setDate(d.getDate() - (d.getDay()+6)%7);
+  return toDateStr(d);
+}
+// Fee rules that look at other trips (BOLT's weekly count, LINE GO 小黃's monthly cap) used to scan the whole
+// ledger for every trip, which takes many seconds on a few years of records. One pass builds the lookups;
+// they are rebuilt only when the ledger has changed since.
+var tripIndexStamp = null, boltWeekCounts = {}, linegoTaxiByMonth = {};
+function tripIndex(){
+  var stamp = state.records.length+'|'+(state.lastChangeAt||0);
+  if(tripIndexStamp===stamp && tripIndexRecords===state.records) return;
+  tripIndexStamp = stamp; tripIndexRecords = state.records;
+  boltWeekCounts = {}; linegoTaxiByMonth = {};
+  state.records.forEach(function(x){
+    if(!x.date) return;
+    if(x.platform==='bolt'){ var w = weekStartOf(x.date); boltWeekCounts[w] = (boltWeekCounts[w]||0)+1; }
+    else if(x.platform==='linego' && (x.fees ? x.fees.linegoTaxi : isYellowCab())){
+      var ym = x.date.slice(0,7);
+      (linegoTaxiByMonth[ym] || (linegoTaxiByMonth[ym] = [])).push(x);
+    }
+  });
+}
+var tripIndexRecords = null;
+function boltWeekTripCount(dateStr){
+  tripIndex();
+  return boltWeekCounts[weekStartOf(dateStr)] || 0;
 }
 function resolvedFeeRules(){
   var fr = state.feeRules||{}, out = {};
@@ -888,9 +907,9 @@ function linegoDispatchFee(gross, fees){
 // LINE GO 小黃 dispatch fees already charged this calendar month before trip r (for the monthly cap)
 function linegoMonthDispatchBefore(r){
   var d = r.date || currentEntryDate(), ym = d.slice(0,7), ts = r.ts || Date.now(), sum = 0;
-  state.records.forEach(function(x){
-    if(x.platform!=='linego' || x.id===r.id || !x.date || x.date.slice(0,7)!==ym) return;
-    if(!(x.fees ? x.fees.linegoTaxi : isYellowCab())) return;
+  tripIndex();
+  (linegoTaxiByMonth[ym] || []).forEach(function(x){
+    if(x.id===r.id) return;
     if(x.date>d || (x.date===d && (x.ts||0)>=ts)) return;
     var g = +x.revenue||0;
     if(g>0) sum += linegoDispatchFee(g, x.fees||resolvedFeeRules());
@@ -3989,7 +4008,7 @@ function saveUiSettings(){
 /* ---------- 🎯 campaigns: short fleet promotions the driver types in when they see one ---------- */
 // ways of getting a passenger that never come with fleet promotions
 var NOT_A_FLEET = ['private','hailyellow','street','reservation','phonecall'];
-var CAMP_TYPES = [['per','每趟加給'],['tier','跑滿 N 趟拿獎金'],['after','達標後每趟加錢']];
+var CAMP_TYPES = [['per','每趟加給'],['tier','跑滿 N 趟拿獎金'],['after','達標後每趟加錢'],['pct','達標後回饋車資 %']];
 function campPlatforms(){
   return visiblePlatforms().filter(function(p){ var d = platformDef(p.key); return !d.tipOnly && !d.bonus && NOT_A_FLEET.indexOf(p.key)<0; });
 }
@@ -3998,7 +4017,16 @@ function campTripTime(r){ return (r.accept&&r.accept.ts) || (r.pickup&&r.pickup.
 function campTrips(c){
   return state.records.filter(function(r){ if(r.platform!==c.platform) return false; var t = campTripTime(r); return t>=c.from && t<=c.to; });
 }
-function campReward(c, n){
+// trips: the campaign's trips (campTrips); the % kind needs them in order and their fares
+function campReward(c, trips){
+  var n = trips.length;
+  if(c.type==='pct'){
+    // e.g. BOLT「完成 100 趟後每趟額外 5%」: trips after the Nth, or with pctAll every trip once the target is met
+    if(n < c.afterN) return 0;
+    var sorted = trips.slice().sort(function(a,b){ return campTripTime(a)-campTripTime(b); });
+    var paid = c.pctAll ? sorted : sorted.slice(c.afterN);
+    return Math.round(paid.reduce(function(a,r){ return a + grossBase(r)*(+c.afterPct||0)/100; }, 0));
+  }
   if(c.type==='tier'){ var best = 0; (c.tiers||[]).forEach(function(t){ if(n>=t.n) best = Math.max(best, t.amt); }); return best; }
   if(c.type==='after') return n>=c.afterN ? (+c.afterBase||0) + (n-c.afterN)*(+c.afterAmt||0) : 0;
   return 0;
@@ -4012,6 +4040,7 @@ function campTimeLabel(c){
 function campRuleLabel(c){
   if(c.type==='per') return '每趟 +'+fmtMoney(c.perAmt);
   if(c.type==='tier') return (c.tiers||[]).map(function(t){ return t.n+' 趟 '+fmtMoney(t.amt); }).join('、');
+  if(c.type==='pct') return '跑滿 '+c.afterN+' 趟,'+(c.pctAll ? '全部趟次' : '之後每趟')+'回饋車資 '+c.afterPct+'%';
   return '跑滿 '+c.afterN+' 趟'+(+c.afterBase?(' 先拿 '+fmtMoney(c.afterBase)+','):',')+'之後每趟 +'+fmtMoney(c.afterAmt);
 }
 // the per-trip campaign that applies to a trip of this platform taken now (or the record being edited)
@@ -4036,6 +4065,39 @@ function campaignCheckHtml(key, existing){
     '<input type="checkbox" id="f-camp" data-amt="'+amt+'" data-id="'+(c?c.id:(existing&&existing.campaignId)||'')+'" style="width:18px;height:18px;flex:none"'+(on?' checked':'')+'>'+
     '🎯 活動加給 +'+fmtMoney(amt)+(c?'<span style="font-weight:400;color:var(--text-muted);font-size:11.5px">('+campTimeLabel(c)+')</span>':'')+'</label>';
 }
+// 🔁 weekly repeating cards. The card the driver set up is the pattern: on each chosen weekday (or, for a
+// card longer than a day such as a whole-week goal, every 7 days) a copy for that day appears by itself,
+// with its own trip count and its own 記入獎勵. Editing the pattern changes the copies made after that.
+var WEEKDAY_NAMES = ['一','二','三','四','五','六','日'];
+function isoWeekday(ts){ return (new Date(ts).getDay()+6)%7+1; }
+function campRepeatLabel(c){
+  if(!c.repeat) return '';
+  return c.repeat.every7 ? '每週' : '每週'+(c.repeat.days||[]).map(function(d){ return WEEKDAY_NAMES[d-1]; }).join('、');
+}
+function ensureRepeatCampaigns(){
+  var list = state.campaigns||[], now = Date.now(), added = 0;
+  list.filter(function(c){ return c.repeat && !c.repeatOf; }).forEach(function(c){
+    var len = c.to - c.from, starts = [];
+    if(c.repeat.every7){
+      // the week running now, or starting within the next 12 hours
+      var k = Math.floor((now + 12*3600000 - c.from) / (7*86400000));
+      if(k>=1) starts.push(c.from + k*7*86400000);
+    } else {
+      // today's window at the same time of day (a window starting before the day cutoff belongs to tonight)
+      var f = new Date(c.from), t0 = new Date(todayStr()+'T'+pad(f.getHours())+':'+pad(f.getMinutes())+':00').getTime();
+      if(f.getHours() < dayCutoffHour()) t0 += 86400000;
+      if(t0 > c.from && (c.repeat.days||[]).indexOf(isoWeekday(t0))>=0) starts.push(t0);
+    }
+    starts.forEach(function(st){
+      if(list.some(function(x){ return (x.id===c.id || x.repeatOf===c.id) && Math.abs(x.from-st) < 3600000; })) return;
+      var copy = JSON.parse(JSON.stringify(c));
+      copy.id = uid(); copy.from = st; copy.to = st + len; copy.repeatOf = c.id;
+      delete copy.repeat; delete copy.settled;
+      list.push(copy); added++;
+    });
+  });
+  if(added){ state.campaigns = list; save(); }
+}
 function visibleCampaigns(){
   var dayStart = new Date(todayStr()+'T00:00:00').getTime() + dayCutoffHour()*3600000, now = Date.now();
   return (state.campaigns||[]).filter(function(c){
@@ -4046,6 +4108,7 @@ function visibleCampaigns(){
 }
 function campaignSectionHtml(){
   if(!uiShow('campaign')) return '';
+  ensureRepeatCampaigns();
   var list = visibleCampaigns(), now = Date.now();
   var h = '<div class="section"><div class="section-title">🎯 活動</div><div class="card" style="padding:10px 12px">';
   if(!list.length) h += '<div style="font-size:12.5px;color:var(--text-muted);padding:4px 0 8px">車隊有活動時,在這裡建一張活動卡,記帳本會幫你算趟數和獎勵。</div>';
@@ -4058,21 +4121,23 @@ function campaignSectionHtml(){
       var got = trips.reduce(function(a,r){ return a + (+r.tripBonus||0); }, 0);
       line = '已 '+n+' 趟 · 加給 '+fmtMoney(got);
     } else {
-      var rw = campReward(c, n);
+      var rw = campReward(c, trips);
       if(c.type==='tier'){
         var next = (c.tiers||[]).filter(function(t){ return n < t.n; })[0];
         line = '已 '+n+' 趟'+(rw?' · ✅ 已達 '+fmtMoney(rw):'')+(next?(' · 再 '+(next.n-n)+' 趟拿 '+fmtMoney(next.amt)):'');
+      } else if(c.type==='pct'){
+        line = '已 '+n+' 趟'+(n>=c.afterN ? ' · ✅ 回饋 '+fmtMoney(rw) : ' · 再 '+(c.afterN-n)+' 趟'+(c.pctAll?'達標':'開始回饋'));
       } else {
         line = '已 '+n+' 趟'+(n>=c.afterN ? ' · 獎勵 '+fmtMoney(rw) : ' · 再 '+(c.afterN-n)+' 趟開始算');
       }
     }
     h += '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'+
-      '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><a data-act="camp-edit:'+c.id+'" style="cursor:pointer;font-weight:700;font-size:13.5px;color:var(--text)">'+esc((p.icon||'')+' '+p.label)+' '+campTimeLabel(c)+' ✏️</a>'+
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><a data-act="camp-edit:'+c.id+'" style="cursor:pointer;font-weight:700;font-size:13.5px;color:var(--text)">'+esc((p.icon||'')+' '+p.label)+' '+campTimeLabel(c)+((c.repeat||c.repeatOf)?' 🔁':'')+' ✏️</a>'+
       '<span style="font-size:11.5px;color:'+(live?'var(--income)':'var(--text-muted)')+';white-space:nowrap">'+status+'</span></div>'+
       '<div style="font-size:12px;color:var(--text-muted);margin-top:2px">'+esc(campRuleLabel(c))+(c.note?' · '+esc(c.note):'')+'</div>'+
       '<div style="font-size:13px;margin-top:3px">'+line+'</div>';
     if(ended && c.type!=='per' && !c.settled){
-      var rw2 = campReward(c, n);
+      var rw2 = campReward(c, trips);
       h += rw2>0
         ? '<div class="btn-row" style="margin-top:6px"><button class="btn" data-act="camp-settle:'+c.id+':no">沒拿到</button><button class="btn btn-primary" data-act="camp-settle:'+c.id+':yes">記入獎勵 '+fmtMoney(rw2)+'</button></div>'
         : '<div style="font-size:12px;color:var(--text-muted);margin-top:4px">這次沒達標 <a data-act="camp-settle:'+c.id+':no" style="cursor:pointer;color:var(--accent)">關閉</a></div>';
@@ -4090,7 +4155,7 @@ function openCampaignModal(id, copyLast){
     // same hours as last time, moved to today
     var lenMs = last.to - last.from, f = new Date(last.from), t0 = new Date(todayStr()+'T'+pad(f.getHours())+':'+pad(f.getMinutes())+':00').getTime();
     if(f.getHours() < dayCutoffHour()) t0 += 86400000;
-    src = JSON.parse(JSON.stringify(last)); src.from = t0; src.to = t0 + lenMs; delete src.id; delete src.settled;
+    src = JSON.parse(JSON.stringify(last)); src.from = t0; src.to = t0 + lenMs; delete src.id; delete src.settled; delete src.repeat; delete src.repeatOf;
   }
   if(!src){ var b = new Date(); b.setMinutes(0,0,0); src = {platform:(campPlatforms()[0]||{}).key, type:'per', from:b.getTime(), to:b.getTime()+3*3600000, perAmt:'', tiers:[], afterN:'', afterAmt:'', afterBase:''}; }
   var plats = campPlatforms(), pLabel = platformDef(src.platform).label, typeLabel = CAMP_TYPES.filter(function(x){ return x[0]===src.type; })[0][1];
@@ -4099,6 +4164,16 @@ function openCampaignModal(id, copyLast){
   h += '<div class="form-row"><label>平台</label>'+chipRowHtml('campPlat', plats.map(function(p){ return p.label; }), pLabel)+'</div>';
   h += '<div class="form-grid2"><div class="form-row"><label>開始</label><input id="f-camp-from" type="datetime-local" style="'+inputStyle+'" value="'+dtLocal(src.from)+'"></div>'+
     '<div class="form-row"><label>結束</label><input id="f-camp-to" type="datetime-local" style="'+inputStyle+'" value="'+dtLocal(src.to)+'"></div></div>';
+  if(src.repeatOf){
+    h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin:-4px 0 10px">🔁 這張是每週重複自動建立的,改這張只影響這一天。要改之後每週的設定,請改有「'+esc(campRepeatLabel((state.campaigns||[]).filter(function(x){ return x.id===src.repeatOf; })[0]||{})||'每週')+'」的原始活動卡。</div>';
+  } else {
+    var repDays = (src.repeat && src.repeat.days) || [isoWeekday(src.from)];
+    h += '<div class="form-row"><label style="display:flex;gap:8px;align-items:center;font-weight:700"><input type="checkbox" id="f-camp-rep" style="width:18px;height:18px;flex:none"'+(src.repeat?' checked':'')+'> 🔁 每週重複</label>'+
+      '<div id="camp-rep-days" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">'+WEEKDAY_NAMES.map(function(n, i){
+        return '<label style="display:flex;align-items:center;gap:3px;font-size:13px;border:1px solid var(--border);border-radius:10px;padding:4px 8px"><input type="checkbox" class="camp-rep-day" value="'+(i+1)+'"'+(repDays.indexOf(i+1)>=0?' checked':'')+'>週'+n+'</label>';
+      }).join('')+'</div>'+
+      '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.6;margin-top:6px">一天之內的活動(例如平日 17:00–21:00):勾要重複的星期幾,那天會自動出現一張活動卡。超過一天的活動(例如整週 100 趟):每 7 天自動出現下一週的。活動內容變了,改這張原始卡就好。</div></div>';
+  }
   h += '<div class="form-row"><label>獎勵方式</label>'+chipRowHtml('campType', CAMP_TYPES.map(function(x){ return x[1]; }), typeLabel)+'</div>';
   h += '<div id="camp-sec-per"'+(src.type==='per'?'':' hidden')+'><div class="form-row"><label>每趟加多少</label><input class="num-input" id="f-camp-per" type="number" min="0" step="1" inputmode="numeric" placeholder="例如 50" value="'+(src.perAmt||'')+'"></div></div>';
   var tiers = (src.tiers||[]).concat([{},{},{}]).slice(0,3);
@@ -4112,6 +4187,11 @@ function openCampaignModal(id, copyLast){
     '<div class="form-row"><label>跑滿幾趟後開始算</label><input class="num-input" id="f-camp-an" type="number" min="1" step="1" inputmode="numeric" value="'+(src.afterN||'')+'"></div>'+
     '<div class="form-row"><label>之後每趟 +$</label><input class="num-input" id="f-camp-aa" type="number" min="0" step="1" inputmode="numeric" value="'+(src.afterAmt||'')+'"></div></div>'+
     '<div class="form-row"><label>達標時先給一筆(選填)</label><input class="num-input" id="f-camp-ab" type="number" min="0" step="1" inputmode="numeric" placeholder="0" value="'+(src.afterBase||'')+'"></div></div>';
+  h += '<div id="camp-sec-pct"'+(src.type==='pct'?'':' hidden')+'><div class="form-grid2">'+
+    '<div class="form-row"><label>跑滿幾趟</label><input class="num-input" id="f-camp-pn" type="number" min="1" step="1" inputmode="numeric" placeholder="例如 100" value="'+(src.type==='pct'?(src.afterN||''):'')+'"></div>'+
+    '<div class="form-row"><label>回饋車資 %</label><input class="num-input" id="f-camp-pp" type="number" min="0" step="0.5" inputmode="decimal" placeholder="例如 5" value="'+(src.afterPct||'')+'"></div></div>'+
+    '<label style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;line-height:1.6;margin-bottom:8px"><input type="checkbox" id="f-camp-pall" style="width:18px;height:18px;flex:none;margin-top:2px"'+(src.pctAll?' checked':'')+'><span>達標後,<b>前面的趟次也一起回饋</b>(不勾:只算達標之後的每一趟)</span></label>'+
+    '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.6;margin-bottom:8px">例:BOLT「完成 100 趟後每趟額外 5%」→ 跑滿 100 趟、5%、不勾。回饋用每趟的車資算(Uber 多元用反推的估算車資)。BOLT 車貼回饋已經在 ⚙️「平台手續費設定」的達標門檻算過,不用再建活動,不然會重複算。</div></div>';
   h += '<div class="form-row"><label>備註(選填,例如 接單率 80% 以上)</label><input id="f-camp-note" type="text" maxlength="30" value="'+esc(src.note||'')+'"></div>';
   h += '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.6;margin-bottom:10px">趟數用「接到單」的時間算(沒按「接到單了」就用上車時間或記帳時間)。</div>';
   h += '<div class="btn-row">'+(c?'<button class="btn btn-danger" data-act="camp-del:'+c.id+'">刪除</button>':'')+'<button class="btn btn-primary" data-act="camp-save'+(c?':'+c.id:'')+'">儲存</button></div>';
@@ -4125,10 +4205,24 @@ function saveCampaign(id){
   if(!pl){ alert('請選擇平台。'); return; }
   if(!from || !to || to<=from){ alert('結束時間要比開始時間晚。'); return; }
   var c = {id:id||uid(), platform:pl.key, type:type, from:from, to:to, note:v('f-camp-note').trim()};
+  var repEl = document.getElementById('f-camp-rep');
+  if(repEl && repEl.checked){
+    if(to - from > 86400000) c.repeat = {every7:true};
+    else {
+      var days = Array.prototype.slice.call(document.querySelectorAll('.camp-rep-day')).filter(function(x){ return x.checked; }).map(function(x){ return +x.value; });
+      if(!days.length){ alert('請勾選要每週重複的星期幾。'); return; }
+      c.repeat = {days:days};
+    }
+  }
   if(type==='per'){ c.perAmt = +v('f-camp-per')||0; if(!c.perAmt){ alert('請填每趟加多少。'); return; } }
   if(type==='tier'){
     c.tiers = [0,1,2].map(function(i){ return {n:+v('f-camp-tn'+i)||0, amt:+v('f-camp-ta'+i)||0}; }).filter(function(t){ return t.n>0 && t.amt>0; }).sort(function(a,b){ return a.n-b.n; });
     if(!c.tiers.length){ alert('請至少填一級:跑滿幾趟、拿多少。'); return; }
+  }
+  if(type==='pct'){
+    c.afterN = +v('f-camp-pn')||0; c.afterPct = +v('f-camp-pp')||0;
+    var pallEl = document.getElementById('f-camp-pall'); c.pctAll = !!(pallEl && pallEl.checked);
+    if(!c.afterN || !(c.afterPct>0)){ alert('請填跑滿幾趟、回饋車資幾 %。'); return; }
   }
   if(type==='after'){
     c.afterN = +v('f-camp-an')||0; c.afterAmt = +v('f-camp-aa')||0; c.afterBase = +v('f-camp-ab')||0;
@@ -4136,7 +4230,7 @@ function saveCampaign(id){
   }
   state.campaigns = state.campaigns||[];
   var old = state.campaigns.filter(function(x){ return x.id===c.id; })[0];
-  if(old){ c.settled = old.settled; state.campaigns[state.campaigns.indexOf(old)] = c; } else state.campaigns.push(c);
+  if(old){ c.settled = old.settled; if(old.repeatOf) c.repeatOf = old.repeatOf; state.campaigns[state.campaigns.indexOf(old)] = c; } else state.campaigns.push(c);
   // trips already logged inside a per-trip window can pick up the add-on now
   if(type==='per'){
     var miss = campTrips(c).filter(function(r){ return !r.tripBonus; });
@@ -4149,9 +4243,9 @@ function saveCampaign(id){
 function settleCampaign(id, take){
   var c = (state.campaigns||[]).filter(function(x){ return x.id===id; })[0]; if(!c) return;
   if(take){
-    var amt = campReward(c, campTrips(c).length);
+    var amt = campReward(c, campTrips(c));
     state.records.push({id:uid(), date:businessDayOf(c.to), ts:c.to, platform:'bonus', revenue:amt, tip:0, note:'🎯 '+campRuleLabel(c),
-      bonusPlatform:c.platform, bonusType:'趟次獎勵', campaignId:c.id, fees:resolvedFeeRules()});
+      bonusPlatform:c.platform, bonusType:c.type==='pct' ? '車資回饋' : '趟次獎勵', campaignId:c.id, fees:resolvedFeeRules()});
   }
   c.settled = true;
   save(function(ok){ if(ok && take) showToast('已記入活動獎勵'); }); renderAll();
@@ -4200,7 +4294,7 @@ var HELP = [
     ['外幣小費', '小費旁邊選幣別(美金、日圓…),自動用國際參考匯率換成台幣,匯率可以自己改。', 'fxTip'],
     ['呼叫小黃、預約單、接電的付款方式', '呼叫小黃可選現金 / 信用卡 / 悠遊卡 / 愛心卡(信用卡扣 3%,撥款設定預設 2 個工作天,可改);預約單、接電可選現金 / 綁定支付,綁定支付的錢跟著那個車隊的撥款。', 'payment'],
     ['🎁 活動獎勵', '「收入/平台」最後一格。記車隊發的獎金,選哪個平台、什麼類型;算進實收,不算趟數,跟著那個平台撥款。'],
-    ['🎯 活動追蹤', '記帳頁「🎯 活動」建活動卡:每趟加給、跑滿 N 趟拿獎金、達標後每趟加錢。用接單時間算趟數,結束時按「記入獎勵」。可複製上次的活動。', 'campaign'],
+    ['🎯 活動追蹤', '記帳頁「🎯 活動」建活動卡(可勾「🔁 每週重複」,例如平日尖峰時段,每天自動出現):每趟加給、跑滿 N 趟拿獎金、達標後每趟加錢、達標後回饋車資 %(例如 BOLT 完成 100 趟後每趟額外 5%)。用接單時間算趟數,結束時按「記入獎勵」。可複製上次的活動。', 'campaign'],
     ['改錯、補記', '改或刪:點「今日明細」那一筆。補記前幾天:「歷史」頁點那一天 → 補記。']
   ]],
   ['記支出', [
@@ -4600,8 +4694,10 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.16';
+var APP_VERSION = '2026.11.04.19';
 var WHATS_NEW = [
+  '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
+  '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
   '🛡️ 還原更安全:匯入還原、從雲端還原、復原、清除,真的存進手機才說完成;格式壞掉的備份檔會被擋下;還原舊備份不會把關掉的熱區分享、統計重新打開',
   '✏️ 金額可能打錯時會提醒(例如多打一個 0),長途或有加成按「確定」就好;首頁「今日實收」旁的 ⓘ 可以看實收、現金收入、待撥款的差別',
   '☁️ 有設雲端同步的:可以選自動備份間隔(15 分鐘／30 分鐘／1 小時),打下班卡會馬上嘗試備份,失敗會自動再試',
@@ -5241,7 +5337,7 @@ document.addEventListener('click', function(e){
   else if(cmd==='camp-new'){ openCampaignModal(null, arg==='copy'); }
   else if(cmd==='camp-edit'){ openCampaignModal(arg); }
   else if(cmd==='camp-save'){ saveCampaign(arg||null); }
-  else if(cmd==='camp-del'){ if(confirm('刪除這個活動?(已經記進帳裡的加給和獎勵不會被刪掉)')){ state.campaigns = (state.campaigns||[]).filter(function(x){ return x.id!==arg; }); save(); closeModal(); renderAll(); } }
+  else if(cmd==='camp-del'){ var cdl = (state.campaigns||[]).filter(function(x){ return x.id===arg; })[0]; if(confirm('刪除這個活動?(已經記進帳裡的加給和獎勵不會被刪掉)'+(cdl&&cdl.repeat?'\n\n這是每週重複的原始活動卡,刪除後之後就不會再自動建立。':''))){ state.campaigns = (state.campaigns||[]).filter(function(x){ return x.id!==arg; }); save(); closeModal(); renderAll(); } }
   else if(cmd==='camp-settle'){ var cs = arg.split(':'); settleCampaign(cs[0], cs[1]==='yes'); }
   else if(cmd==='save-shift-fix'){ saveShiftFix(); }
   else if(cmd==='clock-in'){
