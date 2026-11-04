@@ -661,9 +661,18 @@ function writeStore(){
   var str;
   state.rev = ++lastKnownRev;
   try{ str = packState(state); }catch(e){ onSaveFail(); settleWaiters(waiters, false); return; }
+  var rev = state.rev;
+  if(NATIVE_FS){
+    // the file is written first and is the only thing that counts as saved; the web view copy follows it
+    nativeWriteLedger(str, rev).then(function(){
+      idbCachePut(str, rev);
+      onSaveOk(); settleWaiters(waiters, true);
+    }, function(){ onSaveFail(); settleWaiters(waiters, false); });
+    return;
+  }
   if(__BOOT.idb){
     try{
-      var rev = state.rev, conflict = false;
+      var conflict = false;
       var tx = __BOOT.idb.transaction('kv','readwrite'), kv = tx.objectStore('kv');
       var g = kv.get('state_rev');
       g.onsuccess = function(){
@@ -672,20 +681,18 @@ function writeStore(){
       };
       tx.oncomplete = function(){
         if(conflict){ settleWaiters(waiters, false); reloadFromStore(true); return; }
-        finishWrite(str, rev, waiters);
+        onSaveOk(); settleWaiters(waiters, true);
         try{ if(ledgerChannel) ledgerChannel.postMessage(rev); }catch(e){}
         try{ if(!localStorage.getItem(IDB_MIGRATED_FLAG)) localStorage.setItem(IDB_MIGRATED_FLAG, '1'); }catch(e){}
       };
-      // in the app the file is the copy that counts, so a web view storage failure alone does not lose the save
-      tx.onerror = tx.onabort = function(){ if(NATIVE_FS) finishWrite(str, rev, waiters); else { onSaveFail(); settleWaiters(waiters, false); } };
+      tx.onerror = tx.onabort = function(){ onSaveFail(); settleWaiters(waiters, false); };
     }catch(e){ onSaveFail(); settleWaiters(waiters, false); }
     return;
   }
-  try{ localStorage.setItem(STORAGE_KEY, str); }catch(e){ if(!NATIVE_FS){ onSaveFail(); settleWaiters(waiters, false); return; } }
-  finishWrite(str, rev, waiters);
+  try{ localStorage.setItem(STORAGE_KEY, str); onSaveOk(); settleWaiters(waiters, true); }catch(e){ onSaveFail(); settleWaiters(waiters, false); }
 }
 function reloadFromStore(afterConflict){
-  if(!__BOOT.idb) return;
+  if(!__BOOT.idb || NATIVE_FS) return;  // the app has one screen and its own file; nothing else writes the ledger
   try{
     var gr = __BOOT.idb.transaction('kv','readonly').objectStore('kv').get('state_rev');
     gr.onsuccess = function(){
@@ -714,8 +721,9 @@ document.addEventListener('visibilitychange', function(){ if(document.visibility
 // first start on this version: copy the old localStorage data into IndexedDB
 if(__BOOT.idb && __BOOT.state==null && !storageStale){ writeStore(); }
 noteHadData();
+if(isNativeApp() && !NATIVE_FS) setTimeout(function(){ alert('⚠️ 這個 App 的帳本儲存元件沒有載入,帳現在只存在暫存區,可能會不見。\n\n請先按右上角 💾 存一份備份檔,並寫信到 support@realway.com.tw。'); }, 500);
 if(stampMissingFeeSnapshots()) writeStore();
-else if(__BOOT.fromFile && __BOOT.idb) writeStore();
+else if(__BOOT.moveInFromCache) writeStore();  // first start of the file-based app: the existing ledger goes into the file
 try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){}
 // onDone(true) once this change is in the phone's storage, onDone(false) if it did not get there
 function save(onDone){
@@ -731,16 +739,15 @@ var nativeChain = Promise.resolve(), nativeNext = (__BOOT.nativeSlot===NATIVE_SL
 function nativeWriteLedger(str, rev){
   var job = nativeChain.then(function(){
     var f = NATIVE_SLOTS[nativeNext];
-    return NATIVE_FS.writeFile({path:f, directory:'DATA', encoding:'utf8', data:JSON.stringify({rev:rev, savedAt:Date.now(), data:str})})
+    return NATIVE_FS.writeFile({path:f, directory:'DATA', encoding:'utf8', data:JSON.stringify({rev:rev, len:str.length, savedAt:Date.now(), data:str})})
       .then(function(){ nativeNext = 1 - nativeNext; });
   });
   nativeChain = job.catch(function(){});
   return job;
 }
-function finishWrite(str, rev, waiters){
-  if(!NATIVE_FS){ onSaveOk(); settleWaiters(waiters, true); return; }
-  nativeWriteLedger(str, rev).then(function(){ onSaveOk(); settleWaiters(waiters, true); },
-    function(){ onSaveFail(); settleWaiters(waiters, false); });
+// a convenience copy only; nothing reads it as the ledger while the file exists
+function idbCachePut(str, rev){
+  try{ if(__BOOT.idb){ var tx = __BOOT.idb.transaction('kv','readwrite'), kv = tx.objectStore('kv'); kv.put(str, 'state'); kv.put(rev, 'state_rev'); } }catch(e){}
 }
 function flushWrite(){ if(!writePending) return; writePending = false; writeStore(); }
 window.addEventListener('pagehide', flushWrite);
@@ -2098,7 +2105,7 @@ function renderEntry(){
   }
   var B = {};
   B.stats = '<div class="section"><div class="summary-row" style="grid-template-columns:'+(uiShow('grossTile')?'1fr 1fr 1fr':'1fr 1fr')+'">'+
-    '<div class="stat-tile"><div class="lbl">今日實收(含小費) <span data-act="open-help:實收" aria-label="實收是什麼" style="cursor:pointer;opacity:.7">ⓘ</span></div><div class="val income num">'+fmtMoney(net.total)+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">今日實收(含小費) <span data-act="explain-net" aria-label="實收是什麼" style="cursor:pointer;opacity:.7">ⓘ</span></div><div class="val income num">'+fmtMoney(net.total)+'</div></div>'+
     (uiShow('grossTile') ? '<div class="stat-tile"><div class="lbl">今日車資(未扣手續費)</div><div class="val num">'+fmtMoney(gross.total)+'</div></div>' : '')+
     '<div class="stat-tile"><div class="lbl">今日支出</div><div class="val expense num">'+fmtMoney(exp)+'</div></div></div></div>';
   // an unfinished trip stays visible even after the buttons are switched off
@@ -3608,7 +3615,7 @@ function fareLooksTooHigh(revenue, trip, platformKey){
       var what = [];
       if(km!=null) what.push('上下車直線距離約 '+fmtNum(km,1)+' 公里');
       if(mins!=null && mins>0) what.push('搭乘 '+Math.round(mins)+' 分鐘');
-      return '這趟'+what.join('、')+',跳表大約 '+fmtMoney(Math.round(est/10)*10)+' 左右。\n\n'+fmtMoney(revenue)+' 比預期高很多,確定金額沒打錯嗎?(有大幅加成就按「確定」)';
+      return '這趟'+what.join('、')+',粗估的參考範圍大約 '+fmtMoney(Math.round(est/10)*10)+' 上下(只依直線距離和時間估,不是正式跳表價)。\n\n'+fmtMoney(revenue)+' 跟參考範圍差很多,確定金額沒打錯嗎?(長途、包車、有加成就按「確定」)';
     }
     if(est>0) return '';
   }
@@ -4593,11 +4600,14 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.15';
+var APP_VERSION = '2026.11.04.16';
 var WHATS_NEW = [
-  '⚙️ 設定頁分成六類(基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享),點一類才展開,不用一直往下滑;「儲存設定」固定在最下面',
+  '🛡️ 還原更安全:匯入還原、從雲端還原、復原、清除,真的存進手機才說完成;格式壞掉的備份檔會被擋下;還原舊備份不會把關掉的熱區分享、統計重新打開',
+  '✏️ 金額可能打錯時會提醒(例如多打一個 0),長途或有加成按「確定」就好;首頁「今日實收」旁的 ⓘ 可以看實收、現金收入、待撥款的差別',
+  '☁️ 有設雲端同步的:可以選自動備份間隔(15 分鐘／30 分鐘／1 小時),打下班卡會馬上嘗試備份,失敗會自動再試',
+  '⚙️ 設定頁分成七類(基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享、關於),點一類才展開,不用一直往下滑;「儲存設定」固定在最下面',
   '📱 記帳首頁可以自己排順序、隱藏用不到的區塊(⚙️「記帳首頁排列」);預設把平台按鈕移到路況上面',
-  '✓ 記好一筆會跳出「已記」提示;最上面「今日淨收入」改名「今日結餘」(今天實收減今天支出,固定成本在分析頁的淨利才扣);雲端超過 3 天沒同步成功會提醒',
+  '✓ 記好一筆會跳出「已記」提示;最上面「今日淨收入」改名「今日結餘」(今天實收減今天支出,固定成本在分析頁的淨利才扣);有設雲端同步的,確認存好之後又有新的帳,超過 3 天沒備份上去會提醒',
   '💬 LINE GO 小黃改成兩段手續費:$199 以下每趟扣 $10、$200 以上抽 10%,非現金另扣 2.5%,派遣費每月最多 $3,000;記帳可選付款方式',
   '🚖 台灣大小黃可以填「信用卡/綁定支付手續費 %」(正式隊員刷卡另扣的),在 ⚙️ 平台手續費設定',
   '🔠 可以調字體大小了:⚙️「字體大小」選標準 / 大 / 特大 / 超大,字、圖示、按鈕一起放大',
@@ -4818,10 +4828,14 @@ function summaryLine(x){ return '收入 '+x.recs+' 筆、支出 '+x.exps+' 筆'+
 function keepUndoCopy(label, done){
   var at = Date.now(), copy;
   function fin(ok){
-    if(ok){ try{ localStorage.setItem('taxi_undo_info', JSON.stringify({at:at, label:label})); }catch(e){} }
+    if(ok){ state.undoMeta = {at:at, label:label}; try{ localStorage.setItem('taxi_undo_info', JSON.stringify({at:at, label:label})); }catch(e){} }
     if(done) done(ok);
   }
   try{ copy = JSON.stringify({at:at, label:label, data:packState(state)}); }catch(e){ fin(false); return; }
+  if(NATIVE_FS){
+    NATIVE_FS.writeFile({path:'ledger-undo.json', directory:'DATA', encoding:'utf8', data:copy}).then(function(){ fin(true); }, function(){ fin(false); });
+    return;
+  }
   if(__BOOT.idb){
     try{
       var tx = __BOOT.idb.transaction('kv','readwrite');
@@ -4833,7 +4847,7 @@ function keepUndoCopy(label, done){
 }
 // settings that belong to this phone, not to the ledger: a restored backup must not switch sharing or
 // statistics back on, bring back an old sharing id, or claim this phone's cloud backup state
-var DEVICE_KEYS = ['syncUrl','syncEvery','lastCloudBasicAt','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale'];
+var DEVICE_KEYS = ['undoMeta','syncUrl','syncEvery','lastCloudBasicAt','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale'];
 var LEDGER_PART_NAMES = {expenses:'支出', dailyMeta:'每日工時與里程', fixedCosts:'固定成本', fixedOverrides:'固定成本覆寫', targets:'目標', feeRules:'手續費設定', platformOverrides:'平台設定', customPlatforms:'自訂平台', platformOrder:'平台排列', payoutSettings:'撥款設定', payouts:'撥款核對', pendingTrips:'行程'};
 // '' when the data can be used as a ledger, otherwise what is wrong with it
 function ledgerProblem(p){
@@ -4915,7 +4929,7 @@ function replaceLedger(parsed, undoLabel, okMsg){
   });
   return true;
 }
-function undoInfo(){ try{ return JSON.parse(localStorage.getItem('taxi_undo_info')||'null'); }catch(e){ return null; } }
+function undoInfo(){ if(state.undoMeta) return state.undoMeta; try{ return JSON.parse(localStorage.getItem('taxi_undo_info')||'null'); }catch(e){ return null; } }
 function undoRestore(){
   var info = undoInfo(); if(!info) return;
   if(!confirm('要把資料換回 '+fmtTs(info.at)+'「'+info.label+'」之前的樣子嗎?\n\n現在的資料會被取代(會先另外保留一份)。')) return;
@@ -4923,6 +4937,10 @@ function undoRestore(){
     var o, parsed;
     try{ o = JSON.parse(raw); parsed = unpackState(JSON.parse(o.data)); }catch(e){ alert('找不到可以復原的資料。'); return; }
     replaceLedger(parsed, '復原', function(){ return '已經復原。'; });
+  }
+  if(NATIVE_FS){
+    NATIVE_FS.readFile({path:'ledger-undo.json', directory:'DATA', encoding:'utf8'}).then(function(r){ apply(r.data); }, function(){ alert('找不到可以復原的資料。'); });
+    return;
   }
   if(__BOOT.idb){
     var g = __BOOT.idb.transaction('kv','readonly').objectStore('kv').get('state_undo');
@@ -5277,6 +5295,14 @@ document.addEventListener('click', function(e){
     }
   }
   else if(cmd==='open-help'){ openHelp(arg||''); }
+  else if(cmd==='explain-net'){
+    openModal('<div class="modal-title">實收是什麼<button class="close" data-act="close-modal">✕</button></div>'+
+      '<div style="font-size:14px;line-height:1.8"><b>實收</b> = 扣完平台手續費後你賺到的錢(含小費),<b>也包含還沒撥款</b>的刷卡、App 付款單。<br>'+
+      '<b>今日現金收入</b> = 今天乘客直接付你的現金,還沒扣現金支出(例如停車費)。<br>'+
+      '<b>待撥款</b> = 平台之後才撥給你的錢,到「撥款」頁看預計入帳日、核對實際入帳。<br>'+
+      '<span style="color:var(--text-muted);font-size:12.5px">Uber 多元輸入的是 App 顯示的實收,車資和抽成是用你設定的 % 反推的估算值。</span></div>'+
+      '<div style="text-align:right;margin-top:12px"><a data-act="open-help:實收" style="font-size:12.5px;color:var(--accent);cursor:pointer">看完整功能說明 ›</a></div>');
+  }
   else if(cmd==='help-on'){
     if(!state.ui) state.ui = uiPreset(state.uiMode==='simple'?'simple':'full');
     state.ui[arg] = true; if(arg==='liveRate'||arg==='restRemind'||arg==='shiftFix'||arg==='dayReport') state.ui.shift = true;
@@ -5669,18 +5695,44 @@ var NATIVE_FS = (function(){
   try{ return (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform() && window.Capacitor.Plugins.Filesystem) || null; }catch(e){ return null; }
 })();
 var NATIVE_SLOTS = ['ledger-a.json', 'ledger-b.json'];
-// the newest readable slot, or null
+// -> {state:'none'} when neither file exists (a new install, or a phone still on its web view copy),
+//    {state:'ok', best} with the newest slot whose content is a complete ledger,
+//    {state:'bad'} when the files exist but none of them can be used (never treated as "no ledger")
+function nativeSlotOk(o){
+  if(!o || typeof o.data!=='string' || !isFinite(o.rev) || Math.floor(+o.rev)!==+o.rev || +o.rev<0) return false;
+  if(o.len!=null && o.len!==o.data.length) return false;
+  try{ var inner = JSON.parse(o.data); return !!inner && typeof inner==='object' && Array.isArray(inner.records); }catch(e){ return false; }
+}
 function nativeReadLedger(){
-  return Promise.all(NATIVE_SLOTS.map(function(f){
-    return NATIVE_FS.readFile({path:f, directory:'DATA', encoding:'utf8'}).then(function(r){
-      var o = JSON.parse(r.data);
-      return (o && typeof o.data==='string') ? {rev:+o.rev||0, data:o.data, slot:f} : null;
-    }, function(){ return null; }).catch(function(){ return null; });
-  })).then(function(list){
-    var best = null;
-    list.forEach(function(x){ if(x && (!best || x.rev > best.rev)) best = x; });
-    return best;
+  // which slot files exist: from the folder listing, or file by file if listing is not possible
+  return NATIVE_FS.readdir({path:'', directory:'DATA'}).then(function(r){
+    var names = (r.files||[]).map(function(f){ return typeof f==='string' ? f : f.name; });
+    return NATIVE_SLOTS.filter(function(f){ return names.indexOf(f)>=0; });
+  }, function(){
+    return Promise.all(NATIVE_SLOTS.map(function(f){
+      return NATIVE_FS.stat({path:f, directory:'DATA'}).then(function(){ return f; }, function(){ return null; });
+    })).then(function(l){ return l.filter(Boolean); });
+  }).then(function(present){
+    if(!present.length) return {state:'none'};
+    return Promise.all(present.map(function(f){
+      return NATIVE_FS.readFile({path:f, directory:'DATA', encoding:'utf8'}).then(function(rr){
+        var o = JSON.parse(rr.data);
+        return nativeSlotOk(o) ? {rev:+o.rev, data:o.data, slot:f} : null;
+      }).catch(function(){ return null; });
+    })).then(function(list){
+      var best = null;
+      list.forEach(function(x){ if(x && (!best || x.rev > best.rev)) best = x; });
+      return best ? {state:'ok', best:best} : {state:'bad'};
+    });
   });
+}
+// what the app shows instead of an empty ledger when its file cannot be read: the files stay untouched
+function nativeBootProblem(kind){
+  var el = document.getElementById('content'); if(!el) return;
+  el.innerHTML = '<div class="card" style="margin-top:20px;padding:16px;line-height:1.7">'+
+    (kind==='slow' ? '<b>正在讀取帳本,比平常久一點…</b><br>請稍等;一直沒反應就按「重新讀取」。'
+      : '<b style="color:var(--expense)">⚠️ 帳本檔讀取不到</b><br>手機裡的帳本檔還在,記帳本沒有動它。請按「重新讀取」;一直不行的話,先不要記帳、不要移除 App,寫信到 support@realway.com.tw,我們幫你找回來。')+
+    '<div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" onclick="location.reload()">重新讀取</button></div></div>';
 }
 // Load saved data from IndexedDB (large storage) first, then start the app with it.
 // If IndexedDB is unavailable the app falls back to localStorage like before.
@@ -5688,17 +5740,20 @@ var __BOOT = {state:null, idb:null, idbError:false};
 (function(){
   var started = false;
   function start(){ if(started) return; started = true; __taxiMain(); }
-  // in the app, the ledger file wins over the web view's copy unless that one is newer
+  // In the app the ledger file decides. Only when there is no file at all does the web view copy count
+  // (moving an existing ledger in); a slow or unreadable file never starts the app with an empty ledger.
   function go(){
     if(started) return;
     if(!NATIVE_FS){ start(); return; }
-    var t = setTimeout(start, 4000);
-    nativeReadLedger().then(function(best){
-      if(best && (__BOOT.state==null || best.rev >= (+__BOOT.rev||0))){
-        __BOOT.state = best.data; __BOOT.rev = best.rev; __BOOT.nativeSlot = best.slot; __BOOT.fromFile = true;
-      }
-      clearTimeout(t); start();
-    }, function(){ clearTimeout(t); start(); });
+    var slow = setTimeout(function(){ nativeBootProblem('slow'); }, 4000);
+    nativeReadLedger().then(function(r){
+      clearTimeout(slow);
+      if(r.state==='ok'){
+        __BOOT.state = r.best.data; __BOOT.rev = Math.max(r.best.rev, +__BOOT.rev||0); __BOOT.nativeSlot = r.best.slot; __BOOT.fromFile = true;
+        start();
+      } else if(r.state==='none'){ __BOOT.moveInFromCache = __BOOT.state!=null; start(); }
+      else nativeBootProblem('bad');
+    }, function(){ clearTimeout(slow); nativeBootProblem('bad'); });
   }
   if(!window.indexedDB){ go(); return; }
   try{
