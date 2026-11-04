@@ -3335,7 +3335,7 @@ function shareOrDownloadFile(filename, text, mime){
   var capShare = NATIVE_FS && window.Capacitor.Plugins.Share;
   if(capShare){
     return NATIVE_FS.writeFile({path:filename, directory:'CACHE', encoding:'utf8', data:text}).then(function(w){
-      return capShare.share({title:filename, files:[w.uri], dialogTitle:'把檔案存到…(雲端硬碟、檔案、LINE 都可以)'});
+      return capShare.share({title:filename, files:[w.uri], dialogTitle:/備份/.test(filename) ? '把備份檔存到雲端硬碟(只傳 LINE,聊天室的檔案會過期)' : '把檔案存到…(雲端硬碟、檔案、LINE 都可以)'});
     }).then(function(){ return true; }, function(err){
       var why = String(err && (err.message||err));
       if(/cancel/i.test(why)) return false;
@@ -4613,7 +4613,7 @@ function openModeChooser(){
   var h = '<div class="modal-title">歡迎使用 🚕</div>';
   h += '<div style="font-size:13px;line-height:1.7;margin-bottom:12px">你想怎麼記帳?之後隨時可以在右上角 ⚙️ 改。</div>';
   h += '<button style="'+big+'" data-act="ui-choose:simple"><b style="font-size:15px">🟢 簡單記帳</b><br><span style="font-size:12px;color:var(--text-muted)">只記每個平台跑了多少錢。點平台 → 打金額 → 儲存,其他都不用選。</span></button>';
-  if(isNativeApp()) h += '<button style="'+big+';border-color:var(--accent)" data-act="move-from-web"><b style="font-size:15px">📲 我有在用網頁版,把帳搬過來</b><br><span style="font-size:12px;color:var(--text-muted)">用網頁版存的備份檔,一分鐘搬完。帳、設定、模式都會一起過來。</span></button>';
+  if(isNativeApp()) h += '<button style="'+big+';border-color:var(--accent)" data-act="move-from-web"><b style="font-size:15px">📲 我有備份檔,把帳搬過來</b><br><span style="font-size:12px;color:var(--text-muted)">換手機,或從網頁版搬過來都可以,一分鐘搬完。帳、設定、模式都會一起過來。</span></button>';
   h += '<button style="'+big+'" data-act="ui-choose:full"><b style="font-size:15px">🔵 完整分析</b><br><span style="font-size:12px;color:var(--text-muted)">記車種、付款方式、上下車時間,分析時薪、熱區、載客率。</span></button>';
   openModal(h);
 }
@@ -4800,7 +4800,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.32';
+var APP_VERSION = '2026.11.04.33';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -5732,7 +5732,7 @@ document.addEventListener('click', function(e){
   else if(cmd==='copy-export'){ copyExportText(); }
   else if(cmd==='copy-saved'){ markExported(); var cs = document.getElementById('exportCopyStatus'); if(cs) cs.textContent = '好,已記下這次備份。'; }
   else if(cmd==='export-file'){
-    var stamp = todayStr().replace(/-/g,'');
+    var nowD = new Date(), stamp = todayStr().replace(/-/g,'')+'_'+String(nowD.getHours()).padStart(2,'0')+String(nowD.getMinutes()).padStart(2,'0');
     shareOrDownloadFile('跑車人生備份_'+stamp+'.json', packState(state), 'application/json').then(function(done){
       if(done){ markExported(); if(document.querySelector('[data-act^="backup-dest"]') || /💾 備份/.test((document.querySelector('.modal-title')||{}).textContent||'')) closeModal(); renderAll(); showToast('備份檔已交給分享選單,記得選好存放位置。'); }
     });
@@ -5740,14 +5740,16 @@ document.addEventListener('click', function(e){
   else if(cmd==='year-report'){ openYearReportModal(arg); }
   else if(cmd==='year-report-csv'){ shareOrDownloadFile('跑車人生_'+arg+'年度報表.csv', yearReportCsv(+arg), 'text/csv'); }
   else if(cmd==='open-import'){ openImportModal(); }
+  // straight to the file picker (still inside the tap, which the picker requires); the restore sheet stays behind it
+  else if(cmd==='open-import-pick'){ openImportModal(); var pickEl = document.getElementById('importFile'); if(pickEl) pickEl.click(); }
   else if(cmd==='move-from-web'){
-    var mh = '<div class="modal-title">從網頁版搬過來<button class="close" data-act="close-modal">✕</button></div>';
+    var mh = '<div class="modal-title">用備份檔把帳搬過來<button class="close" data-act="close-modal">✕</button></div>';
     mh += '<div style="font-size:13.5px;line-height:1.8">'+
-      '<b>1.</b> 打開<b>網頁版</b>記帳本,按右上角 <b>💾</b>「存成備份檔」,存到手機(雲端硬碟、檔案、LINE 傳給自己都可以)。<br>'+
-      '<b>2.</b> 回到這裡,按下面的「選擇備份檔」,選剛剛那個檔案。<br>'+
+      '<b>1.</b> 在<b>舊手機的記帳本</b>(或<b>網頁版</b>)按右上角 <b>💾</b>「存成備份檔」,存到<b>雲端硬碟</b>。已經存過的,這步可以跳過。<br>'+
+      '<b>2.</b> 回到這裡,按下面的「選擇備份檔」→ 左上選單選「雲端硬碟」→ 選那個檔案。同一天有好幾份時,檔名後面的時間最新的那份就是最新的。<br>'+
       '<b>3.</b> 看一下筆數和日期對不對,按「還原這份資料」。</div>'+
       '<div style="font-size:12px;color:var(--text-muted);margin:10px 0 14px;line-height:1.6">有設定雲端同步的,也可以先選模式,再到 ⚙️「雲端與備份」→「從雲端還原」。網頁版的帳不會被刪掉,搬完確認沒問題再停用網頁版就好。</div>'+
-      '<div class="btn-row"><button class="btn btn-primary" data-act="open-import">選擇備份檔</button></div>';
+      '<div class="btn-row"><button class="btn btn-primary" data-act="open-import-pick">選擇備份檔</button></div>';
     openModal(mh);
   }
   else if(cmd==='do-import'){ doImportData(); }
