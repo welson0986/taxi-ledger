@@ -705,15 +705,20 @@ var writePending = false, saveWaiters = [];
 // the app's file writes, one at a time, alternating the two slots and starting with the one not holding
 // the ledger just loaded. Set up here because start-up itself may save (moving a ledger in, fee snapshots).
 var nativeChain = Promise.resolve(), nativeNext = (__BOOT.nativeSlot===NATIVE_SLOTS[0]) ? 1 : 0;
+var nativeHold = false;  // the newer ledger could not be kept aside: nothing may write over its slot
 if(__BOOT.keepAside) nativeChain = keepAsideUndo(__BOOT.keepAside);
 // the newer ledger start-up did not open (its save may never have finished) becomes the undo copy, written
-// before anything reuses its slot, so 「↩️ 復原」 can still bring it back
+// before anything reuses its slot, so it can still be brought back. If that copy cannot be written, saving stops
+// (the 「沒有存進手機」 banner offers a backup file) rather than overwrite the only copy of that ledger.
 function keepAsideUndo(k){
   var at = Date.now(), label = '開機時沒有採用一份沒確認存好的較新帳本';
   return NATIVE_FS.writeFile({path:'ledger-undo.json', directory:'DATA', encoding:'utf8', data:JSON.stringify({at:at, label:label, data:k.data})}).then(function(){
-    state.undoMeta = {at:at, label:label};
-    try{ localStorage.setItem('taxi_undo_info', JSON.stringify({at:at, label:label})); }catch(e){}
-  }, function(){});
+    state.undoMeta = {at:at, label:label, kind:'aside'};
+    try{ localStorage.setItem('taxi_undo_info', JSON.stringify(state.undoMeta)); }catch(e){}
+    setTimeout(function(){
+      alert('記帳本開啟的是前一份確認存好的帳。\n\n另外找到一份較新、但沒有確認存好的帳本(可能是上次存到一半),已經保留起來,沒有刪掉。\n\n需要的話到 ⚙️「雲端與備份」→「匯入還原」→「↩️ 改用那份較新的帳本」。那會整本取代目前的帳,不會合併之後新記的帳;不確定時先存備份檔、聯絡客服。');
+    }, 1500);
+  }, function(){ nativeHold = true; });
 }
 function writeStore(){
   var waiters = saveWaiters.splice(0);
@@ -802,6 +807,7 @@ function settleWaiters(list, ok){ list.forEach(function(f){ try{ f(ok); }catch(e
 // Phones without compression in their web view keep the older plain-text envelope, which is still read.
 function nativeWriteLedger(str, rev){
   var job = nativeChain.then(function(){
+    if(nativeHold) throw new Error('holding the slot of a ledger that could not be kept aside');
     var f = NATIVE_SLOTS[nativeNext];
     return gzipBase64(str).then(function(b64){
       return b64 ? NATIVE_FS.writeFile({path:f, directory:'DATA', data:b64})
@@ -2573,7 +2579,9 @@ function comparisonHtml(range){
   }
   var h = '<div class="section"><div class="section-title">與'+cr.label+'比較('+shortRange(cr.cur)+' vs '+shortRange(cr.prev)+')</div><div class="card">';
   h += row('實收', a.net, b.net, fmtMoney);
-  h += row('淨利', a.profit, b.profit, fmtMoney);
+  // fixed costs here are counted for the days in each range (so a month in progress compares fairly), unlike the
+  // period card above, which counts the whole month
+  h += row('淨利(固定成本按天攤)', a.profit, b.profit, fmtMoney);
   h += row('趟數', a.trips, b.trips, function(v){ return v+' 趟'; });
   h += row('實際時薪', a.hourly, b.hourly, fmtMoney2);
   h += row('每公里實收', a.perKm, b.perKm, fmtMoney2);
@@ -2618,12 +2626,12 @@ function barChartHtml(id, items, emptyNote){
   var h = '<div class="card"><div style="display:flex;align-items:flex-end;gap:2px;height:120px">';
   items.forEach(function(it,i){
     var pct = (it.value||0)/max*100;
-    h += '<div data-act="bar-tip:'+id+':'+i+'" style="flex:1;min-width:0;height:100%;display:flex;flex-direction:column;justify-content:flex-end;cursor:pointer">'+
+    h += '<div data-act="bar-tip:'+id+':'+i+'" aria-label="'+esc(it.tip||'')+'" style="flex:1;min-width:0;height:100%;display:flex;flex-direction:column;justify-content:flex-end;cursor:pointer">'+
       '<div style="height:'+pct.toFixed(1)+'%;'+(it.value>0?'min-height:2px;':'')+'background:'+(i===best?'var(--accent-strong)':'var(--accent)')+';border-radius:4px 4px 0 0"></div></div>';
   });
   h += '</div><div style="display:flex;gap:2px;margin-top:4px">';
   items.forEach(function(it){ h += '<div style="flex:1;min-width:0;text-align:center;font-size:9.5px;color:var(--text-muted);overflow:visible;white-space:nowrap;display:flex;justify-content:center">'+(it.axis||'')+'</div>'; });
-  h += '</div><div id="tip-'+id+'" style="font-size:12px;color:var(--text);margin-top:8px;line-height:1.5;min-height:18px">'+
+  h += '</div><div id="tip-'+id+'" aria-live="polite" style="font-size:12px;color:var(--text);margin-top:8px;line-height:1.5;min-height:18px">'+
     (best>=0?('最好:'+items[best].tip+(worst>=0&&worst!==best?('<br>最差:'+items[worst].tip):'')):'')+
     '</div><div style="font-size:10.5px;color:var(--text-muted);margin-top:2px">點長條可看該項數字</div></div>';
   return h;
@@ -4771,7 +4779,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.27';
+var APP_VERSION = '2026.11.04.29';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -4987,7 +4995,9 @@ function openImportModal(){
   h += '<textarea id="importText" placeholder="貼上備份文字…" style="width:100%;height:160px;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface-sunken);color:var(--text);box-sizing:border-box"></textarea>';
   h += '<div class="btn-row" style="margin-top:10px"><button class="btn btn-danger" data-act="do-import">還原這份資料</button></div>';
   var ui0 = undoInfo();
-  if(ui0) h += '<div style="font-size:12px;color:var(--text-muted);margin-top:14px;line-height:1.6;border-top:1px solid var(--border);padding-top:10px">'+fmtTs(ui0.at)+' 做過「'+esc(ui0.label)+'」,那之前的資料還留著:<br><a data-act="undo-restore" style="cursor:pointer;color:var(--accent);font-weight:700">↩️ 復原到'+esc(ui0.label)+'前的資料</a></div>';
+  if(ui0) h += '<div style="font-size:12px;color:var(--text-muted);margin-top:14px;line-height:1.6;border-top:1px solid var(--border);padding-top:10px">'+(ui0.kind==='aside'
+    ? fmtTs(ui0.at)+' 開機時找到一份較新、但沒有確認存好的帳本,沒有開啟,先保留著:<br><a data-act="undo-restore" style="cursor:pointer;color:var(--accent);font-weight:700">↩️ 改用那份較新的帳本</a>(整本取代,不會合併)'
+    : fmtTs(ui0.at)+' 做過「'+esc(ui0.label)+'」,那之前的資料還留著:<br><a data-act="undo-restore" style="cursor:pointer;color:var(--accent);font-weight:700">↩️ 復原到'+esc(ui0.label)+'前的資料</a>')+'</div>';
   openModal(h);
 }
 function ledgerSummary(st){
@@ -5105,7 +5115,10 @@ function replaceLedger(parsed, undoLabel, okMsg){
 function undoInfo(){ if(state.undoMeta) return state.undoMeta; try{ return JSON.parse(localStorage.getItem('taxi_undo_info')||'null'); }catch(e){ return null; } }
 function undoRestore(){
   var info = undoInfo(); if(!info) return;
-  if(!confirm('要把資料換回 '+fmtTs(info.at)+'「'+info.label+'」之前的樣子嗎?\n\n現在的資料會被取代(會先另外保留一份)。')) return;
+  var ask = info.kind==='aside'
+    ? '要改用 '+fmtTs(info.at)+' 保留的那份較新帳本嗎?\n\n它沒有確認存好,最後幾筆可能不完整。會整本取代現在的帳,不會合併之後新記的帳(現在的資料會先另外保留一份)。'
+    : '要把資料換回 '+fmtTs(info.at)+'「'+info.label+'」之前的樣子嗎?\n\n現在的資料會被取代(會先另外保留一份)。';
+  if(!confirm(ask)) return;
   function apply(raw){
     var o, parsed;
     try{ o = JSON.parse(raw); parsed = unpackState(JSON.parse(o.data)); }catch(e){ alert('找不到可以復原的資料。'); return; }
@@ -5362,6 +5375,19 @@ function a11yPass(){
   }
   var closes = document.querySelectorAll('button.close:not([aria-label])');
   for(var k=0;k<closes.length;k++) closes[k].setAttribute('aria-label', '關閉');
+  // ✕ on a row deletes it; say what it deletes rather than reading out the symbol
+  var dels = document.querySelectorAll('.li-del:not([aria-label])');
+  for(var d=0;d<dels.length;d++){
+    var row = dels[d].closest('.list-item'), what = '';
+    if(row){
+      var ti = row.querySelector('.li-title'), am = row.querySelector('.li-amt');
+      what = ((ti ? ti.textContent : '')+' '+(am ? am.textContent : '')).replace(/\s+/g, ' ').trim();
+    }
+    dels[d].setAttribute('aria-label', '刪除'+(what ? ' '+what : ''));
+  }
+  var stepNames = {'month:-1':'上個月', 'month:1':'下個月', 'year:-1':'上一年', 'year:1':'下一年', 'day:-1':'前一天', 'day:1':'後一天'};
+  var steps = document.querySelectorAll('[data-act^="month:"]:not([aria-label]),[data-act^="year:"]:not([aria-label]),[data-act^="day:"]:not([aria-label])');
+  for(var q=0;q<steps.length;q++){ var sn = stepNames[steps[q].getAttribute('data-act')]; if(sn) steps[q].setAttribute('aria-label', sn); }
 }
 try{
   new MutationObserver(function(){ if(!a11yQueued){ a11yQueued = true; Promise.resolve().then(a11yPass); } })
