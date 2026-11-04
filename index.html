@@ -4489,7 +4489,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.11';
+var APP_VERSION = '2026.11.04.12';
 var WHATS_NEW = [
   '⚙️ 設定頁分成六類(基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享),點一類才展開,不用一直往下滑;「儲存設定」固定在最下面',
   '📱 記帳首頁可以自己排順序、隱藏用不到的區塊(⚙️「記帳首頁排列」);預設把平台按鈕移到路況上面',
@@ -4565,12 +4565,17 @@ function aboutHtml(){
   function para(title, body){ return '<div style="margin-bottom:12px"><div style="font-weight:700;font-size:13px;margin-bottom:3px">'+title+'</div><div style="font-size:12.5px;color:var(--text-muted);line-height:1.65">'+body+'</div></div>'; }
   var h = '<div class="card" style="margin-top:18px;padding:14px 16px"><div style="font-size:15px;font-weight:700;margin-bottom:12px">關於跑車人生</div>';
   h += para('🆓 免費使用', '本記帳本完全免費,不需註冊帳號。');
-  h += para('🔒 你的帳,只有你看得到', '所有紀錄只存在你自己的手機裡,製作者和其他使用者都看不到。設定雲端備份的話,資料也是存到你自己的 Google 帳號。<br>為了保護你的資料,建議手機設定螢幕鎖,並定期備份。');
+  h += para('🔒 你的帳由你掌握', '所有紀錄存在你自己的手機裡,製作者和其他使用者都看不到。設定雲端備份的話,資料也是存到你自己的 Google 帳號。<br>為了保護你的資料,建議手機設定螢幕鎖,並定期備份。');
   h += para('📊 不具名使用人數統計', '為了知道有多少司機在用,記帳本每天會送出一次不具名資料:一組隨機編號、日期、版本、簡單/完整模式、手機系統(iPhone/安卓)、是否從主畫面打開。<br>不包含任何金額、平台、位置或個人資料,製作者也無法從編號知道你是誰。不想參與,可以在上面「不具名使用人數統計」取消勾選。');
   h += para('📄 隱私權政策', '完整說明記帳本會處理哪些資料、存在哪裡、保存多久:<br><a style="'+link+'" target="_blank" rel="noopener" href="https://welson0986.github.io/taxi-ledger/privacy.html">查看隱私權政策 ›</a>');
   h += para('📍 車友熱區', '同意分享的人,記帳本每天會送出前一天的「約 1 公里一格的上車區域、時段、趟數」,不含精確位置、金額、平台。至少 3 位車友都上過車的地方才會顯示給有分享的人看,看不到任何人的個人紀錄。可以隨時在上面取消分享。');
-  h += para('💬 建議與問題回報', '有任何建議或使用上的問題,歡迎來信:<br>'+
-    '✉️ <a style="'+link+'" href="mailto:support@realway.com.tw">support@realway.com.tw</a>');
+  // the mail opens with the version and phone type filled in, nothing from the ledger
+  var osName = {ios:'iPhone', android:'Android'}[phoneOs()] || '其他';
+  var mailto = 'mailto:support@realway.com.tw?subject='+encodeURIComponent('跑車人生 建議與問題回報')+
+    '&body='+encodeURIComponent('記帳本版本:'+APP_VERSION+'\n手機:'+osName+'\n\n請描述問題或建議:\n');
+  h += para('💬 建議與問題回報', '有任何建議或使用上的問題,歡迎寫信給「跑車人生客服」:<br>'+
+    '✉️ <a style="'+link+'" href="'+esc(mailto)+'">support@realway.com.tw</a><br>'+
+    '<span style="font-size:11.5px">按上面的信箱,會自動帶入記帳本版本和手機類型,方便查問題(不會帶入任何帳目)。</span>');
   h += para('ℹ️ 版本資訊', '版本:'+APP_VERSION+'<br>製作者:Welson(REALWAY CO., LTD.)<br>© 2026 REALWAY CO., LTD.');
   return h+'</div>';
 }
