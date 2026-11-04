@@ -712,11 +712,13 @@ if(ledgerChannel) ledgerChannel.onmessage = function(ev){ if(+ev.data > lastKnow
 document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='visible') reloadFromStore(false); });
 // first start on this version: copy the old localStorage data into IndexedDB
 if(__BOOT.idb && __BOOT.state==null && !storageStale){ writeStore(); }
+noteHadData();
 if(stampMissingFeeSnapshots()) writeStore();
 try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){}
 // onDone(true) once this change is in the phone's storage, onDone(false) if it did not get there
 function save(onDone){
   state.lastChangeAt = Date.now();
+  noteHadData();
   if(onDone) saveWaiters.push(onDone);
   if(!writePending){ writePending = true; setTimeout(flushWrite, 0); }
   scheduleCloudSync();
@@ -1061,6 +1063,8 @@ function buildCloudSnapshot(){
 function hasMeaningfulData(){
   return state.records.length>0 || state.expenses.length>0;
 }
+// remembered for good once this ledger has held a trip or an expense (see canSyncLedger)
+function noteHadData(){ if(state.hadData!==true && hasMeaningfulData()) state.hadData = true; }
 var CLOUD_KEY_STORAGE = 'taxi_ledger_cloudkey';
 var cloudAuthStatus = 'unknown';
 function getCloudKey(){ try{ return localStorage.getItem(CLOUD_KEY_STORAGE)||''; }catch(e){ return ''; } }
@@ -1094,14 +1098,17 @@ function cloudStatusText(){
 // (an older backup with the same counts says nothing about an edited amount)
 var cloudPushBusy = false, cloudPushAgain = false, cloudPushWaiters = [];
 // Apps Script v6 stores each backup under the id the app gave it and reports a fingerprint (SHA-256) of the
-// content it really stored, so the app can check that this exact backup arrived intact. Older scripts
-// fall back to comparing the backup list before and after sending.
+// content it really stored. Only a matching id AND fingerprint is a full confirmation ('full'); an older
+// script, or a browser that cannot compute the fingerprint, can only show the backup arrived ('basic').
+// 'basic' never counts as backed up, so the backup-file reminder stays on.
 var cloudServerV = 0;
+// bumped when the destination, the password or the whole ledger changes: answers to older sends no longer count
+var cloudGen = 0;
 function newSnapshotId(){
   var a = new Uint32Array(3); (window.crypto||window.msCrypto).getRandomValues(a);
   return (Array.prototype.map.call(a, function(n){ return n.toString(36); }).join('') + Date.now().toString(36)).slice(0,20);
 }
-// '' when this browser cannot compute it; the id alone is then the proof
+// '' when this browser cannot compute it
 function sha256Hex(text){
   try{
     if(!(window.crypto && crypto.subtle && window.TextEncoder)) return Promise.resolve('');
@@ -1110,59 +1117,78 @@ function sha256Hex(text){
     }, function(){ return ''; });
   }catch(e){ return Promise.resolve(''); }
 }
-function confirmBySnapshot(sid, hash, builtAt, onResult, retried){
+function withTimeout(p, ms){
+  return new Promise(function(resolve, reject){
+    var t = setTimeout(function(){ reject(new Error('timeout')); }, ms);
+    p.then(function(v){ clearTimeout(t); resolve(v); }, function(e){ clearTimeout(t); reject(e); });
+  });
+}
+function recordCloudResult(kind, builtAt, gen){
+  if(gen!==cloudGen) return;
+  if(kind==='full' && builtAt > (state.lastCloudConfirmAt||0)) state.lastCloudConfirmAt = builtAt;
+  if(kind==='basic' && builtAt > (state.lastCloudBasicAt||0)) state.lastCloudBasicAt = builtAt;
+}
+function confirmBySnapshot(sid, hash, builtAt, gen, onResult, retried){
   cloudListVersions().then(function(vs){
     var hit = vs.filter(function(v){ return v.sid===sid; })[0];
     // the sheet's list can lag a moment behind the save
-    if(!hit && !retried){ setTimeout(function(){ confirmBySnapshot(sid, hash, builtAt, onResult, true); }, 4000); return; }
-    var ok = !!hit && (!hash || hit.hash===hash);
-    if(ok && builtAt > (state.lastCloudConfirmAt||0)) state.lastCloudConfirmAt = builtAt;
+    if(!hit && !retried){ setTimeout(function(){ confirmBySnapshot(sid, hash, builtAt, gen, onResult, true); }, 4000); return; }
+    var kind = !hit ? '' : (hash && hit.hash) ? (hit.hash===hash ? 'full' : '') : 'basic';
+    recordCloudResult(kind, builtAt, gen);
     writeStore();
-    onResult(ok);
-  }).catch(function(){ writeStore(); onResult(false); });
+    onResult(!!kind && gen===cloudGen, kind);
+  }).catch(function(){ writeStore(); onResult(false, ''); });
 }
 function cloudListVersions(){
-  return cloudGet({action:'list'}).then(function(res){
+  return withTimeout(cloudGet({action:'list'}), 35000).then(function(res){
     if(!res || !res.ok) throw new Error('list');
     return res.versions || [];
   });
 }
-function confirmCloudBackup(before, builtAt, ic, ec, onResult, retried){
+// scripts before v6: a new backup with this snapshot's counts showed up, which is not proof of its content
+function confirmCloudBackup(before, builtAt, ic, ec, gen, onResult, retried){
   cloudListVersions().then(function(vs){
     var ok = vs.some(function(v){ return !before[+v.time] && +v.income===ic && +v.expense===ec; });
-    // the sheet's list can lag a moment behind the save
-    if(!ok && !retried){ setTimeout(function(){ confirmCloudBackup(before, builtAt, ic, ec, onResult, true); }, 4000); return; }
-    // only what was in the snapshot counts as backed up; later changes stay pending
-    if(ok && builtAt > (state.lastCloudConfirmAt||0)) state.lastCloudConfirmAt = builtAt;
+    if(!ok && !retried){ setTimeout(function(){ confirmCloudBackup(before, builtAt, ic, ec, gen, onResult, true); }, 4000); return; }
+    if(ok) recordCloudResult('basic', builtAt, gen);
     writeStore();
-    onResult(ok);
-  }).catch(function(){ writeStore(); onResult(false); });
+    onResult(ok && gen===cloudGen, ok ? 'basic' : '');
+  }).catch(function(){ writeStore(); onResult(false, ''); });
 }
-// one send at a time, so two overlapping sends cannot claim each other's backup; a change made meanwhile goes in the next one
+// A ledger the driver emptied on purpose is still sent (the cloud should not keep showing deleted trips);
+// a brand-new empty one is not, so a fresh install can never blank an existing backup.
+function canSyncLedger(){ return hasMeaningfulData() || state.hadData===true; }
+// one send at a time, so two overlapping sends cannot claim each other's backup; a change made meanwhile goes in the next one.
+// onResult(ok, kind): ok only for a full confirmation
 function pushCloudSnapshot(onResult){
-  if(!state.syncUrl || cloudSyncSuspended || storageStale || !hasMeaningfulData()) return false;
+  if(!state.syncUrl || cloudSyncSuspended || storageStale || !canSyncLedger()) return false;
   if(onResult) cloudPushWaiters.push(onResult);
   if(cloudPushBusy){ cloudPushAgain = true; return true; }
   cloudPushBusy = true;
-  var waiters = cloudPushWaiters.splice(0);
-  function done(ok){
+  var waiters = cloudPushWaiters.splice(0), gen = cloudGen;
+  function done(ok, kind){
     cloudPushBusy = false;
-    settleWaiters(waiters, ok);
+    var full = ok===true && kind==='full';
+    waiters.forEach(function(f){ try{ f(full, kind||''); }catch(e){} });
+    if(full) cloudRetryN = 0; else scheduleCloudRetry();
     if(cloudPushAgain){ cloudPushAgain = false; pushCloudSnapshot(); }
   }
   var snap, builtAt;
   try{ snap = buildCloudSnapshot(); builtAt = Date.now(); snap.key = getCloudKey(); }catch(e){ done(false); return false; }
+  function post(){
+    return withTimeout(fetch(state.syncUrl, {
+      method:'POST', mode:'no-cors',
+      headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body: JSON.stringify(snap)
+    }), 60000);
+  }
   if(cloudServerV >= 6){
     snap.snapshotId = newSnapshotId();
     sha256Hex(snap.state).then(function(hash){
-      return fetch(state.syncUrl, {
-        method:'POST', mode:'no-cors',
-        headers:{'Content-Type':'text/plain;charset=utf-8'},
-        body: JSON.stringify(snap)
-      }).then(function(){
+      return post().then(function(){
         if(cloudAuthStatus==='bad'){ done(false); return; }
         state.lastCloudSendAt = builtAt;
-        confirmBySnapshot(snap.snapshotId, hash, builtAt, done);
+        confirmBySnapshot(snap.snapshotId, hash, builtAt, gen, done);
       });
     }).catch(function(){ done(false); });
     return true;
@@ -1173,39 +1199,47 @@ function pushCloudSnapshot(onResult){
     return before;
   }, function(){ return null; }).then(function(before){
     // without the list we still send (it may get through), but it cannot be confirmed
-    return fetch(state.syncUrl, {
-      method:'POST', mode:'no-cors',
-      headers:{'Content-Type':'text/plain;charset=utf-8'},
-      body: JSON.stringify(snap)
-    }).then(function(){
+    return post().then(function(){
       if(cloudAuthStatus==='bad'){ done(false); return; }
       state.lastCloudSendAt = builtAt;
       if(!before){ writeStore(); done(false); return; }
-      confirmCloudBackup(before, builtAt, snap.incomeCount, snap.expenseCount, done);
+      confirmCloudBackup(before, builtAt, snap.incomeCount, snap.expenseCount, gen, done);
     });
   }).catch(function(){ done(false); });
   return true;
 }
 // Automatic backups go out at most once per chosen interval (each one is a file in the driver's Drive),
 // half a minute after the latest change so a burst of edits travels together. Clocking out and the
-// 立即同步 button send at once. Nothing new since the last confirmed backup: nothing is sent.
+// 立即同步 button try at once. Nothing new since the last confirmed backup: nothing is sent.
 var SYNC_EVERY_OPTIONS = [15, 30, 60], cloudSyncDue = 0;
 function syncEveryMin(){ var m = +state.syncEvery; return SYNC_EVERY_OPTIONS.indexOf(m)>=0 ? m : 30; }
 function cloudBehind(){ return !state.lastCloudConfirmAt || (state.lastChangeAt||0) > state.lastCloudConfirmAt; }
+function setCloudTimer(due){
+  if(cloudSyncTimer) clearTimeout(cloudSyncTimer);
+  cloudSyncDue = due;
+  cloudSyncTimer = setTimeout(cloudSyncTick, Math.max(0, due - Date.now()));
+}
 function scheduleCloudSync(){
   if(!state.syncUrl) return;
-  if(cloudSyncTimer) clearTimeout(cloudSyncTimer);
-  cloudSyncDue = Math.max(Date.now()+30000, (state.lastCloudSendAt||0) + syncEveryMin()*60000);
-  cloudSyncTimer = setTimeout(cloudSyncTick, cloudSyncDue - Date.now());
+  setCloudTimer(Math.max(Date.now()+30000, (state.lastCloudSendAt||0) + syncEveryMin()*60000));
+}
+// a failed or unconfirmed send is tried again later on its own (2, 5, 10 minutes, then the interval),
+// without waiting for the next entry
+var cloudRetryN = 0;
+function scheduleCloudRetry(){
+  if(!state.syncUrl || !canSyncLedger() || !cloudBehind() || cloudSyncTimer) return;
+  var steps = [2, 5, 10], m = Math.min(cloudRetryN < steps.length ? steps[cloudRetryN] : syncEveryMin(), syncEveryMin());
+  cloudRetryN++;
+  setCloudTimer(Date.now() + m*60000);
 }
 function cloudSyncTick(){
   if(cloudSyncTimer) clearTimeout(cloudSyncTimer);
   cloudSyncTimer = null; cloudSyncDue = 0;
-  if(state.syncUrl && hasMeaningfulData() && cloudBehind()) pushCloudSnapshot();
+  if(state.syncUrl && canSyncLedger() && cloudBehind()) pushCloudSnapshot();
 }
-// force: send now (new address or password, clocking out); otherwise wait for the interval
+// force: try now (new address or password, clocking out); otherwise wait for the interval
 function cloudSyncIfBehind(force){
-  if(!state.syncUrl || !hasMeaningfulData() || !cloudBehind()) return;
+  if(!state.syncUrl || !canSyncLedger() || !cloudBehind()) return;
   if(force===true) cloudSyncTick(); else scheduleCloudSync();
 }
 window.addEventListener('online', function(){ setTimeout(cloudSyncIfBehind, 1500); setTimeout(hotDeleteFlush, 2000); });
@@ -1893,7 +1927,7 @@ function tripCardHtml(){
     if(state.pendingAccept) h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">📲 '+hhmm(state.pendingAccept.ts)+' 接單 · 前往上車點 '+Math.round((Date.now()-state.pendingAccept.ts)/60000)+' 分鐘</div>';
     h += '<button data-act="trip-start" style="'+big+';background:var(--income)">上車</button>';
     if(state.pendingAccept) h += '<div style="text-align:right;margin-top:8px"><a data-act="accept-cancel" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">客人取消了 / 按錯了</a></div>';
-    if(!state.geoAsked) h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;line-height:1.5">第一次按,iPhone 會問要不要讓網頁取得位置,請按「允許」。只在按下的那一刻抓一次位置,不會一直追蹤。</div>';
+    if(!state.geoAsked) h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;line-height:1.5">第一次按,手機會問要不要讓記帳本取得位置,請按「允許」。只在按下的那一刻抓一次位置,不會一直追蹤。</div>';
   }
   if(pend.length){
     h += '<div style="font-size:12.5px;font-weight:700;margin:14px 0 4px">已下車、還沒記車資('+pend.length+')</div>';
@@ -2842,7 +2876,9 @@ function shareIdOf(){
 // turning sharing off stops uploads at once and erases everything this phone uploaded; a later opt-in starts
 // over with a new id. The deletion request stays on the phone until the server answers that it is done,
 // so being offline when switching off only delays it
+var hotGen = 0;
 function hotShareDelete(){
+  hotGen++;
   var sid = state.shareId;
   state.shareId = null; state.shareSentUntil = null;
   if(sid) state.hotDelPending = (state.hotDelPending||[]).filter(function(x){ return x!==sid; }).concat(sid);
@@ -2872,7 +2908,7 @@ function hotSharePush(){
   if(!state.shareHourBackfill){ state.shareHourBackfill = true; state.shareSentUntil = null; }
   var from = state.shareSentUntil ? addDays(state.shareSentUntil, 1) : addDays(yest, -13);
   if(from > yest) return;
-  var days = timedTripsByDay(from, yest), sid = shareIdOf();
+  var days = timedTripsByDay(from, yest), sid = shareIdOf(), gen = hotGen;
   var jobs = Object.keys(days).sort().map(function(d){
     var cells = {};
     days[d].forEach(function(o){
@@ -2888,8 +2924,13 @@ function hotSharePush(){
     return x ? (HOT_URL+'?action=put&who='+sid+'&d='+d+'&wd='+wd+'&x='+encodeURIComponent(x)) : null;
   }).filter(Boolean);
   var chain = Promise.resolve();
-  jobs.forEach(function(u){ chain = chain.then(function(){ return fetch(u, {cache:'no-store'}).then(function(r){ if(!r.ok) throw new Error('http'); }); }); });
-  chain.then(function(){ state.shareSentUntil = yest; save(); }, function(){});
+  // each queued day checks again that sharing is still on with the same id; switching off ends the queue
+  function stillSharing(){ return gen===hotGen && state.shareHot===true && state.shareId===sid; }
+  jobs.forEach(function(u){ chain = chain.then(function(){
+    if(!stillSharing()) throw new Error('stopped');
+    return fetch(u, {cache:'no-store'}).then(function(r){ if(!r.ok) throw new Error('http'); });
+  }); });
+  chain.then(function(){ if(stillSharing()){ state.shareSentUntil = yest; save(); } }, function(){});
 }
 // the driver's own busiest cell over the last 60 days is the centre of "我附近"
 function myHotCenter(){
@@ -3341,13 +3382,16 @@ function openYearReportModal(year){
 /* ---------- MODALS ---------- */
 var currentIncomeModalKey = null;
 var currentIncomeEditFees = null, currentIncomeEditId = null, currentIncomeEditDate = null, currentIncomeEditTs = null;
-var modalOpener = null;
+var modalOpener = null, modalOpenerAct = null;
 function openModal(html){
   currentIncomeModalKey = null;
   var root = document.getElementById('modalRoot');
   // remember where focus was, unless we are only swapping one sheet for another
   var ae = document.activeElement;
-  if(!document.getElementById('modalBody')) modalOpener = (ae && ae!==document.body && !root.contains(ae)) ? ae : null;
+  if(!document.getElementById('modalBody')){
+    modalOpener = (ae && ae!==document.body && !root.contains(ae)) ? ae : null;
+    modalOpenerAct = modalOpener ? modalOpener.getAttribute('data-act') : null;
+  }
   root.innerHTML = '<div class="modal-overlay" data-act="close-modal"><div class="modal" id="modalBody" data-act="noop" role="dialog" aria-modal="true" tabindex="-1"></div></div>';
   var body = document.getElementById('modalBody');
   body.innerHTML = html;
@@ -3397,8 +3441,12 @@ function updateIncomePreview(){
 function closeModal(){ pendingIncomeTripId = null; document.getElementById('modalRoot').innerHTML='';
   var app = document.querySelector('.app'); if(app) app.removeAttribute('aria-hidden');
   renderAll();
-  if(modalOpener && document.contains(modalOpener)){ try{ modalOpener.focus({preventScroll:true}); }catch(e){} }
-  modalOpener = null; setTimeout(function(){ if(typeof checkRestReminder==='function') checkRestReminder(); }, 800); }
+  // the page was just redrawn, so the opener may be a new element doing the same thing
+  a11yPass();  // the redrawn controls need their button role and tab stop before they can take focus
+  var back = (modalOpener && document.contains(modalOpener)) ? modalOpener
+    : (modalOpenerAct ? document.querySelector('[data-act="'+modalOpenerAct.replace(/["\\]/g,'')+'"]') : null);
+  if(back){ try{ back.focus({preventScroll:true}); }catch(e){} }
+  modalOpener = null; modalOpenerAct = null; setTimeout(function(){ if(typeof checkRestReminder==='function') checkRestReminder(); }, 800); }
 
 function chipRowHtml(groupId, options, selectedDefault){
   var h = '<div class="chip-row" data-group="'+groupId+'">';
@@ -4497,14 +4545,14 @@ function openSettingsModal(){
 
   h += '<div style="height:10px"></div>';
   h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="sync-all">立即同步到雲端</button><button class="btn btn-ghost" style="flex:1" data-act="open-restore">從雲端還原</button></div>';
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">'+(state.lastCloudConfirmAt?('上次確認雲端存好:'+fmtTs(state.lastCloudConfirmAt)):'這個瀏覽器還沒有確認過雲端備份')+((state.lastCloudSendAt||0)>(state.lastCloudConfirmAt||0)?' · 最近一次已送出、尚未確認':'')+((state.lastChangeAt||0)>(state.lastCloudConfirmAt||0)&&state.lastCloudConfirmAt?' · 之後的變動還沒確認備份':'')+'</div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">'+(state.lastCloudConfirmAt?('上次確認雲端存好:'+fmtTs(state.lastCloudConfirmAt)):'這個瀏覽器還沒有確認過雲端備份')+((state.lastCloudSendAt||0)>(state.lastCloudConfirmAt||0)?((state.lastCloudBasicAt||0)>(state.lastCloudConfirmAt||0)?' · 最近一次雲端有收到,但沒辦法完整核對':' · 最近一次已送出、尚未確認'):'')+((state.lastChangeAt||0)>(state.lastCloudConfirmAt||0)&&state.lastCloudConfirmAt?' · 之後的變動還沒確認備份':'')+'</div>';
   h += '<div id="syncStatus" style="font-size:12px;color:var(--text-muted);margin-top:8px;text-align:center"></div>';
   h += '<div style="height:14px"></div>';
 
   h += '<div class="form-row" style="margin-top:10px"><label>自動備份間隔</label><select id="f-sync-every">'+
     SYNC_EVERY_OPTIONS.map(function(m){ return '<option value="'+m+'"'+(syncEveryMin()===m?' selected':'')+'>'+(m===60?'1 小時':m+' 分鐘')+(m===30?'(建議)':'')+'</option>'; }).join('')+'</select>'+
-    '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.6">最多多久自動備份一次。有記新的帳才會送;打下班卡、按「立即同步到雲端」會馬上送。間隔越短,雲端硬碟裡的備份檔越多(舊的會自動清掉)。</div></div>';
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.6">設定 Google Sheet 網址後,有新增、修改、刪除時,會依「自動備份間隔」自動把完整資料同步到雲端(打下班卡時馬上同步)(表單會整份更新,不會重複,刪除也會同步),雲端另外保留最近 60 次、90 天內每天一份、24 個月內每月一份完整備份(Apps Script v5 起存在 Google 雲端硬碟),換手機或資料不見時可以用「從雲端還原」拿回來。</div>';
+    '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.6">最多多久自動備份一次。有記新的帳才會送;打下班卡、按「立即同步到雲端」會馬上嘗試(沒網路或記帳本在背景時會延後,失敗會自動再試)。間隔越短,雲端硬碟裡的備份檔越多(舊的會自動清掉)。</div></div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.6">設定 Google Sheet 網址後,有新增、修改、刪除時,會依「自動備份間隔」自動把完整資料同步到雲端(打下班卡時馬上嘗試同步)(表單會整份更新,不會重複,刪除也會同步),雲端另外保留最近 60 次、90 天內每天一份、24 個月內每月一份完整備份(Apps Script v5 起存在 Google 雲端硬碟),換手機或資料不見時可以用「從雲端還原」拿回來。</div>';
   h += '</details><div style="height:14px"></div>';
   h += '<div class="btn-row"><button class="btn btn-danger" data-act="reset-all">清除所有資料</button></div>';
   S.cloud = h;
@@ -4515,7 +4563,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.13';
+var APP_VERSION = '2026.11.04.14';
 var WHATS_NEW = [
   '⚙️ 設定頁分成六類(基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享),點一類才展開,不用一直往下滑;「儲存設定」固定在最下面',
   '📱 記帳首頁可以自己排順序、隱藏用不到的區塊(⚙️「記帳首頁排列」);預設把平台按鈕移到路況上面',
@@ -4755,7 +4803,7 @@ function keepUndoCopy(label, done){
 }
 // settings that belong to this phone, not to the ledger: a restored backup must not switch sharing or
 // statistics back on, bring back an old sharing id, or claim this phone's cloud backup state
-var DEVICE_KEYS = ['syncUrl','syncEvery','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale'];
+var DEVICE_KEYS = ['syncUrl','syncEvery','lastCloudBasicAt','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale'];
 var LEDGER_PART_NAMES = {expenses:'支出', dailyMeta:'每日工時與里程', fixedCosts:'固定成本', fixedOverrides:'固定成本覆寫', targets:'目標', feeRules:'手續費設定', platformOverrides:'平台設定', customPlatforms:'自訂平台', platformOrder:'平台排列', payoutSettings:'撥款設定', payouts:'撥款核對', pendingTrips:'行程'};
 // '' when the data can be used as a ledger, otherwise what is wrong with it
 function ledgerProblem(p){
@@ -4767,24 +4815,53 @@ function ledgerProblem(p){
     if(!(k in p) || d[k]===null || typeof d[k]!=='object') continue;
     if(p[k]===null || typeof p[k]!=='object' || Array.isArray(p[k])!==Array.isArray(d[k])) return '「'+(LEDGER_PART_NAMES[k]||k)+'」這部分的格式不對';
   }
-  function badList(list, what, amountKey){
+  function isObj(x){ return !!x && typeof x==='object' && !Array.isArray(x); }
+  function finiteOrEmpty(v){ return v==null || v==='' || isFinite(+v); }
+  function badList(list, what, amountKey, typeKey){
     for(var i=0;i<list.length;i++){
       var x = list[i];
-      if(!x || typeof x!=='object' || !/^\d{4}-\d{2}-\d{2}$/.test(String(x.date||''))) return what+'第 '+(i+1)+' 筆的日期格式不對';
-      if(x[amountKey]!=null && !isFinite(+x[amountKey])) return what+'第 '+(i+1)+' 筆的金額格式不對';
+      if(!isObj(x) || !/^\d{4}-\d{2}-\d{2}$/.test(String(x.date||''))) return what+'第 '+(i+1)+' 筆的日期格式不對';
+      if(typeof x[typeKey]!=='string') return what+'第 '+(i+1)+' 筆少了類別';
+      if(!finiteOrEmpty(x[amountKey]) || !finiteOrEmpty(x.tip) || !finiteOrEmpty(x.ts)) return what+'第 '+(i+1)+' 筆的金額格式不對';
+      if(x.fees!=null && !isObj(x.fees)) return what+'第 '+(i+1)+' 筆的手續費資料格式不對';
     }
     return '';
   }
-  return badList(p.records, '收入', 'revenue') || badList(p.expenses||[], '支出', 'amount');
+  // every element of these lists is read as an object with fields
+  function objList(list, name, check){
+    for(var i=0;i<list.length;i++){
+      if(!isObj(list[i]) || (check && !check(list[i]))) return '「'+name+'」第 '+(i+1)+' 項的格式不對';
+    }
+    return '';
+  }
+  function objValues(o, name){
+    for(var k in o){ if(o[k]!=null && !isObj(o[k])) return '「'+name+'」的格式不對'; }
+    return '';
+  }
+  function numValues(o, name){
+    for(var k in o){ var v = o[k]; if(v!=null && typeof v!=='boolean' && !finiteOrEmpty(v)) return '「'+name+'」的格式不對'; }
+    return '';
+  }
+  return badList(p.records, '收入', 'revenue', 'platform') || badList(p.expenses||[], '支出', 'amount', 'category') ||
+    objList(p.customPlatforms||[], '自訂平台', function(c){ return typeof c.key==='string' && /^custom_/.test(c.key) && typeof c.label==='string'; }) ||
+    objList(p.fixedCosts||[], '固定成本', function(c){ return finiteOrEmpty(c.amount); }) ||
+    objList(p.payouts||[], '撥款核對') || objList(p.pendingTrips||[], '行程') ||
+    ((p.platformOrder||[]).some(function(k){ return typeof k!=='string'; }) ? '「平台排列」的格式不對' : '') ||
+    objValues(p.dailyMeta||{}, '每日工時與里程') || objValues(p.payoutSettings||{}, '撥款設定') ||
+    numValues(p.feeRules||{}, '手續費設定') || numValues(p.targets||{}, '目標') ||
+    ((p.activeTrip!=null && !isObj(p.activeTrip)) ? '「載客中的行程」格式不對' : '');
 }
 // every way of swapping in a whole ledger (backup file, cloud backup, undo, clear) goes through here:
 // check it, keep the current ledger aside, and say it worked only once the phone has really stored it.
 // If anything fails the current ledger stays as it was.
+var replacingLedger = false;
 function replaceLedger(parsed, undoLabel, okMsg){
+  if(replacingLedger){ alert('上一個還原還在處理中,請稍等幾秒。'); return false; }
   var prob = ledgerProblem(parsed);
   if(prob){ alert('這份資料不能還原:'+prob+'。\n\n目前的帳沒有任何改變。'); return false; }
+  replacingLedger = true;
   keepUndoCopy(undoLabel, function(kept){
-    if(!kept){ alert('沒辦法先把目前的帳另外保留一份(手機空間可能不夠),所以這次沒有還原。\n\n目前的帳沒有任何改變。'); return; }
+    if(!kept){ replacingLedger = false; alert('沒辦法先把目前的帳另外保留一份(手機空間可能不夠),所以這次沒有還原。\n\n目前的帳沒有任何改變。'); return; }
     var d = defaultState();
     for(var k in d){ if(!(k in parsed)) parsed[k] = d[k]; }
     DEVICE_KEYS.forEach(function(k){ if(k in state) parsed[k] = state[k]; else delete parsed[k]; });
@@ -4793,6 +4870,7 @@ function replaceLedger(parsed, undoLabel, okMsg){
     state = parsed; stampMissingFeeSnapshots(); storageStale = false;
     saveFailAlerted = true;  // this flow explains a failure itself; the "this entry was not saved" alert would mislead
     save(function(ok){
+      replacingLedger = false;
       saveFailAlerted = prevAlerted;
       if(!ok){
         // nothing reached storage, so it still holds exactly the ledger we go back to
@@ -4800,6 +4878,7 @@ function replaceLedger(parsed, undoLabel, okMsg){
         alert('資料沒有存進手機,這次沒有還原。\n\n目前的帳沒有任何改變;請確認手機空間後再試一次。');
         return;
       }
+      cloudGen++; noteHadData();
       closeModal();
       alert(okMsg());
     });
@@ -5018,7 +5097,7 @@ function saveSettings(){
   setCloudKey(document.getElementById('f-cloud-key').value.trim());
   var seEl = document.getElementById('f-sync-every');
   if(seEl && +seEl.value!==syncEveryMin()){ state.syncEvery = +seEl.value; if(cloudSyncTimer) scheduleCloudSync(); }
-  if(getCloudKey()!==keyBefore || state.syncUrl!==prevSyncUrl){ state.lastCloudConfirmAt = 0; setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(true); }); }, 300); }
+  if(getCloudKey()!==keyBefore || state.syncUrl!==prevSyncUrl){ cloudGen++; state.lastCloudConfirmAt = 0; state.lastCloudBasicAt = 0; setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(true); }); }, 300); }
   save(); closeModal(); renderAll();
   if(state.syncUrl && state.syncUrl!==prevSyncUrl && !hasMeaningfulData()){
     if(confirm('這個瀏覽器目前沒有任何記帳資料。要從雲端還原之前的資料嗎?')) openCloudRestoreModal();
@@ -5262,13 +5341,15 @@ document.addEventListener('click', function(e){
   else if(cmd==='sync-all'){
     if(!state.syncUrl){ alert('請先在上面填入 Google Sheet 同步網址,再按儲存設定。'); return; }
     var statusEl = document.getElementById('syncStatus');
-    if(!hasMeaningfulData()){ if(statusEl) statusEl.textContent = '這個瀏覽器目前沒有任何收入或支出資料,為了避免空資料蓋掉雲端,不會上傳。若要拿回資料請按「從雲端還原」。'; return; }
+    if(!canSyncLedger()){ if(statusEl) statusEl.textContent = '這個瀏覽器目前沒有任何收入或支出資料,為了避免空資料蓋掉雲端,不會上傳。若要拿回資料請按「從雲端還原」。'; return; }
     if(cloudSyncTimer){ clearTimeout(cloudSyncTimer); cloudSyncTimer=null; cloudSyncDue=0; }
     var nI = state.records.length, nE = state.expenses.length;
     if(statusEl) statusEl.textContent = '送出中,正在確認雲端有沒有存好…';
-    var sent = pushCloudSnapshot(function(ok){
+    var sent = pushCloudSnapshot(function(ok, kind){
       var el = document.getElementById('syncStatus'); if(!el) return;
-      el.textContent = ok ? '✓ 雲端已確認存好('+nI+' 筆收入、'+nE+' 筆支出)' : '已送出,但還沒確認雲端有存好。請確認網路和密碼,稍後再按一次。';
+      el.textContent = ok ? '✓ 雲端已確認存好('+nI+' 筆收入、'+nE+' 筆支出)'
+        : kind==='basic' ? '已送出,雲端有收到這份,但沒辦法完整核對內容(同步程式不是最新的 v6,或這個瀏覽器不支援)。在那之前也請定期存備份檔。'
+        : '已送出,但還沒確認雲端有存好。稍後會自動再試;也可以確認網路和密碼後再按一次。';
     });
     if(!sent && statusEl) statusEl.textContent = '現在沒辦法送出(資料正在另一個畫面使用中)。請關掉其他記帳本畫面,重新開啟後再按一次。';
   }
@@ -5516,7 +5597,19 @@ document.addEventListener('change', function(e){
 })();
 applyTheme();
 applyFontScale();
-try{ if('serviceWorker' in navigator && (location.protocol==='https:' || isLocalHost())) navigator.serviceWorker.register('sw.js').catch(function(){}); }catch(e){}
+// the native app carries its files inside the install; only the website needs the offline copy
+function isNativeApp(){ try{ return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()); }catch(e){ return false; } }
+try{ if('serviceWorker' in navigator && !isNativeApp() && (location.protocol==='https:' || isLocalHost())) navigator.serviceWorker.register('sw.js').catch(function(){}); }catch(e){}
+// Android back key in the app: close an open sheet first, then return to the 記帳 tab, and only then
+// send the app to the background (it keeps its place, like the home key)
+try{
+  var capApp = isNativeApp() && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+  if(capApp) capApp.addListener('backButton', function(){
+    if(document.getElementById('modalBody')){ closeModal(); return; }
+    if(currentTab!=='entry'){ currentTab = 'entry'; renderAll(); return; }
+    capApp.minimizeApp();
+  });
+}catch(e){}
 renderAll();
 setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(); }); }, 1500);
 setTimeout(hotDeleteFlush, 2500);
