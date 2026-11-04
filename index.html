@@ -599,6 +599,7 @@ function load(){
     var newer = false;
     for(var ci=0; ci<__BOOT.nativeCandidates.length; ci++){
       var cand = __BOOT.nativeCandidates[ci];
+      if(cand.data==null) throw {nativeNeed:cand};
       try{
         var ps = unpackState(JSON.parse(cand.data));
         if(ps && +ps.fmt > LEDGER_FMT){ newer = true; continue; }
@@ -766,11 +767,19 @@ function save(onDone){
   scheduleCloudSync();
 }
 function settleWaiters(list, ok){ list.forEach(function(f){ try{ f(ok); }catch(e){} }); }
+// Each slot is the ledger compressed (gzip, about a fifth of the size, so far less to pass to the phone and
+// write), followed by a small index file with its revision. Start-up reads the two index files and then only
+// the newest ledger. A save counts as done once both are written; gzip's own check catches a cut-off file.
+// Phones without compression in their web view keep the older plain-text envelope, which is still read.
 function nativeWriteLedger(str, rev){
   var job = nativeChain.then(function(){
     var f = NATIVE_SLOTS[nativeNext];
-    return NATIVE_FS.writeFile({path:f, directory:'DATA', encoding:'utf8', data:JSON.stringify({rev:rev, len:str.length, savedAt:Date.now(), data:str})})
-      .then(function(){ nativeNext = 1 - nativeNext; });
+    return gzipBase64(str).then(function(b64){
+      return b64 ? NATIVE_FS.writeFile({path:f, directory:'DATA', data:b64})
+        : NATIVE_FS.writeFile({path:f, directory:'DATA', encoding:'utf8', data:JSON.stringify({rev:rev, len:str.length, savedAt:Date.now(), data:str})});
+    }).then(function(){
+      return NATIVE_FS.writeFile({path:nativeMetaName(f), directory:'DATA', encoding:'utf8', data:JSON.stringify({rev:rev, len:str.length})});
+    }).then(function(){ nativeNext = 1 - nativeNext; });
   });
   nativeChain = job.catch(function(){});
   return job;
@@ -4732,7 +4741,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.21';
+var APP_VERSION = '2026.11.04.22';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -5829,27 +5838,82 @@ var NATIVE_FS = (function(){
   try{ return (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform() && window.Capacitor.Plugins.Filesystem) || null; }catch(e){ return null; }
 })();
 var NATIVE_SLOTS = ['ledger-a.json', 'ledger-b.json'];
-// -> {state:'none'} when the folder listing shows neither file (a new install, or a phone still on its
-//    web view copy); {state:'ok', candidates} with the readable slots, newest first (load() checks them in full);
-//    {state:'bad'} when the files exist but none can be read. A failed listing rejects: we cannot tell.
+function nativeMetaName(f){ return f.replace(/\.json$/, '.meta'); }
+function bytesToBase64(u8){
+  var out = '', CH = 0x8000;
+  for(var i=0; i<u8.length; i+=CH) out += String.fromCharCode.apply(null, u8.subarray(i, i+CH));
+  return btoa(out);
+}
+function base64ToBytes(b64){
+  var bin = atob(b64), u8 = new Uint8Array(bin.length);
+  for(var i=0; i<bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8;
+}
+// null when this web view cannot compress
+function gzipBase64(text){
+  try{
+    if(typeof CompressionStream==='undefined') return Promise.resolve(null);
+    var cs = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));
+    return new Response(cs).arrayBuffer().then(function(buf){ return bytesToBase64(new Uint8Array(buf)); }, function(){ return null; });
+  }catch(e){ return Promise.resolve(null); }
+}
+// gzip (checked by its own CRC) or plain UTF-8 text; rejects when a gzip file is cut off or damaged
+function bytesToText(u8){
+  if(u8.length>2 && u8[0]===0x1f && u8[1]===0x8b){
+    if(typeof DecompressionStream==='undefined') return Promise.reject(new Error('no gunzip'));
+    return new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+  }
+  return Promise.resolve(new TextDecoder('utf-8').decode(u8));
+}
 function nativeSlotOk(o){
   if(!o || typeof o.data!=='string' || !isFinite(o.rev) || Math.floor(+o.rev)!==+o.rev || +o.rev<0) return false;
   if(o.len!=null && o.len!==o.data.length) return false;
   return true;
 }
+// one slot -> {rev, data, slot} or null. Older files are a JSON envelope {rev,len,data}; newer ones are the
+// compressed ledger itself, whose revision and length come from the index file.
+function nativeReadSlot(f, meta){
+  return NATIVE_FS.readFile({path:f, directory:'DATA'}).then(function(r){
+    return bytesToText(base64ToBytes(r.data));
+  }).then(function(text){
+    if(text.slice(0,7)==='{"rev":'){
+      var o = JSON.parse(text);
+      return nativeSlotOk(o) ? {rev:+o.rev, data:o.data, slot:f} : null;
+    }
+    if(!meta || !isFinite(meta.rev) || (meta.len!=null && meta.len!==text.length)) return null;
+    return {rev:+meta.rev, data:text, slot:f};
+  }).catch(function(){ return null; });
+}
+// -> {state:'none'} when the folder listing shows no ledger files (a new install, or a phone still on its
+//    web view copy); {state:'ok', candidates} newest first, the first one already read and the rest read
+//    only if load() turns it down; {state:'bad'} when files exist but none can be read.
+//    A failed listing rejects: we cannot tell.
 function nativeReadLedger(){
   return NATIVE_FS.readdir({path:'', directory:'DATA'}).then(function(r){
     var names = (r.files||[]).map(function(f){ return typeof f==='string' ? f : f.name; });
     var present = NATIVE_SLOTS.filter(function(f){ return names.indexOf(f)>=0; });
     if(!present.length) return {state:'none'};
     return Promise.all(present.map(function(f){
-      return NATIVE_FS.readFile({path:f, directory:'DATA', encoding:'utf8'}).then(function(rr){
-        var o = JSON.parse(rr.data);
-        return nativeSlotOk(o) ? {rev:+o.rev, data:o.data, slot:f} : null;
-      }).catch(function(){ return null; });
-    })).then(function(list){
-      var c = list.filter(Boolean).sort(function(a,b){ return b.rev-a.rev; });
-      return c.length ? {state:'ok', candidates:c} : {state:'bad'};
+      if(names.indexOf(nativeMetaName(f))<0) return null;
+      return NATIVE_FS.readFile({path:nativeMetaName(f), directory:'DATA', encoding:'utf8'}).then(function(m){ return JSON.parse(m.data); }).catch(function(){ return null; });
+    })).then(function(metas){
+      var slots = present.map(function(f, i){ return {slot:f, meta:metas[i]}; });
+      // a slot without a readable index (files from before, or an index write that was cut off) is read in full
+      // to learn its revision; otherwise the index order is enough
+      var unknown = slots.filter(function(x){ return !x.meta; });
+      return Promise.all(unknown.map(function(x){ return nativeReadSlot(x.slot, null).then(function(c){ x.cand = c; x.rev = c ? c.rev : -1; }); })).then(function(){
+        slots.forEach(function(x){ if(x.meta) x.rev = +x.meta.rev; });
+        slots.sort(function(a,b){ return b.rev-a.rev; });
+        var list = [];
+        function next(i){
+          if(i>=slots.length) return list.length ? {state:'ok', candidates:list} : {state:'bad'};
+          var x = slots[i];
+          if(!x.meta){ if(x.cand) list.push(x.cand); return next(i+1); }
+          if(list.length){ list.push({slot:x.slot, rev:x.rev, meta:x.meta, data:null}); return next(i+1); }
+          return nativeReadSlot(x.slot, x.meta).then(function(c){ if(c) list.push(c); return next(i+1); });
+        }
+        return next(0);
+      });
     });
   });
 }
@@ -5870,7 +5934,22 @@ var __BOOT = {state:null, idb:null, idbError:false};
   var started = false;
   function start(){
     if(started) return; started = true;
-    try{ __taxiMain(); }catch(e){ if(e && e.nativeBad) nativeBootProblem(e.kind); else throw e; }
+    try{ __taxiMain(); }
+    catch(e){
+      if(e && e.nativeBad){ nativeBootProblem(e.kind); return; }
+      if(e && e.nativeNeed){
+        // the newest ledger did not pass the full check: read the older one and start over
+        // (nothing before load() in the app has any lasting effect)
+        var c = e.nativeNeed;
+        nativeReadSlot(c.slot, c.meta).then(function(got){
+          var list = __BOOT.nativeCandidates;
+          if(got){ c.data = got.data; c.rev = got.rev; } else list.splice(list.indexOf(c), 1);
+          started = false; start();
+        });
+        return;
+      }
+      throw e;
+    }
   }
   // In the app the ledger file decides. Only when there is no file at all does the web view copy count
   // (moving an existing ledger in); a slow or unreadable file never starts the app with an empty ledger.
