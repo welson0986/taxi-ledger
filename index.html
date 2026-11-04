@@ -584,6 +584,25 @@ var IDB_MIGRATED_FLAG = 'taxi_ledger_idb';
 var storageStale = false;
 var corruptRaw = null;  // ledger text that failed to load; kept aside so the blank ledger never overwrites it
 function load(){
+  // In the app: try the ledger files newest first and take the first one that passes the full restore check.
+  // If none does, stop here (the start-up shows what is wrong) instead of opening an empty ledger that would
+  // then be saved over them.
+  if(__BOOT.nativeCandidates){
+    var newer = false;
+    for(var ci=0; ci<__BOOT.nativeCandidates.length; ci++){
+      var cand = __BOOT.nativeCandidates[ci];
+      try{
+        var ps = unpackState(JSON.parse(cand.data));
+        if(ps && +ps.fmt > LEDGER_FMT){ newer = true; continue; }
+        if(ledgerProblem(ps)) continue;
+        var dn = defaultState();
+        for(var kn in dn){ if(!(kn in ps)) ps[kn] = dn[kn]; }
+        __BOOT.nativeSlot = cand.slot; __BOOT.rev = Math.max(cand.rev, +__BOOT.rev||0); __BOOT.fromFile = true;
+        return ps;
+      }catch(e){}
+    }
+    throw {nativeBad:true, kind: newer ? 'newer' : 'bad'};
+  }
   var raw = null;
   try{
     if(__BOOT.state!=null) raw = __BOOT.state;
@@ -655,6 +674,9 @@ var lastKnownRev = Math.max(+state.rev||0, +__BOOT.rev||0);
 var ledgerChannel = null;
 try{ if(window.BroadcastChannel) ledgerChannel = new BroadcastChannel('taxi_ledger'); }catch(e){}
 var writePending = false, saveWaiters = [];
+// the app's file writes, one at a time, alternating the two slots and starting with the one not holding
+// the ledger just loaded. Set up here because start-up itself may save (moving a ledger in, fee snapshots).
+var nativeChain = Promise.resolve(), nativeNext = (__BOOT.nativeSlot===NATIVE_SLOTS[0]) ? 1 : 0;
 function writeStore(){
   var waiters = saveWaiters.splice(0);
   if(storageStale){ settleWaiters(waiters, false); return; }
@@ -735,8 +757,6 @@ function save(onDone){
   scheduleCloudSync();
 }
 function settleWaiters(list, ok){ list.forEach(function(f){ try{ f(ok); }catch(e){} }); }
-// writes one at a time and alternates the two slots, starting with the one not holding the copy just loaded
-var nativeChain = Promise.resolve(), nativeNext = (__BOOT.nativeSlot===NATIVE_SLOTS[0]) ? 1 : 0;
 function nativeWriteLedger(str, rev){
   var job = nativeChain.then(function(){
     var f = NATIVE_SLOTS[nativeNext];
@@ -4694,7 +4714,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.04.19';
+var APP_VERSION = '2026.11.04.20';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -4775,7 +4795,7 @@ function aboutHtml(){
   function para(title, body){ return '<div style="margin-bottom:12px"><div style="font-weight:700;font-size:13px;margin-bottom:3px">'+title+'</div><div style="font-size:12.5px;color:var(--text-muted);line-height:1.65">'+body+'</div></div>'; }
   var h = '<div class="card" style="margin-top:18px;padding:14px 16px"><div style="font-size:15px;font-weight:700;margin-bottom:12px">關於跑車人生</div>';
   h += para('🆓 免費使用', '本記帳本完全免費,不需註冊帳號。');
-  h += para('🔒 你的帳由你掌握', '所有紀錄存在你自己的手機裡,製作者和其他使用者都看不到。設定雲端備份的話,資料也是存到你自己的 Google 帳號。<br>為了保護你的資料,建議手機設定螢幕鎖,並定期備份。');
+  h += para('🔒 你的帳由你掌握', '帳本預設存在你的手機,瑞威不預設取得;選擇分享車友熱區時,才會送出約 1 公里的格點、時段和趟數;備份檔和雲端同步放在哪裡由你選擇(雲端同步存在你自己的 Google 帳號)。<br>為了保護你的資料,建議手機設定螢幕鎖,並定期備份。');
   h += para('📊 不具名使用人數統計', '為了知道有多少司機在用,記帳本每天會送出一次不具名資料:一組隨機編號、日期、版本、簡單/完整模式、手機系統(iPhone/安卓)、是否從主畫面打開。<br>不包含任何金額、平台、位置或個人資料,製作者也無法從編號知道你是誰。不想參與,可以在上面「不具名使用人數統計」取消勾選。');
   h += para('📄 隱私權政策', '完整說明記帳本會處理哪些資料、存在哪裡、保存多久:<br><a style="'+link+'" target="_blank" rel="noopener" href="https://welson0986.github.io/taxi-ledger/privacy.html">查看隱私權政策 ›</a>');
   h += para('📍 車友熱區', '同意分享的人,記帳本每天會送出前一天的「約 1 公里一格的上車區域、時段、趟數」,不含精確位置、金額、平台。至少 3 位車友都上過車的地方才會顯示給有分享的人看,看不到任何人的個人紀錄。可以隨時在上面取消分享。');
@@ -4953,7 +4973,7 @@ function ledgerProblem(p){
   var d = defaultState();
   for(var k in d){
     if(!(k in p) || d[k]===null || typeof d[k]!=='object') continue;
-    if(p[k]===null || typeof p[k]!=='object' || Array.isArray(p[k])!==Array.isArray(d[k])) return '「'+(LEDGER_PART_NAMES[k]||k)+'」這部分的格式不對';
+    if(p[k]===null || typeof p[k]!=='object' || Array.isArray(p[k])!==Array.isArray(d[k])) return '「'+((typeof LEDGER_PART_NAMES!=='undefined' && LEDGER_PART_NAMES[k])||k)+'」這部分的格式不對';
   }
   function isObj(x){ return !!x && typeof x==='object' && !Array.isArray(x); }
   function finiteOrEmpty(v){ return v==null || v==='' || isFinite(+v); }
@@ -5791,24 +5811,18 @@ var NATIVE_FS = (function(){
   try{ return (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform() && window.Capacitor.Plugins.Filesystem) || null; }catch(e){ return null; }
 })();
 var NATIVE_SLOTS = ['ledger-a.json', 'ledger-b.json'];
-// -> {state:'none'} when neither file exists (a new install, or a phone still on its web view copy),
-//    {state:'ok', best} with the newest slot whose content is a complete ledger,
-//    {state:'bad'} when the files exist but none of them can be used (never treated as "no ledger")
+// -> {state:'none'} when the folder listing shows neither file (a new install, or a phone still on its
+//    web view copy); {state:'ok', candidates} with the readable slots, newest first (load() checks them in full);
+//    {state:'bad'} when the files exist but none can be read. A failed listing rejects: we cannot tell.
 function nativeSlotOk(o){
   if(!o || typeof o.data!=='string' || !isFinite(o.rev) || Math.floor(+o.rev)!==+o.rev || +o.rev<0) return false;
   if(o.len!=null && o.len!==o.data.length) return false;
-  try{ var inner = JSON.parse(o.data); return !!inner && typeof inner==='object' && Array.isArray(inner.records); }catch(e){ return false; }
+  return true;
 }
 function nativeReadLedger(){
-  // which slot files exist: from the folder listing, or file by file if listing is not possible
   return NATIVE_FS.readdir({path:'', directory:'DATA'}).then(function(r){
     var names = (r.files||[]).map(function(f){ return typeof f==='string' ? f : f.name; });
-    return NATIVE_SLOTS.filter(function(f){ return names.indexOf(f)>=0; });
-  }, function(){
-    return Promise.all(NATIVE_SLOTS.map(function(f){
-      return NATIVE_FS.stat({path:f, directory:'DATA'}).then(function(){ return f; }, function(){ return null; });
-    })).then(function(l){ return l.filter(Boolean); });
-  }).then(function(present){
+    var present = NATIVE_SLOTS.filter(function(f){ return names.indexOf(f)>=0; });
     if(!present.length) return {state:'none'};
     return Promise.all(present.map(function(f){
       return NATIVE_FS.readFile({path:f, directory:'DATA', encoding:'utf8'}).then(function(rr){
@@ -5816,9 +5830,8 @@ function nativeReadLedger(){
         return nativeSlotOk(o) ? {rev:+o.rev, data:o.data, slot:f} : null;
       }).catch(function(){ return null; });
     })).then(function(list){
-      var best = null;
-      list.forEach(function(x){ if(x && (!best || x.rev > best.rev)) best = x; });
-      return best ? {state:'ok', best:best} : {state:'bad'};
+      var c = list.filter(Boolean).sort(function(a,b){ return b.rev-a.rev; });
+      return c.length ? {state:'ok', candidates:c} : {state:'bad'};
     });
   });
 }
@@ -5827,7 +5840,9 @@ function nativeBootProblem(kind){
   var el = document.getElementById('content'); if(!el) return;
   el.innerHTML = '<div class="card" style="margin-top:20px;padding:16px;line-height:1.7">'+
     (kind==='slow' ? '<b>正在讀取帳本,比平常久一點…</b><br>請稍等;一直沒反應就按「重新讀取」。'
-      : '<b style="color:var(--expense)">⚠️ 帳本檔讀取不到</b><br>手機裡的帳本檔還在,記帳本沒有動它。請按「重新讀取」;一直不行的話,先不要記帳、不要移除 App,寫信到 support@realway.com.tw,我們幫你找回來。')+
+      : kind==='newer' ? '<b style="color:var(--expense)">⚠️ 帳本是比較新版的記帳本存的</b><br>這個版本看不懂,所以沒有開啟,帳本檔也沒有動。請先到商店把記帳本更新到最新版,再打開。'
+      : kind==='unknown' ? '<b style="color:var(--expense)">⚠️ 目前無法確認帳本的狀態</b><br>手機暫時讀不到 App 的資料夾,所以還沒開始記帳,也沒有寫入任何東西。請按「重新讀取」,或重開手機再試;一直不行的話,先不要移除 App,寫信到 support@realway.com.tw。'
+      : '<b style="color:var(--expense)">⚠️ 帳本檔讀取不到</b><br>手機裡的帳本檔還在,記帳本沒有動它。請按「重新讀取」;一直不行的話,先不要記帳、不要移除 App,寫信到 support@realway.com.tw,我們協助檢查能不能復原。')+
     '<div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" onclick="location.reload()">重新讀取</button></div></div>';
 }
 // Load saved data from IndexedDB (large storage) first, then start the app with it.
@@ -5835,7 +5850,10 @@ function nativeBootProblem(kind){
 var __BOOT = {state:null, idb:null, idbError:false};
 (function(){
   var started = false;
-  function start(){ if(started) return; started = true; __taxiMain(); }
+  function start(){
+    if(started) return; started = true;
+    try{ __taxiMain(); }catch(e){ if(e && e.nativeBad) nativeBootProblem(e.kind); else throw e; }
+  }
   // In the app the ledger file decides. Only when there is no file at all does the web view copy count
   // (moving an existing ledger in); a slow or unreadable file never starts the app with an empty ledger.
   function go(){
@@ -5844,12 +5862,10 @@ var __BOOT = {state:null, idb:null, idbError:false};
     var slow = setTimeout(function(){ nativeBootProblem('slow'); }, 4000);
     nativeReadLedger().then(function(r){
       clearTimeout(slow);
-      if(r.state==='ok'){
-        __BOOT.state = r.best.data; __BOOT.rev = Math.max(r.best.rev, +__BOOT.rev||0); __BOOT.nativeSlot = r.best.slot; __BOOT.fromFile = true;
-        start();
-      } else if(r.state==='none'){ __BOOT.moveInFromCache = __BOOT.state!=null; start(); }
+      if(r.state==='ok'){ __BOOT.nativeCandidates = r.candidates; __BOOT.state = null; start(); }
+      else if(r.state==='none'){ __BOOT.moveInFromCache = __BOOT.state!=null; start(); }
       else nativeBootProblem('bad');
-    }, function(){ clearTimeout(slow); nativeBootProblem('bad'); });
+    }, function(){ clearTimeout(slow); nativeBootProblem('unknown'); });
   }
   if(!window.indexedDB){ go(); return; }
   try{
