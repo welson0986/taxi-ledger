@@ -4813,7 +4813,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.05.3';
+var APP_VERSION = '2026.11.05.4';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -5023,10 +5023,9 @@ function tabWarningHtml(){
     '<div style="text-align:right;margin-top:6px"><button class="btn btn-ghost" style="padding:6px 12px;font-size:12px;width:auto" data-act="dismiss-tab-warning">知道了</button></div></div>';
 }
 // after a backup file is handed over: what is in it, so a phone change can be checked against these numbers
-function openBackupDoneModal(){
-  var sm = ledgerSummary(state);
+function openBackupDoneModal(sm){
   openModal('<div class="modal-title">備份檔已交給分享選單<button class="close" data-act="close-modal">✕</button></div>'+
-    '<div style="font-size:13px;line-height:1.7">這份備份裡有:<div style="font-size:15px;font-weight:700;margin:6px 0">'+esc(summaryLine(sm))+'</div>'+
+    '<div style="font-size:13px;line-height:1.7">這份備份裡有:<div style="font-size:15px;font-weight:700;margin:6px 0">'+esc(summaryLine(sm))+(sm.last?'<br>'+esc(summaryLast(sm)):'')+'</div>'+
     '換手機搬帳時,搬完會顯示搬進來的筆數,<b>跟這裡一樣就對了</b>。建議先截圖這個畫面。<br><br>記得到雲端硬碟確認檔案真的在、找得到。</div>'+
     '<div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" data-act="close-modal">知道了</button></div>');
 }
@@ -5046,9 +5045,16 @@ function openImportModal(){
 function ledgerSummary(st){
   var recs = (st.records||[]).filter(function(r){ return r.platform!=='bonus'; });
   var dates = (st.records||[]).map(function(r){ return r.date; }).concat((st.expenses||[]).map(function(e){ return e.date; })).filter(Boolean).sort();
-  return {recs:recs.length, exps:(st.expenses||[]).length, from:dates[0]||'', to:dates[dates.length-1]||''};
+  // the newest income entry, so a check can catch a changed amount and not only a changed count
+  var last = null;
+  recs.forEach(function(r){
+    var k = (r.date||'')+' '+(r.time||'')+' '+String(r.ts||r.createdAt||0).padStart(15, '0');
+    if(!last || k>last.k) last = {k:k, date:r.date||'', amt:+r.revenue||0};
+  });
+  return {recs:recs.length, exps:(st.expenses||[]).length, from:dates[0]||'', to:dates[dates.length-1]||'', last:last};
 }
 function summaryLine(x){ return '收入 '+x.recs+' 筆、支出 '+x.exps+' 筆'+(x.from?(','+x.from+' ~ '+x.to):''); }
+function summaryLast(x){ return x.last ? '最近一筆收入:'+x.last.date+' '+fmtMoney(x.last.amt) : ''; }
 // the ledger as it was before a restore or a full clear, so a mistake can be undone.
 // done(true) only once the copy is really stored; the undo link appears only then
 function keepUndoCopy(label, done){
@@ -5185,10 +5191,10 @@ function doImportData(){
   if(prob){ alert('這份資料不能還原:'+prob+'。\n\n目前的帳沒有任何改變。'); return; }
   var inFile = ledgerSummary(parsed), now = ledgerSummary(state);
   var older = now.to && inFile.to < now.to;
-  if(!confirm('請確認要還原的資料:\n\n📄 備份檔:'+summaryLine(inFile)+'\n📱 目前手機:'+summaryLine(now)+'\n\n'+
+  if(!confirm('請確認要還原的資料:\n\n📄 備份檔:'+summaryLine(inFile)+(inFile.last?'\n   '+summaryLast(inFile):'')+'\n📱 目前手機:'+summaryLine(now)+'\n\n跟存備份時顯示的不一樣,請按「取消」,回去找正確的檔案。\n\n'+
     (older ? '⚠️ 備份檔比目前的資料舊,'+inFile.to+' 以後記的帳會不見!\n\n' : '')+
     '確定要用備份檔取代目前的資料嗎?(目前的資料會先另外保留一份,還原錯了可以復原)\n\n熱區分享、統計、雲端同步等這支手機的設定不會被備份檔改掉。')) return;
-  replaceLedger(parsed, '匯入還原', function(){ return '資料已還原。\n\n搬進來的帳:'+summaryLine(inFile)+'\n請跟存備份時畫面上顯示的數字對照,一樣就對了。\n\n如果選錯檔案,到 ⚙️ →「匯入還原」按「↩️ 復原到匯入還原前的資料」。'; });
+  replaceLedger(parsed, '匯入還原', function(){ return '資料已還原。\n\n搬進來的帳:'+summaryLine(inFile)+(inFile.last?'\n'+summaryLast(inFile):'')+'\n請跟存備份時畫面上顯示的對照,一樣表示初步核對通過;不一樣先不要記帳,寫信給我們。\n\n如果選錯檔案,到 ⚙️ →「匯入還原」按「↩️ 復原到匯入還原前的資料」。'; });
 }
 function openNewPlatformModal(){
   var h = '<div class="modal-title">新增平台<button class="close" data-act="close-modal">✕</button></div>';
@@ -5794,8 +5800,10 @@ document.addEventListener('click', function(e){
   else if(cmd==='copy-saved'){ markExported(); var cs = document.getElementById('exportCopyStatus'); if(cs) cs.textContent = '好,已記下這次備份。'; }
   else if(cmd==='export-file'){
     var nowD = new Date(), stamp = todayStr().replace(/-/g,'')+'_'+String(nowD.getHours()).padStart(2,'0')+String(nowD.getMinutes()).padStart(2,'0');
+    // the summary describes exactly what went into this file, even if something is recorded while the share sheet is open
+    var backupSum = ledgerSummary(state);
     shareOrDownloadFile('跑車人生備份_'+stamp+'.json', packState(state), 'application/json').then(function(done){
-      if(done){ markExported(); renderAll(); openBackupDoneModal(); }
+      if(done){ markExported(); renderAll(); openBackupDoneModal(backupSum); }
     });
   }
   else if(cmd==='year-report'){ openYearReportModal(arg); }
@@ -5925,7 +5933,7 @@ document.addEventListener('change', function(e){
     var fr = new FileReader();
     fr.onload = function(){
       var ta = document.getElementById('importText'); if(ta) ta.value = String(fr.result||'');
-      var sm = ''; try{ sm = summaryLine(ledgerSummary(unpackState(JSON.parse(String(fr.result||'').trim())))); }catch(err){}
+      var sm = ''; try{ var fs0 = ledgerSummary(unpackState(JSON.parse(String(fr.result||'').trim()))); sm = summaryLine(fs0)+(fs0.last?','+summaryLast(fs0):''); }catch(err){}
       var fn = document.getElementById('importFileName'); if(fn) fn.textContent = '已讀取:'+f.name+(sm ? '(這份裡有'+sm+')' : '')+',確認後按下方「還原這份資料」';
     };
     fr.readAsText(f);
