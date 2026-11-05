@@ -4841,7 +4841,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.05.6';
+var APP_VERSION = '2026.11.05.7';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -4929,9 +4929,10 @@ function aboutHtml(){
   // the mail opens with the version and phone type filled in, nothing from the ledger
   var mailto = 'mailto:support@realway.com.tw?subject='+encodeURIComponent('跑車人生 建議與問題回報')+
     '&body='+encodeURIComponent('記帳本版本:'+APP_VERSION+'\n手機:'+phoneDesc()+'\n\n請描述問題或建議:\n');
-  h += para('💬 建議與問題回報', '有任何建議或使用上的問題,歡迎寫信給「跑車人生客服」:<br>'+
+  h += para('💬 建議與問題回報', '有任何建議或使用上的問題,歡迎找「跑車人生客服」:<br>'+
+    '💚 <a style="'+link+'" target="_blank" rel="noopener" href="https://line.me/R/ti/p/@029eempg">LINE 官方帳號「跑車人生」</a>(可以直接傳截圖)<br>'+
     '✉️ <a style="'+link+'" href="'+esc(mailto)+'">support@realway.com.tw</a><br>'+
-    '<span style="font-size:11.5px">按上面的信箱,會自動帶入記帳本版本、手機系統版本和型號,方便查問題(不會帶入任何帳目)。</span>');
+    '<span style="font-size:11.5px">用 LINE 回報時,請附上這裡的版本:'+APP_VERSION+'。按上面的信箱,會自動帶入記帳本版本、手機系統版本和型號(不會帶入任何帳目)。</span>');
   h += para('ℹ️ 版本資訊', '版本:'+APP_VERSION+'<br>製作者:Welson(REALWAY CO., LTD.)<br>© 2026 REALWAY CO., LTD.');
   return h+'</div>';
 }
