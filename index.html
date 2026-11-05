@@ -5033,50 +5033,73 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.05.21';
+var APP_VERSION = '2026.11.05.23';
+// what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
+// A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
+// summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
+// 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
-  '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
-  '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
-  '🛡️ 還原更安全:匯入還原、從雲端還原、復原、清除,真的存進手機才說完成;格式壞掉的備份檔會被擋下;還原舊備份不會把關掉的熱區分享、統計重新打開',
-  '✏️ 金額可能打錯時會提醒(例如多打一個 0),長途或有加成按「確定」就好;首頁「今日實收」旁的 ⓘ 可以看實收、現金收入、待撥款的差別',
-  '☁️ 有設雲端同步的:可以選自動備份間隔(15 分鐘／30 分鐘／1 小時),打下班卡會馬上嘗試備份,失敗會自動再試',
-  '⚙️ 設定頁分成七類(基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享、關於),點一類才展開,不用一直往下滑;「儲存設定」固定在最下面',
-  '📱 記帳首頁可以自己排順序、隱藏用不到的區塊(⚙️「記帳首頁排列」);預設把平台按鈕移到路況上面',
-  '✓ 記好一筆會跳出「已記」提示;最上面「今日淨收入」改名「今日結餘」(今天實收減今天支出,固定成本在分析頁的淨利才扣);有設雲端同步的,確認存好之後又有新的帳,超過 3 天沒備份上去會提醒',
-  '💬 LINE GO 小黃改成兩段手續費:$199 以下每趟扣 $10、$200 以上抽 10%,非現金另扣 2.5%,派遣費每月最多 $3,000;記帳可選付款方式',
-  '🚖 台灣大小黃可以填「信用卡/綁定支付手續費 %」(正式隊員刷卡另扣的),在 ⚙️ 平台手續費設定',
-  '🔠 可以調字體大小了:⚙️「字體大小」選標準 / 大 / 特大 / 超大,字、圖示、按鈕一起放大',
-  '💳 台灣大、大都會、呼叫小黃的付款方式新增「悠遊卡」「愛心卡」,算車隊撥款,手續費預設 3%(⚙️ 平台手續費設定可改)',
-  '🚘 ⚙️「我的車」新增「R 牌租賃車」;新增平台時可以設派遣費 % 或每趟扣 $(例如自己的車行)',
-  '📞 接電單會扣車隊手續費:台灣大照台灣大的設定,大都會照方案(綁定支付另扣刷卡 %)',
-  '💳 呼叫小黃可選信用卡(扣 3%);預約單、接電可選現金或綁定支付',
-  '💱 可以記外幣小費(⚙️ 功能開關打開「外幣小費」),自動換算台幣',
-  '⏰ 上車熱區新增「現在」:看過去幾週的「星期幾+這個時段」最常在哪裡上車,我的熱區和車友熱區都有',
-  '👥 車友熱區的每個地點,會顯示你自己在那裡載過幾趟、平均實收多少',
-  '📖 ⚙️ 最上面新增「功能說明」:每個功能在哪裡、怎麼用,可以搜尋,關著的功能可以直接打開',
-  '⏱️ 今日行車顯示「目前時薪」;可以打開「休息提醒」,連續開太久會提醒你休息',
-  '🎯 新增「活動獎勵追蹤」:車隊有趟趟加給、跑滿 N 趟獎金時建一張活動卡,記帳本自動算趟數和獎勵(⚙️ 功能開關打開)',
-  '💲 手續費改成跟車隊一樣進位到整數(例如 $150 × 15% = 22.5 → $23)',
-  '🚗 大都會 0 月費方案:⚙️ 手續費設定選「0 月費方案」,記帳時選這單的派遣費 12.5% / 20% / 25%',
-  '⏱️ 可以補登上班時間(忘了打卡、或中途才開始用記帳本):⚙️ 功能開關打開「補登上班時間」',
-  '📶 沒有網路也能打開記帳本(例如地下停車場),記的帳一樣存在手機裡',
-  '🚕 下班打卡後會跳出「今日跑車報告」:實收、時薪、趟數,還會跟前 7 天比較',
-  '🛡️ 匯入還原前,會先比對備份檔和手機裡的資料;還原或清除錯了可以復原',
-  '🖼️ 新的主畫面圖示:之後新加入主畫面的人會看到。已經加過的不用重新加,刪掉圖示可能讓資料不見',
-  '💰 新增「加價金額」(選填):台灣大、大都會、YOXI、Uber 小黃的乘客加價叫車單,可以記下加價多少,分析頁「本期概況」會統計加價單多收多少。不需要的可以在 ⚙️ 功能開關關掉',
-  '🚕 開小黃的司機:到 ⚙️ 最上面「我的車」選「小黃」,Uber、BOLT、LINE GO 記帳時就不用再選車種;Uber 小黃改打跳表金額,自動扣 15%(可在手續費設定改)',
-  '🎟️ 新增「優惠券折抵」(選填,Uber 小黃):乘客用優惠券少付的錢,可選平台會補回或自己吸收,今日現金和撥款會跟著算對',
-  '💾 右上角新增「備份」按鈕:一按就能存備份檔,可以選存到 iCloud 或 Google 雲端硬碟;按鈕上的數字是幾天沒備份,變紅色就該備份了'
+  ['2026.11.05.21', '☁️ 雲端同步更穩定:另一台手機或平板已經送了比較新的帳時會先問你,不會讓舊帳蓋掉新帳;沒網路或送到一半斷線,恢復後會自動補送'],
+  ['2026.11.05.16', '✅ 確認視窗的按鈕改成中文「確定／取消」', 'app'],
+  ['2026.11.05.10', '⚙️ 設定功能優化:只記住你改過的設定,其他跟著內建預設;以後內建費率更新,沒改過的地方會自動跟上'],
+  ['2026.11.05.8', '🔒 雲端密碼改存在手機系統的保護區,更安全', 'app'],
+  ['2026.11.05.7', '💬 ⚙️「關於跑車人生」新增 LINE 官方帳號,有問題可以直接問我們'],
+  ['2026.11.05.5', '📐 平板可以選畫面寬度(⚙️ 基本設定 →「畫面寬度」:自動／手機寬度／填滿螢幕),分割畫面時會自動換成合適的排法'],
+  ['2026.11.05.4', '💾 存好備份檔、搬帳時,會顯示裡面有幾筆和「最近一筆收入」,方便確認選對檔案'],
+  ['2026.11.04.19', '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週'],
+  ['2026.11.04.19', '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)'],
+  ['2026.11.04.16', '🛡️ 還原更安全:匯入還原、從雲端還原、復原、清除,真的存進手機才說完成;格式壞掉的備份檔會被擋下;還原舊備份不會把關掉的熱區分享、統計重新打開'],
+  ['2026.11.04.16', '✏️ 金額可能打錯時會提醒(例如多打一個 0),長途或有加成按「確定」就好;首頁「今日實收」旁的 ⓘ 可以看實收、現金收入、待撥款的差別'],
+  ['2026.11.04.16', '☁️ 有設雲端同步的:可以選自動備份間隔(15 分鐘／30 分鐘／1 小時),打下班卡會馬上嘗試備份,失敗會自動再試'],
+  ['2026.11.04.16', '⚙️ 設定頁分成七類(基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享、關於),點一類才展開,不用一直往下滑;「儲存設定」固定在最下面'],
+  ['2026.11.03.21', '📱 記帳首頁可以自己排順序、隱藏用不到的區塊(⚙️「記帳首頁排列」);預設把平台按鈕移到路況上面'],
+  ['2026.11.04.16', '✓ 記好一筆會跳出「已記」提示;最上面「今日淨收入」改名「今日結餘」(今天實收減今天支出,固定成本在分析頁的淨利才扣);有設雲端同步的,確認存好之後又有新的帳,超過 3 天沒備份上去會提醒'],
+  ['2026.11.03.19', '💬 LINE GO 小黃改成兩段手續費:$199 以下每趟扣 $10、$200 以上抽 10%,非現金另扣 2.5%,派遣費每月最多 $3,000;記帳可選付款方式'],
+  ['2026.11.03.17', '🚖 台灣大小黃可以填「信用卡/綁定支付手續費 %」(正式隊員刷卡另扣的),在 ⚙️ 平台手續費設定'],
+  ['2026.11.03.17', '🔠 可以調字體大小了:⚙️「字體大小」選標準 / 大 / 特大 / 超大,字、圖示、按鈕一起放大'],
+  ['2026.11.03.17', '💳 台灣大、大都會、呼叫小黃的付款方式新增「悠遊卡」「愛心卡」,算車隊撥款,手續費預設 3%(⚙️ 平台手續費設定可改)'],
+  ['2026.11.03.13', '🚘 ⚙️「我的車」新增「R 牌租賃車」;新增平台時可以設派遣費 % 或每趟扣 $(例如自己的車行)'],
+  ['2026.11.03.13', '📞 接電單會扣車隊手續費:台灣大照台灣大的設定,大都會照方案(綁定支付另扣刷卡 %)'],
+  ['2026.11.03.13', '💳 呼叫小黃可選信用卡(扣 3%);預約單、接電可選現金或綁定支付'],
+  ['2026.11.03.13', '💱 可以記外幣小費(⚙️ 功能開關打開「外幣小費」),自動換算台幣'],
+  ['2026.11.03.10', '⏰ 上車熱區新增「現在」:看過去幾週的「星期幾+這個時段」最常在哪裡上車,我的熱區和車友熱區都有'],
+  ['2026.11.03.10', '👥 車友熱區的每個地點,會顯示你自己在那裡載過幾趟、平均實收多少'],
+  ['2026.11.03.8', '📖 ⚙️ 最上面新增「功能說明」:每個功能在哪裡、怎麼用,可以搜尋,關著的功能可以直接打開'],
+  ['2026.11.03.8', '⏱️ 今日行車顯示「目前時薪」;可以打開「休息提醒」,連續開太久會提醒你休息'],
+  ['2026.11.03.7', '🎯 新增「活動獎勵追蹤」:車隊有趟趟加給、跑滿 N 趟獎金時建一張活動卡,記帳本自動算趟數和獎勵(⚙️ 功能開關打開)'],
+  ['2026.11.03.7', '💲 手續費改成跟車隊一樣進位到整數(例如 $150 × 15% = 22.5 → $23)'],
+  ['2026.11.03.6', '🚗 大都會 0 月費方案:⚙️ 手續費設定選「0 月費方案」,記帳時選這單的派遣費 12.5% / 20% / 25%'],
+  ['2026.11.03.6', '⏱️ 可以補登上班時間(忘了打卡、或中途才開始用記帳本):⚙️ 功能開關打開「補登上班時間」'],
+  ['2026.11.03.4', '📶 沒有網路也能打開記帳本(例如地下停車場),記的帳一樣存在手機裡'],
+  ['2026.11.03.4', '🚕 下班打卡後會跳出「今日跑車報告」:實收、時薪、趟數,還會跟前 7 天比較'],
+  ['2026.11.03.4', '🛡️ 匯入還原前,會先比對備份檔和手機裡的資料;還原或清除錯了可以復原'],
+  ['2026.11.03.4', '🖼️ 新的主畫面圖示:之後新加入主畫面的人會看到。已經加過的不用重新加,刪掉圖示可能讓資料不見'],
+  ['2026.11.03.3', '💰 新增「加價金額」(選填):台灣大、大都會、YOXI、Uber 小黃的乘客加價叫車單,可以記下加價多少,分析頁「本期概況」會統計加價單多收多少。不需要的可以在 ⚙️ 功能開關關掉'],
+  ['2026.11.03.5', '🚕 開小黃的司機:到 ⚙️ 最上面「我的車」選「小黃」,Uber、BOLT、LINE GO 記帳時就不用再選車種;Uber 小黃改打跳表金額,自動扣 15%(可在手續費設定改)'],
+  ['2026.11.03.17', '🎟️ 新增「優惠券折抵」(選填,Uber 小黃):乘客用優惠券少付的錢,可選平台會補回或自己吸收,今日現金和撥款會跟著算對'],
+  ['2026.11.03.2', '💾 右上角新增「備份」按鈕:一按就能存備份檔,可以選存到 iCloud 或 Google 雲端硬碟;按鈕上的數字是幾天沒備份,變紅色就該備份了']
 ];
+function versionAfter(a, b){
+  var x = String(a||'').split('.'), y = String(b||'').split('.');
+  for(var i=0;i<Math.max(x.length, y.length);i++){ var d = (+x[i]||0) - (+y[i]||0); if(d) return d > 0; }
+  return false;
+}
+var WHATS_NEW_MAX = 10;
 function maybeShowWhatsNew(){
   if(state.seenVersion===APP_VERSION) return false;
   // brand-new users get the full guide from whoever shared the link, not a change list
   if(!hasMeaningfulData()){ state.seenVersion = APP_VERSION; saveQuiet(); return false; }
+  // only what is new since the version this phone last showed; nothing new for this driver: no pop-up
+  var seen = state.seenVersion || '0';
+  var news = WHATS_NEW.filter(function(x){ return versionAfter(x[0], seen) && (x[2]!=='app' || isNativeApp()); });
+  state.seenVersion = APP_VERSION; saveQuiet();
+  if(!news.length) return false;
+  var shown = news.slice(0, WHATS_NEW_MAX), more = news.length - shown.length;
   var h = '<div class="modal-title">記帳本更新了 🎉<button class="close" data-act="close-modal">✕</button></div>';
   h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">版本 '+APP_VERSION+' · 你的資料都還在,不用重新設定</div>';
-  h += '<div style="font-size:13px;line-height:1.7">'+WHATS_NEW.map(function(x){ return '<div style="margin-bottom:6px">'+esc(x)+'</div>'; }).join('')+'</div>';
+  h += '<div style="font-size:13px;line-height:1.7">'+shown.map(function(x){ return '<div style="margin-bottom:6px">'+esc(x[1])+'</div>'; }).join('')+
+    (more>0 ? '<div style="font-size:12px;color:var(--text-muted)">…還有 '+more+' 項較早的更新,可以到 ⚙️「功能說明」看每個功能在哪裡。</div>' : '')+'</div>';
   h += '<div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" data-act="close-modal">知道了</button></div>';
-  state.seenVersion = APP_VERSION; saveQuiet();
   openModal(h);
   return true;
 }
@@ -5308,7 +5331,7 @@ function keepUndoCopy(label, done){
 }
 // settings that belong to this phone, not to the ledger: a restored backup must not switch sharing or
 // statistics back on, bring back an old sharing id, or claim this phone's cloud backup state
-var DEVICE_KEYS = ['undoMeta','syncUrl','syncEvery','lastCloudBasicAt','cloudBaseTime','cloudSentSids','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale','layoutWidth'];
+var DEVICE_KEYS = ['undoMeta','seenVersion','syncUrl','syncEvery','lastCloudBasicAt','cloudBaseTime','cloudSentSids','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale','layoutWidth'];
 var LEDGER_PART_NAMES = {expenses:'支出', dailyMeta:'每日工時與里程', fixedCosts:'固定成本', fixedOverrides:'固定成本覆寫', targets:'目標', feeRules:'手續費設定', platformOverrides:'平台設定', customPlatforms:'自訂平台', platformOrder:'平台排列', payoutSettings:'撥款設定', payouts:'撥款核對', pendingTrips:'行程'};
 // '' when the data can be used as a ledger, otherwise what is wrong with it
 function ledgerProblem(p){
