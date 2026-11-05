@@ -1349,6 +1349,9 @@ function confirmBySnapshot(sid, hash, builtAt, gen, onResult, retried){
     var hit = vs.filter(function(v){ return v.sid===sid; })[0];
     // the sheet's list can lag a moment behind the save
     if(!hit && !retried){ setTimeout(function(){ confirmBySnapshot(sid, hash, builtAt, gen, onResult, true); }, 4000); return; }
+    // not stored, and another device's backup is now the newest: the script refused it (v7), or it lost the race
+    var foreign = !hit && newestForeignBackup(vs);
+    if(foreign){ cloudConflict = foreign; writeStore(); onResult(false, 'conflict'); return; }
     var kind = !hit ? '' : (hash && hit.hash) ? (hit.hash===hash ? 'full' : '') : 'basic';
     recordCloudResult(kind, builtAt, gen);
     if(kind && gen===cloudGen) noteCloudBase(+hit.time);
@@ -1374,30 +1377,36 @@ function confirmCloudBackup(before, builtAt, ic, ec, gen, onResult, retried){
 }
 // Another device's newer backup must not be buried by this one's older ledger (an old phone opened again after
 // the driver moved to a new one would otherwise send its stale ledger, which then shows as the cloud's newest).
-// cloudBaseTime: the newest cloud backup this device knows of (its own confirmed send, or the list it restored from);
-// cloudSentSids: the backups this device sent, so one that arrived without its reply is not taken for a stranger.
+// cloudBaseTime: the cloud backup (server time) this device last agreed to build on — its own confirmed send, or the
+// backup it restored; cloudSentSids: the backups this device sent, so one that arrived without its reply is not
+// taken for a stranger. Times are the server's, so the phones' clocks do not matter.
+// With Apps Script v7 the send also carries the newest backup it saw ("expect"); the script refuses the send under
+// its lock if another device got in between, and the app then finds itself missing from the list (see confirmBySnapshot).
 var cloudConflict = null;
-function noteCloudBase(t){
-  if(t > (state.cloudBaseTime||0)) state.cloudBaseTime = t;
+function noteCloudBase(t, exact){
+  if(exact || t > (state.cloudBaseTime||0)) state.cloudBaseTime = t;
   // the home card may have been drawn while the conflict still stood (a restore redraws before its message)
   if(cloudConflict){ cloudConflict = null; setTimeout(renderConflictCard, 0); }
 }
 function noteSentSid(sid){ var a = (state.cloudSentSids||[]).slice(-9); a.push(sid); state.cloudSentSids = a; }
+function newestBackup(vs){ return vs.filter(function(v){ return !v.legacy; }).reduce(function(m, v){ return (!m || +v.time > +m.time) ? v : m; }, null); }
+function backupToken(v){ return v ? (v.sid || ('t'+v.time)) : ''; }
+// the newest cloud backup when this device has no reason to think it is its own or one it agreed to; null otherwise.
+// A device that has no starting point yet (it synced before this check existed, or never synced here) cannot tell
+// whose the newest backup is, so it asks once (unknown) instead of guessing from times.
 function newestForeignBackup(vs){
-  if(state.cloudBaseTime==null && state.lastCloudConfirmAt){
-    // synced before this check existed: backups up to its last confirmed send (5 minutes for clock drift) count as known
-    var limit = state.lastCloudConfirmAt + 5*60000;
-    vs.forEach(function(v){ if(+v.time <= limit && +v.time > (state.cloudBaseTime||0)) state.cloudBaseTime = +v.time; });
-    if(state.cloudBaseTime==null) state.cloudBaseTime = 0;
-  }
-  var top = vs.reduce(function(m, v){ return (!m || +v.time > +m.time) ? v : m; }, null);
-  if(!top || +top.time <= (state.cloudBaseTime||0)) return null;
+  var top = newestBackup(vs);
+  if(!top) return null;
   if(top.sid && (state.cloudSentSids||[]).indexOf(top.sid) >= 0) return null;
-  return top;
+  if(state.cloudBaseTime==null) return {time:top.time, income:top.income, expense:top.expense, sid:top.sid, unknown:true};
+  return +top.time > state.cloudBaseTime ? top : null;
 }
 function cloudConflictText(){
   var f = cloudConflict; if(!f) return '';
-  return '⚠️ 雲端最新的備份('+fmtTs(+f.time)+',收入 '+f.income+' 筆、支出 '+f.expense+' 筆)不是'+hereName()+'送的,而且比'+hereName()+'上次同步還新,可能是另一台手機或平板記的帳。已暫停自動同步,請到 ⚙️「雲端與備份」確認哪一台才是最新的。';
+  var what = '雲端最新的備份('+fmtTs(+f.time)+',收入 '+f.income+' 筆、支出 '+f.expense+' 筆)';
+  return f.unknown
+    ? '⚠️ '+hereName()+'是第一次在新版本同步(或還沒在這個雲端同步過),沒辦法確認'+what+'是不是'+hereName()+'送的。為了避免舊帳蓋掉別台比較新的帳,已暫停自動同步,請到 ⚙️「雲端與備份」按「立即同步到雲端」確認一次。'
+    : '⚠️ '+what+'不是'+hereName()+'送的,而且比'+hereName()+'上次同步還新,可能是另一台手機或平板記的帳。已暫停自動同步,請到 ⚙️「雲端與備份」確認哪一台才是最新的。';
 }
 // A ledger the driver emptied on purpose is still sent (the cloud should not keep showing deleted trips);
 // a brand-new empty one is not, so a fresh install can never blank an existing backup.
@@ -1431,10 +1440,13 @@ function pushCloudSnapshot(onResult, overrule){
   }
   if(cloudServerV >= 6){
     snap.snapshotId = newSnapshotId();
-    // first look at the cloud's newest backup (a failed look sends nothing, like a failed send)
-    (overrule ? Promise.resolve(null) : cloudListVersions().then(newestForeignBackup)).then(function(foreign){
+    // first look at the cloud's newest backup (a failed look sends nothing, like a failed send); the send then
+    // names it, so a v7 script can refuse it if another device's backup arrived in between
+    (overrule ? Promise.resolve(null) : cloudListVersions()).then(function(vs){
+      var foreign = vs && newestForeignBackup(vs);
       if(foreign){ cloudConflict = foreign; done(false, 'conflict'); return; }
       cloudConflict = null;
+      if(overrule) snap.overrule = true; else snap.expect = backupToken(newestBackup(vs));
       return sha256Hex(snap.state).then(function(hash){
         noteSentSid(snap.snapshotId);
         return post().then(function(){
@@ -4998,7 +5010,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.05.16';
+var APP_VERSION = '2026.11.05.17';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -5175,15 +5187,16 @@ function openCloudRestoreModal(){
 }
 function doCloudRestore(i){
   var v = lastCloudVersions[i]; if(!v) return;
-  if(!confirm('確定要用 '+fmtTs(v.time)+' 的雲端備份(收入 '+v.income+' 筆、支出 '+v.expense+' 筆)覆蓋'+hereName()+'目前的所有資料嗎?')) return;
+  var newer = lastCloudVersions.some(function(x){ return !x.legacy && +x.time > +v.time; });
+  if(!confirm('確定要用 '+fmtTs(v.time)+' 的雲端備份(收入 '+v.income+' 筆、支出 '+v.expense+' 筆)覆蓋'+hereName()+'目前的所有資料嗎?'+
+      (newer ? '\n\n這不是雲端最新的那份。還原後'+hereName()+'下次同步前,如果雲端上有別台送的較新備份,會先問你,不會直接蓋掉。' : ''))) return;
   var el = document.getElementById('restoreList');
   if(el) el.textContent = '下載備份中…';
   cloudGet({action:'get', time:v.time}).then(function(res){
     if(!res || !res.ok || !res.state) throw new Error('empty');
     var parsed = unpackState(JSON.parse(res.state));
-    // the driver has now seen every backup in this list, so none of them counts as another device's newer one
-    var seen = lastCloudVersions.reduce(function(m, x){ return Math.max(m, +x.time||0); }, 0);
-    if(!replaceLedger(parsed, '雲端還原', function(){ noteCloudBase(seen); writeStore(); return '已從雲端還原(收入 '+state.records.length+' 筆、支出 '+state.expenses.length+' 筆)。\n\n如果選錯了,到 ⚙️「雲端與備份」→「匯入還原」按「↩️ 復原到雲端還原前的資料」。'; })){
+    // this device now builds on the backup the driver chose — not on newer ones it merely saw in the list
+    if(!replaceLedger(parsed, '雲端還原', function(){ noteCloudBase(+v.time, true); writeStore(); return '已從雲端還原(收入 '+state.records.length+' 筆、支出 '+state.expenses.length+' 筆)。\n\n如果選錯了,到 ⚙️「雲端與備份」→「匯入還原」按「↩️ 復原到雲端還原前的資料」。'; })){
       if(el) el.textContent = '這份雲端備份的格式不對,沒有還原。';
     } else if(el) el.textContent = '還原中…';
   }).catch(function(){
@@ -5884,8 +5897,9 @@ document.addEventListener('click', function(e){
       var el = document.getElementById('syncStatus');
       if(kind==='conflict'){
         var f = cloudConflict || {};
-        if(confirm('雲端最新的備份不是'+hereName()+'送的:\n\n☁️ 雲端:'+fmtTs(+f.time)+',收入 '+f.income+' 筆、支出 '+f.expense+' 筆\n📱 '+hereName()+':收入 '+nI+' 筆、支出 '+nE+' 筆\n\n'+
-            '它比'+hereName()+'上次同步還新,可能是另一台手機或平板記的帳。\n\n'+
+        if(confirm((f.unknown ? '沒辦法確認雲端最新的備份是不是'+hereName()+'送的('+hereName()+'是第一次在新版本同步,或還沒在這個雲端同步過):' : '雲端最新的備份不是'+hereName()+'送的:')+
+            '\n\n☁️ 雲端:'+fmtTs(+f.time)+',收入 '+f.income+' 筆、支出 '+f.expense+' 筆\n📱 '+hereName()+':收入 '+nI+' 筆、支出 '+nE+' 筆\n\n'+
+            (f.unknown ? '如果最近只用'+hereName()+'記帳,通常就是'+hereName()+'自己的。\n\n' : '它比'+hereName()+'上次同步還新,可能是另一台手機或平板記的帳。\n\n')+
             '・'+hereName()+'的帳才是最新的 → 按「確定」送出(雲端那份備份還會保留)\n・另一台的帳比較新 → 按「取消」,再按「從雲端還原」拿那份')){
           if(el) el.textContent = '送出中,正在確認雲端有沒有存好…';
           pushCloudSnapshot(syncResult, true);
