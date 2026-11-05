@@ -1406,7 +1406,7 @@ function pushCloudSnapshot(onResult){
         if(cloudAuthStatus==='bad'){ done(false); return; }
         state.lastCloudSendAt = builtAt;
         confirmBySnapshot(snap.snapshotId, hash, builtAt, gen, done);
-      });
+      }, function(){ done(false, 'unsent'); });
     }).catch(function(){ done(false); });
     return true;
   }
@@ -1421,7 +1421,7 @@ function pushCloudSnapshot(onResult){
       state.lastCloudSendAt = builtAt;
       if(!before){ writeStore(); done(false); return; }
       confirmCloudBackup(before, builtAt, snap.incomeCount, snap.expenseCount, gen, done);
-    });
+    }, function(){ done(false, 'unsent'); });
   }).catch(function(){ done(false); });
   return true;
 }
@@ -4953,7 +4953,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.05.12';
+var APP_VERSION = '2026.11.05.13';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -5836,8 +5836,10 @@ document.addEventListener('click', function(e){
       var el = document.getElementById('syncStatus'); if(!el) return;
       el.textContent = ok ? '✓ 雲端已確認存好('+nI+' 筆收入、'+nE+' 筆支出)'
         : kind==='basic' ? '已送出,雲端有收到這份,但沒辦法完整核對內容(同步程式不是最新的 v6,或'+hereName()+'不支援)。在那之前也請定期存備份檔。'
-        : navigator.onLine===false ? '現在沒有網路,這次沒有送出。恢復網路後會自動再試;也可以連上網路後再按一次。'
-        : '已送出,但還沒確認雲端有存好。稍後會自動再試;也可以確認網路和密碼後再按一次。';
+        // a phone's web view may still report "online" in airplane mode, so go by whether the send itself failed
+        : !cloudBehind() ? '這次沒有完成(網路可能斷了),不過上次確認存好之後沒有新的變動,雲端已經有目前這本帳,不用補送。'
+        : (kind==='unsent' || navigator.onLine===false) ? '這次沒有送成功(網路可能斷了)。幾分鐘內會自動再試;也可以確認網路後再按一次。'
+        : '已送出,但還沒確認雲端有存好。幾分鐘內會自動再試;也可以確認網路和密碼後再按一次。';
     });
     if(!sent && statusEl) statusEl.textContent = '現在沒辦法送出(資料正在另一個畫面使用中)。請關掉其他記帳本畫面,重新開啟後再按一次。';
   }
