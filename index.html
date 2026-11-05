@@ -4622,7 +4622,7 @@ function openDayReport(t){
 function openModeChooser(){
   var big = 'display:block;width:100%;text-align:left;padding:14px 16px;margin-bottom:10px;border-radius:14px;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-family:inherit;cursor:pointer;line-height:1.6';
   var h = '<div class="modal-title">歡迎使用 🚕</div>';
-  h += '<div style="font-size:13px;line-height:1.7;margin-bottom:12px">你想怎麼記帳?之後隨時可以在右上角 ⚙️ 改。</div>';
+  h += '<div style="font-size:13px;line-height:1.7;margin-bottom:12px">你想怎麼開始?記帳方式之後隨時可以在右上角 ⚙️ 改。</div>';
   h += '<button style="'+big+'" data-act="ui-choose:simple"><b style="font-size:15px">🟢 簡單記帳</b><br><span style="font-size:12px;color:var(--text-muted)">只記每個平台跑了多少錢。點平台 → 打金額 → 儲存,其他都不用選。</span></button>';
   if(isNativeApp()) h += '<button style="'+big+';border-color:var(--accent)" data-act="move-from-web"><b style="font-size:15px">📲 我有備份檔,把帳搬過來</b><br><span style="font-size:12px;color:var(--text-muted)">換手機,或從網頁版搬過來都可以,一分鐘搬完。帳、設定、模式都會一起過來。</span></button>';
   h += '<button style="'+big+'" data-act="ui-choose:full"><b style="font-size:15px">🔵 完整分析</b><br><span style="font-size:12px;color:var(--text-muted)">記車種、付款方式、上下車時間,分析時薪、熱區、載客率。</span></button>';
@@ -4811,7 +4811,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.05.1';
+var APP_VERSION = '2026.11.05.2';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -5020,6 +5020,14 @@ function tabWarningHtml(){
     '<b style="color:var(--expense)">⚠️ 你現在是用 Safari 分頁開啟</b><br>iPhone 在 Safari 分頁裡的資料,太久沒打開可能被系統自動清掉,而且跟主畫面圖示的資料是分開的兩份。建議固定從主畫面的圖示開啟。'+
     '<div style="text-align:right;margin-top:6px"><button class="btn btn-ghost" style="padding:6px 12px;font-size:12px;width:auto" data-act="dismiss-tab-warning">知道了</button></div></div>';
 }
+// after a backup file is handed over: what is in it, so a phone change can be checked against these numbers
+function openBackupDoneModal(){
+  var sm = ledgerSummary(state);
+  openModal('<div class="modal-title">備份檔已交給分享選單<button class="close" data-act="close-modal">✕</button></div>'+
+    '<div style="font-size:13px;line-height:1.7">這份備份裡有:<div style="font-size:15px;font-weight:700;margin:6px 0">'+esc(summaryLine(sm))+'</div>'+
+    '換手機搬帳時,搬完會顯示搬進來的筆數,<b>跟這裡一樣就對了</b>。建議先截圖這個畫面。<br><br>記得到雲端硬碟確認檔案真的在、找得到。</div>'+
+    '<div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" data-act="close-modal">知道了</button></div>');
+}
 function openImportModal(){
   var h = '<div class="modal-title">匯入還原<button class="close" data-act="close-modal">✕</button></div>';
   h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">選擇之前存的備份檔,或把複製的整段文字貼在下面,再按還原。<b style="color:var(--expense)">注意:這會覆蓋掉目前'+hereName()+'裡的所有資料</b>,請確認來源沒錯再按。</div>';
@@ -5178,7 +5186,7 @@ function doImportData(){
   if(!confirm('請確認要還原的資料:\n\n📄 備份檔:'+summaryLine(inFile)+'\n📱 目前手機:'+summaryLine(now)+'\n\n'+
     (older ? '⚠️ 備份檔比目前的資料舊,'+inFile.to+' 以後記的帳會不見!\n\n' : '')+
     '確定要用備份檔取代目前的資料嗎?(目前的資料會先另外保留一份,還原錯了可以復原)\n\n熱區分享、統計、雲端同步等這支手機的設定不會被備份檔改掉。')) return;
-  replaceLedger(parsed, '匯入還原', function(){ return '資料已還原。\n\n如果選錯檔案,到 ⚙️ →「匯入還原」按「↩️ 復原到匯入還原前的資料」。'; });
+  replaceLedger(parsed, '匯入還原', function(){ return '資料已還原。\n\n搬進來的帳:'+summaryLine(inFile)+'\n請跟存備份時畫面上顯示的數字對照,一樣就對了。\n\n如果選錯檔案,到 ⚙️ →「匯入還原」按「↩️ 復原到匯入還原前的資料」。'; });
 }
 function openNewPlatformModal(){
   var h = '<div class="modal-title">新增平台<button class="close" data-act="close-modal">✕</button></div>';
@@ -5744,7 +5752,7 @@ document.addEventListener('click', function(e){
   else if(cmd==='export-file'){
     var nowD = new Date(), stamp = todayStr().replace(/-/g,'')+'_'+String(nowD.getHours()).padStart(2,'0')+String(nowD.getMinutes()).padStart(2,'0');
     shareOrDownloadFile('跑車人生備份_'+stamp+'.json', packState(state), 'application/json').then(function(done){
-      if(done){ markExported(); if(document.querySelector('[data-act^="backup-dest"]') || /💾 備份/.test((document.querySelector('.modal-title')||{}).textContent||'')) closeModal(); renderAll(); showToast('備份檔已交給分享選單,記得選好存放位置。'); }
+      if(done){ markExported(); renderAll(); openBackupDoneModal(); }
     });
   }
   else if(cmd==='year-report'){ openYearReportModal(arg); }
@@ -5874,7 +5882,8 @@ document.addEventListener('change', function(e){
     var fr = new FileReader();
     fr.onload = function(){
       var ta = document.getElementById('importText'); if(ta) ta.value = String(fr.result||'');
-      var fn = document.getElementById('importFileName'); if(fn) fn.textContent = '已讀取:'+f.name+',確認後按下方「還原這份資料」';
+      var sm = ''; try{ sm = summaryLine(ledgerSummary(unpackState(JSON.parse(String(fr.result||'').trim())))); }catch(err){}
+      var fn = document.getElementById('importFileName'); if(fn) fn.textContent = '已讀取:'+f.name+(sm ? '(這份裡有'+sm+')' : '')+',確認後按下方「還原這份資料」';
     };
     fr.readAsText(f);
   }
