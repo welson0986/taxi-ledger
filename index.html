@@ -1201,8 +1201,31 @@ function hasMeaningfulData(){
 function noteHadData(){ if(state.hadData!==true && hasMeaningfulData()) state.hadData = true; }
 var CLOUD_KEY_STORAGE = 'taxi_ledger_cloudkey';
 var cloudAuthStatus = 'unknown';
-function getCloudKey(){ try{ return localStorage.getItem(CLOUD_KEY_STORAGE)||''; }catch(e){ return ''; } }
-function setCloudKey(k){ try{ if(k) localStorage.setItem(CLOUD_KEY_STORAGE, k); else localStorage.removeItem(CLOUD_KEY_STORAGE); }catch(e){} }
+// In the app the cloud password lives in the phone's protected storage (Android Keystore, see TaxiNativePlugin);
+// a copy left in the web storage by an older version is moved there once and removed. The website, and an app
+// whose protected storage fails, keep it in the web storage as before.
+var cloudKeyMem = null;
+function keyStore(){ var nt = nativeTools(); return nt && nt.setKey ? nt : null; }
+function plainCloudKey(){ try{ return localStorage.getItem(CLOUD_KEY_STORAGE)||''; }catch(e){ return ''; } }
+function dropPlainCloudKey(){ try{ localStorage.removeItem(CLOUD_KEY_STORAGE); }catch(e){} }
+function loadCloudKey(){
+  var plain = plainCloudKey(), ks = keyStore();
+  if(!ks){ cloudKeyMem = plain; return Promise.resolve(); }
+  return ks.getKey().then(function(r){
+    var held = (r && r.value) || '';
+    if(held){ cloudKeyMem = held; if(plain) dropPlainCloudKey(); return; }
+    cloudKeyMem = plain;
+    if(plain) return ks.setKey({value:plain}).then(dropPlainCloudKey, function(){});
+  }, function(){ cloudKeyMem = plain; });
+}
+function getCloudKey(){ return cloudKeyMem!==null ? cloudKeyMem : plainCloudKey(); }
+function setCloudKey(k){
+  k = k || ''; cloudKeyMem = k;
+  var ks = keyStore();
+  function plainSave(){ try{ if(k) localStorage.setItem(CLOUD_KEY_STORAGE, k); else localStorage.removeItem(CLOUD_KEY_STORAGE); }catch(e){} }
+  if(!ks){ plainSave(); return; }
+  (k ? ks.setKey({value:k}) : ks.removeKey()).then(dropPlainCloudKey, plainSave);
+}
 function cloudAuthCheck(after){
   if(!state.syncUrl){ cloudAuthStatus='unknown'; if(after) after(); return; }
   cloudGet({action:'ping'}).then(function(res){
@@ -1395,8 +1418,7 @@ document.addEventListener('visibilitychange', function(){
    The endpoint only accepts these pings; it has no way to read anything back. */
 var STAT_URL = 'https://script.google.com/macros/s/AKfycbymslkUN8TEY80ln4-WNynHxzMp2vKwkWBzYfFuU7oJ9k-OEyWtJojB8MWLY1Oi2EqmmQ/exec';
 function statPing(){
-  if(!STAT_URL || state.statOptOut) return;
-  if(/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) return;
+  if(!STAT_URL || state.statOptOut || !maySendShared()) return;
   var day = toDateStr(new Date()), sent = null;
   try{ sent = localStorage.getItem('taxi_stat_day'); }catch(e){}
   if(sent===day) return;
@@ -1415,7 +1437,21 @@ function statPing(){
 }
 window.addEventListener('pagehide', flushCloudSync);
 var cloudCbSeq = 0;
+// Apps Script v6 answers a plain request with JSON that any page may read, so that is what is used. Only the website
+// still falls back to the old script-tag way (JSONP) for older Apps Script copies that answer nothing else; the
+// app never loads the cloud's answer as a script.
 function cloudGet(params){
+  var q = Object.keys(params).map(function(k){ return k+'='+encodeURIComponent(params[k]); }).join('&');
+  var url = state.syncUrl+(state.syncUrl.indexOf('?')>=0?'&':'?')+q+'&key='+encodeURIComponent(getCloudKey());
+  return withTimeout(fetch(url, {method:'GET', cache:'no-store', credentials:'omit'}), 30000).then(function(r){
+    if(!r.ok) throw new Error('http '+r.status);
+    return r.text();
+  }).then(function(t){ return JSON.parse(t); }).catch(function(err){
+    if(isNativeApp()) throw err;
+    return cloudGetJsonp(params);
+  });
+}
+function cloudGetJsonp(params){
   return new Promise(function(resolve, reject){
     var cb = '__cloudCb'+(++cloudCbSeq)+'_'+Date.now();
     var q = Object.keys(params).map(function(k){ return k+'='+encodeURIComponent(params[k]); }).join('&');
@@ -3034,7 +3070,7 @@ function hotShareDelete(){
 var hotDelBusy = false;
 function hotDeleteFlush(){
   var list = state.hotDelPending || [];
-  if(!HOT_URL || !list.length || hotDelBusy || isLocalHost()) return;
+  if(!HOT_URL || !list.length || hotDelBusy || !maySendShared()) return;
   hotDelBusy = true;
   var chain = Promise.resolve();
   list.slice().forEach(function(sid){
@@ -3047,9 +3083,21 @@ function hotDeleteFlush(){
   chain.then(function(){ hotDelBusy = false; });
 }
 function isLocalHost(){ return /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname); }
+// Only the real thing sends the daily count and hot-zone cells: the public website, and an app built for the store.
+// A debug app (our test phones and tablets, whose practice ledgers would count as extra drivers), a local test page,
+// or an app whose native side cannot say what it is, never send. Until this is known nothing is sent.
+var APP_ENV = null;
+function nativeTools(){ try{ var p = isNativeApp() && window.Capacitor.Plugins && window.Capacitor.Plugins.TaxiNative; return p && p.buildInfo ? p : null; }catch(e){ return null; } }
+function detectAppEnv(){
+  if(!isNativeApp()) return Promise.resolve(location.hostname==='welson0986.github.io' ? 'prod' : 'test');
+  var nt = nativeTools();
+  if(!nt) return Promise.resolve('test');
+  return nt.buildInfo().then(function(i){ return i && i.debug===false ? 'prod' : 'test'; }, function(){ return 'test'; });
+}
+function maySendShared(){ return APP_ENV==='prod'; }
 // sends each finished day once (up to 14 days back), only cell + time slot + trip count
 function hotSharePush(){
-  if(!HOT_URL || state.shareHot!==true || isLocalHost()) return;
+  if(!HOT_URL || state.shareHot!==true || !maySendShared()) return;
   var yest = addDays(todayStr(), -1);
   if(!state.shareHourBackfill){ state.shareHourBackfill = true; state.shareSentUntil = null; }
   var from = state.shareSentUntil ? addDays(state.shareSentUntil, 1) : addDays(yest, -13);
@@ -4841,7 +4889,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.05.7';
+var APP_VERSION = '2026.11.05.8';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -4933,7 +4981,7 @@ function aboutHtml(){
     '💚 <a style="'+link+'" target="_blank" rel="noopener" href="https://line.me/R/ti/p/@029eempg">LINE 官方帳號「跑車人生」</a>(可以直接傳截圖)<br>'+
     '✉️ <a style="'+link+'" href="'+esc(mailto)+'">support@realway.com.tw</a><br>'+
     '<span style="font-size:11.5px">用 LINE 回報時,請附上這裡的版本:'+APP_VERSION+'。按上面的信箱,會自動帶入記帳本版本、手機系統版本和型號(不會帶入任何帳目)。</span>');
-  h += para('ℹ️ 版本資訊', '版本:'+APP_VERSION+'<br>製作者:Welson(REALWAY CO., LTD.)<br>© 2026 REALWAY CO., LTD.');
+  h += para('ℹ️ 版本資訊', '版本:'+APP_VERSION+(isNativeApp() && APP_ENV!=='prod' ? '(測試版:不送使用統計與車友熱區)' : '')+'<br>製作者:Welson(REALWAY CO., LTD.)<br>© 2026 REALWAY CO., LTD.');
   return h+'</div>';
 }
 function wirePlatformDrag(){
@@ -5054,7 +5102,7 @@ function tabWarningHtml(){
 // after a backup file is handed over: what is in it, so a phone change can be checked against these numbers
 function openBackupDoneModal(sm){
   openModal('<div class="modal-title">備份檔已交給分享選單<button class="close" data-act="close-modal">✕</button></div>'+
-    '<div style="font-size:13px;line-height:1.7">這份備份裡有:<div style="font-size:15px;font-weight:700;margin:6px 0">'+esc(summaryLine(sm))+(sm.last?'<br>'+esc(summaryLast(sm)):'')+'</div>'+
+    '<div style="font-size:13px;line-height:1.7">這份備份裡有:<div style="font-size:15px;font-weight:700;margin:6px 0">'+esc(summaryLine(sm))+'<br>'+esc(summaryLast(sm))+'</div>'+
     '換手機搬帳時,搬完會顯示搬進來的筆數,<b>跟這裡一樣就對了</b>。建議先截圖這個畫面。<br><br>記得到雲端硬碟確認檔案真的在、找得到。</div>'+
     '<div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" data-act="close-modal">知道了</button></div>');
 }
@@ -5083,7 +5131,7 @@ function ledgerSummary(st){
   return {recs:recs.length, exps:(st.expenses||[]).length, from:dates[0]||'', to:dates[dates.length-1]||'', last:last};
 }
 function summaryLine(x){ return '收入 '+x.recs+' 筆、支出 '+x.exps+' 筆'+(x.from?(','+x.from+' ~ '+x.to):''); }
-function summaryLast(x){ return x.last ? '最近一筆收入:'+x.last.date+' '+fmtMoney(x.last.amt) : ''; }
+function summaryLast(x){ return x.last ? '最近一筆收入:'+x.last.date+' '+fmtMoney(x.last.amt) : '最近一筆收入:沒有收入紀錄'; }
 // the ledger as it was before a restore or a full clear, so a mistake can be undone.
 // done(true) only once the copy is really stored; the undo link appears only then
 function keepUndoCopy(label, done){
@@ -5220,10 +5268,10 @@ function doImportData(){
   if(prob){ alert('這份資料不能還原:'+prob+'。\n\n目前的帳沒有任何改變。'); return; }
   var inFile = ledgerSummary(parsed), now = ledgerSummary(state);
   var older = now.to && inFile.to < now.to;
-  if(!confirm('請確認要還原的資料:\n\n📄 備份檔:'+summaryLine(inFile)+(inFile.last?'\n   '+summaryLast(inFile):'')+'\n📱 目前手機:'+summaryLine(now)+'\n\n跟存備份時顯示的不一樣,請按「取消」,回去找正確的檔案。\n\n'+
+  if(!confirm('請確認要還原的資料:\n\n📄 備份檔:'+summaryLine(inFile)+'\n   '+summaryLast(inFile)+'\n📱 目前手機:'+summaryLine(now)+'\n\n跟存備份時顯示的不一樣,請按「取消」,回去找正確的檔案。\n\n'+
     (older ? '⚠️ 備份檔比目前的資料舊,'+inFile.to+' 以後記的帳會不見!\n\n' : '')+
     '確定要用備份檔取代目前的資料嗎?(目前的資料會先另外保留一份,還原錯了可以復原)\n\n熱區分享、統計、雲端同步等這支手機的設定不會被備份檔改掉。')) return;
-  replaceLedger(parsed, '匯入還原', function(){ return '資料已還原。\n\n搬進來的帳:'+summaryLine(inFile)+(inFile.last?'\n'+summaryLast(inFile):'')+'\n請跟存備份時畫面上顯示的對照,一樣表示初步核對通過;不一樣先不要記帳,寫信給我們。\n\n如果選錯檔案,到 ⚙️ →「匯入還原」按「↩️ 復原到匯入還原前的資料」。'; });
+  replaceLedger(parsed, '匯入還原', function(){ return '資料已還原。\n\n搬進來的帳:'+summaryLine(inFile)+'\n'+summaryLast(inFile)+'\n請跟存備份時畫面上顯示的對照,一樣表示初步核對通過;不一樣先不要記帳,寫信給我們。\n\n如果選錯檔案,到 ⚙️ →「匯入還原」按「↩️ 復原到匯入還原前的資料」。'; });
 }
 function openNewPlatformModal(){
   var h = '<div class="modal-title">新增平台<button class="close" data-act="close-modal">✕</button></div>';
@@ -5963,7 +6011,7 @@ document.addEventListener('change', function(e){
     var fr = new FileReader();
     fr.onload = function(){
       var ta = document.getElementById('importText'); if(ta) ta.value = String(fr.result||'');
-      var sm = ''; try{ var fs0 = ledgerSummary(unpackState(JSON.parse(String(fr.result||'').trim()))); sm = summaryLine(fs0)+(fs0.last?','+summaryLast(fs0):''); }catch(err){}
+      var sm = ''; try{ var fs0 = ledgerSummary(unpackState(JSON.parse(String(fr.result||'').trim()))); sm = summaryLine(fs0)+','+summaryLast(fs0); }catch(err){}
       var fn = document.getElementById('importFileName'); if(fn) fn.textContent = '已讀取:'+f.name+(sm ? '(這份裡有'+sm+')' : '')+',確認後按下方「還原這份資料」';
     };
     fr.readAsText(f);
@@ -6005,10 +6053,13 @@ try{
   });
 }catch(e){}
 renderAll();
-setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(); }); }, 1500);
-setTimeout(hotDeleteFlush, 2500);
-setTimeout(statPing, 4000);
-setTimeout(hotSharePush, 6000);
+loadCloudKey().then(function(){ setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(); }); }, 1500); });
+detectAppEnv().then(function(env){
+  APP_ENV = env;
+  setTimeout(hotDeleteFlush, 2500);
+  setTimeout(statPing, 4000);
+  setTimeout(hotSharePush, 6000);
+});
 var _staleShiftDate = findStaleOpenShiftDate();
 if(_staleShiftDate){ openStaleShiftModal(_staleShiftDate); }
 else if(!state.uiMode && !hasMeaningfulData()){ state.seenVersion = APP_VERSION; openModeChooser(); }
