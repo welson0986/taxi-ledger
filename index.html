@@ -1201,30 +1201,60 @@ function hasMeaningfulData(){
 function noteHadData(){ if(state.hadData!==true && hasMeaningfulData()) state.hadData = true; }
 var CLOUD_KEY_STORAGE = 'taxi_ledger_cloudkey';
 var cloudAuthStatus = 'unknown';
-// In the app the cloud password lives in the phone's protected storage (Android Keystore, see TaxiNativePlugin);
-// a copy left in the web storage by an older version is moved there once and removed. The website, and an app
-// whose protected storage fails, keep it in the web storage as before.
+// In the app the cloud password lives in the phone's protected storage (Android Keystore / iOS Keychain, see
+// TaxiNative). Three things can be in the web storage beside it:
+//  - CLOUD_KEY_STORAGE: a password an older version kept there (or the website's own copy) — moved in once, then removed;
+//  - CLOUD_KEY_PENDING: a change the driver made that the protected storage has not confirmed yet ({op:'set',v} or
+//    {op:'clear'}). It is newer than whatever the protected storage holds, so at the next start it is applied first and
+//    used until it sticks; it is only removed after the protected storage confirms it.
+// So a failed save never falls back to the older password, and a failed clear never brings the old one back.
+var CLOUD_KEY_PENDING = 'taxi_ledger_cloudkey_pending';
 var cloudKeyMem = null;
+// '' normal; 'pending' a change is waiting in the web storage; 'unreadable' the protected storage could not be read now
+var cloudKeyState = '';
 function keyStore(){ var nt = nativeTools(); return nt && nt.setKey ? nt : null; }
 function plainCloudKey(){ try{ return localStorage.getItem(CLOUD_KEY_STORAGE)||''; }catch(e){ return ''; } }
 function dropPlainCloudKey(){ try{ localStorage.removeItem(CLOUD_KEY_STORAGE); }catch(e){} }
+function pendingCloudKey(){ try{ var o = JSON.parse(localStorage.getItem(CLOUD_KEY_PENDING)||'null'); return o && (o.op==='set' || o.op==='clear') ? o : null; }catch(e){ return null; } }
+function setPendingCloudKey(o){ try{ if(o) localStorage.setItem(CLOUD_KEY_PENDING, JSON.stringify(o)); else localStorage.removeItem(CLOUD_KEY_PENDING); }catch(e){} }
+// writes one change to the protected storage; resolves true only when it confirmed it
+function applyCloudKey(ks, o){
+  var job = o.op==='set' ? ks.setKey({value:o.v}) : ks.removeKey();
+  return job.then(function(){ setPendingCloudKey(null); dropPlainCloudKey(); cloudKeyState = ''; return true; },
+    function(){ cloudKeyState = 'pending'; return false; });
+}
 function loadCloudKey(){
-  var plain = plainCloudKey(), ks = keyStore();
-  if(!ks){ cloudKeyMem = plain; return Promise.resolve(); }
+  var plain = plainCloudKey(), ks = keyStore(), pend = pendingCloudKey();
+  if(!ks){ cloudKeyMem = pend ? (pend.op==='set' ? pend.v : '') : plain; return Promise.resolve(); }
+  if(pend){
+    cloudKeyMem = pend.op==='set' ? pend.v : '';
+    return applyCloudKey(ks, pend).then(function(){});
+  }
   return ks.getKey().then(function(r){
     var held = (r && r.value) || '';
     if(held){ cloudKeyMem = held; if(plain) dropPlainCloudKey(); return; }
     cloudKeyMem = plain;
-    if(plain) return ks.setKey({value:plain}).then(dropPlainCloudKey, function(){});
-  }, function(){ cloudKeyMem = plain; });
+    if(plain) return ks.setKey({value:plain}).then(dropPlainCloudKey, function(){ cloudKeyState = 'pending'; });
+  }, function(){
+    // could not read it right now (not the same as "not set"): use nothing, change nothing, say so in settings
+    cloudKeyMem = plain; cloudKeyState = 'unreadable';
+  });
 }
 function getCloudKey(){ return cloudKeyMem!==null ? cloudKeyMem : plainCloudKey(); }
+// returns a promise of true when the change is safely stored (website: always), false when it is only waiting
 function setCloudKey(k){
   k = k || ''; cloudKeyMem = k;
   var ks = keyStore();
-  function plainSave(){ try{ if(k) localStorage.setItem(CLOUD_KEY_STORAGE, k); else localStorage.removeItem(CLOUD_KEY_STORAGE); }catch(e){} }
-  if(!ks){ plainSave(); return; }
-  (k ? ks.setKey({value:k}) : ks.removeKey()).then(dropPlainCloudKey, plainSave);
+  if(!ks){ try{ if(k) localStorage.setItem(CLOUD_KEY_STORAGE, k); else localStorage.removeItem(CLOUD_KEY_STORAGE); }catch(e){} return Promise.resolve(true); }
+  var o = k ? {op:'set', v:k} : {op:'clear'};
+  setPendingCloudKey(o);
+  return applyCloudKey(ks, o);
+}
+function cloudKeyNote(){
+  return {
+    pending:'⚠️ 手機的保護區這次沒有存進雲端密碼,先暫存在記帳本裡,下次打開會再試。若一直出現,請到設定重新輸入密碼。',
+    unreadable:'⚠️ 手機的保護區暫時讀不到雲端密碼,請把記帳本完全關掉再打開;還是不行,請重新輸入密碼。'
+  }[cloudKeyState] || '';
 }
 function cloudAuthCheck(after){
   if(!state.syncUrl){ cloudAuthStatus='unknown'; if(after) after(); return; }
@@ -3083,16 +3113,18 @@ function hotDeleteFlush(){
   chain.then(function(){ hotDelBusy = false; });
 }
 function isLocalHost(){ return /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname); }
-// Only the real thing sends the daily count and hot-zone cells: the public website, and an app built for the store.
-// A debug app (our test phones and tablets, whose practice ledgers would count as extra drivers), a local test page,
-// or an app whose native side cannot say what it is, never send. Until this is known nothing is sent.
+// Only the real thing sends the daily count and hot-zone cells: the public website, and an app build that was made
+// for real drivers. That is set when the app is built (TaxiNative.buildInfo().dataEnv), separately from debug/release:
+// a test build, also a release-style one with a practice ledger, says 'test'; only a build made with dataEnv 'prod'
+// sends. A local test page, an unknown answer or an app whose native side cannot say, never send. Until this is
+// known nothing is sent.
 var APP_ENV = null;
 function nativeTools(){ try{ var p = isNativeApp() && window.Capacitor.Plugins && window.Capacitor.Plugins.TaxiNative; return p && p.buildInfo ? p : null; }catch(e){ return null; } }
 function detectAppEnv(){
   if(!isNativeApp()) return Promise.resolve(location.hostname==='welson0986.github.io' ? 'prod' : 'test');
   var nt = nativeTools();
   if(!nt) return Promise.resolve('test');
-  return nt.buildInfo().then(function(i){ return i && i.debug===false ? 'prod' : 'test'; }, function(){ return 'test'; });
+  return nt.buildInfo().then(function(i){ return i && i.dataEnv==='prod' ? 'prod' : 'test'; }, function(){ return 'test'; });
 }
 function maySendShared(){ return APP_ENV==='prod'; }
 // sends each finished day once (up to 14 days back), only cell + time slot + trip count
@@ -4867,7 +4899,8 @@ function openSettingsModal(){
   h += '<div class="form-row"><label>雲端密碼(要跟 Apps Script 指令碼屬性 TAXI_KEY 一樣)</label><input id="f-cloud-key" type="password" autocomplete="off" placeholder="尚未設定" value="'+esc(getCloudKey())+'">'+
     '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);margin-top:6px;font-weight:400"><input type="checkbox" id="f-cloud-key-show" style="width:16px;height:16px">顯示密碼</label>'+
     '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px"><span id="cloudAuthLine" style="font-size:12px;color:var(--text-muted)">'+cloudStatusText()+'</span><button class="btn btn-ghost" style="flex:none;width:auto;padding:7px 12px;font-size:12px" data-act="test-cloud">測試雲端連線</button></div>'+
-    '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5">密碼只存在這支手機,不會寫進網頁原始碼,也不會放進雲端備份。換手機時要重新輸入。</div></div>';
+    (cloudKeyNote() ? '<div style="font-size:11.5px;color:var(--expense);margin-top:6px;line-height:1.5">'+esc(cloudKeyNote())+'</div>' : '')+
+    '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5">密碼由這支手機保存(App 存在手機系統的保護區),連線時只交給你自己設定的 Apps Script 驗證;不會交給瑞威,不會寫進網頁原始碼,也不會放進雲端備份。換手機時要重新輸入。</div></div>';
 
   h += '<div style="height:10px"></div>';
   h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="sync-all">立即同步到雲端</button><button class="btn btn-ghost" style="flex:1" data-act="open-restore">從雲端還原</button></div>';
@@ -4889,7 +4922,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.05.8';
+var APP_VERSION = '2026.11.05.9';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -5453,8 +5486,8 @@ function saveSettings(){
   if(shEl && (shEl.checked || state.shareHot!==undefined)){ var wasShare = state.shareHot; state.shareHot = shEl.checked; if(state.shareHot && wasShare!==true){ friendHot = {}; setTimeout(hotSharePush, 500); } if(!state.shareHot && wasShare===true){ friendHot = {}; hotShareDelete(); } }
   var prevSyncUrl = state.syncUrl;
   state.syncUrl = document.getElementById('f-sync-url').value.trim();
-  var keyBefore = getCloudKey();
-  setCloudKey(document.getElementById('f-cloud-key').value.trim());
+  var keyBefore = getCloudKey(), keyNew = document.getElementById('f-cloud-key').value.trim();
+  if(keyNew!==keyBefore) setCloudKey(keyNew).then(function(ok){ if(!ok) alert(cloudKeyNote()); });
   var seEl = document.getElementById('f-sync-every');
   if(seEl && +seEl.value!==syncEveryMin()){ state.syncEvery = +seEl.value; if(cloudSyncTimer) scheduleCloudSync(); }
   if(getCloudKey()!==keyBefore || state.syncUrl!==prevSyncUrl){ cloudGen++; state.lastCloudConfirmAt = 0; state.lastCloudBasicAt = 0; setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(true); }); }, 300); }
@@ -5780,7 +5813,7 @@ document.addEventListener('click', function(e){
     var tcLine = document.getElementById('cloudAuthLine');
     var urlEl = document.getElementById('f-sync-url'), keyEl = document.getElementById('f-cloud-key');
     if(urlEl && urlEl.value.trim()) state.syncUrl = urlEl.value.trim();
-    if(keyEl) setCloudKey(keyEl.value.trim());
+    if(keyEl && keyEl.value.trim()!==getCloudKey()) setCloudKey(keyEl.value.trim());
     if(tcLine) tcLine.textContent = '檢查中…';
     cloudAuthCheck(function(){ var l=document.getElementById('cloudAuthLine'); if(l) l.textContent = cloudStatusText(); });
   }
