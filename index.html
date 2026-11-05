@@ -956,6 +956,24 @@ function boltWeekTripCount(dateStr){
   tripIndex();
   return boltWeekCounts[weekStartOf(dateStr)] || 0;
 }
+// Only what the driver really changed is kept: a fee equal to the built-in one, or a platform name / icon / colour
+// equal to the built-in one, is left out (settings used to write every field on 儲存設定). Then a later update of a
+// built-in fee, when a fleet changes its rates, still reaches every driver who never changed that field. Run on
+// saving settings and once at start, which also frees the defaults earlier versions wrote; nothing that differs is touched.
+function pruneDefaultSettings(){
+  var fr = state.feeRules || (state.feeRules = {});
+  Object.keys(fr).forEach(function(k){ if(k in FEE_DEFAULTS && (fr[k]==null || fr[k]===FEE_DEFAULTS[k])) delete fr[k]; });
+  var ov = state.platformOverrides || (state.platformOverrides = {});
+  PLATFORM_DEFS.forEach(function(p){
+    var o = ov[p.key]; if(!o) return;
+    var keep = {};
+    if(o.label && o.label!==p.label) keep.label = o.label;
+    if(o.icon && o.icon!==p.icon) keep.icon = o.icon;
+    if(o.color && String(o.color).toLowerCase()!==String(p.color||'').toLowerCase()) keep.color = o.color;
+    if(o.hidden) keep.hidden = true;
+    if(Object.keys(keep).length) ov[p.key] = keep; else delete ov[p.key];
+  });
+}
 function resolvedFeeRules(){
   var fr = state.feeRules||{}, out = {};
   for(var k in FEE_DEFAULTS){ out[k] = (fr[k]!=null) ? fr[k] : FEE_DEFAULTS[k]; }
@@ -4900,7 +4918,7 @@ function openSettingsModal(){
     '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);margin-top:6px;font-weight:400"><input type="checkbox" id="f-cloud-key-show" style="width:16px;height:16px">顯示密碼</label>'+
     '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px"><span id="cloudAuthLine" style="font-size:12px;color:var(--text-muted)">'+cloudStatusText()+'</span><button class="btn btn-ghost" style="flex:none;width:auto;padding:7px 12px;font-size:12px" data-act="test-cloud">測試雲端連線</button></div>'+
     (cloudKeyNote() ? '<div style="font-size:11.5px;color:var(--expense);margin-top:6px;line-height:1.5">'+esc(cloudKeyNote())+'</div>' : '')+
-    '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5">密碼由這支手機保存(App 存在手機系統的保護區),連線時只交給你自己設定的 Apps Script 驗證;不會交給瑞威,不會寫進網頁原始碼,也不會放進雲端備份。換手機時要重新輸入。</div></div>';
+    '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5">密碼由這支手機保存(App 存在手機系統的保護區),連線時只交給你自己設定的 Apps Script 驗證;不會交給我們,不會寫進網頁原始碼,也不會放進雲端備份。換手機時要重新輸入。</div></div>';
 
   h += '<div style="height:10px"></div>';
   h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="sync-all">立即同步到雲端</button><button class="btn btn-ghost" style="flex:1" data-act="open-restore">從雲端還原</button></div>';
@@ -4922,7 +4940,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.05.9';
+var APP_VERSION = '2026.11.05.10';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -5003,7 +5021,7 @@ function aboutHtml(){
   function para(title, body){ return '<div style="margin-bottom:12px"><div style="font-weight:700;font-size:13px;margin-bottom:3px">'+title+'</div><div style="font-size:12.5px;color:var(--text-muted);line-height:1.65">'+body+'</div></div>'; }
   var h = '<div class="card" style="margin-top:18px;padding:14px 16px"><div style="font-size:15px;font-weight:700;margin-bottom:12px">關於跑車人生</div>';
   h += para('🆓 免費使用', '本記帳本完全免費,不需註冊帳號。');
-  h += para('🔒 你的帳由你掌握', '帳本預設存在你的手機,瑞威不預設取得;選擇分享車友熱區時,才會送出約 1 公里的格點、時段和趟數;備份檔和雲端同步放在哪裡由你選擇(雲端同步存在你自己的 Google 帳號)。<br>為了保護你的資料,建議手機設定螢幕鎖,並定期備份。');
+  h += para('🔒 你的帳由你掌握', '帳本預設存在你的手機,我們不預設取得;選擇分享車友熱區時,才會送出約 1 公里的格點、時段和趟數;備份檔和雲端同步放在哪裡由你選擇(雲端同步存在你自己的 Google 帳號)。<br>為了保護你的資料,建議手機設定螢幕鎖,並定期備份。');
   h += para('📊 不具名使用人數統計', '為了知道有多少司機在用,記帳本每天會送出一次不具名資料:一組隨機編號、日期、版本、簡單/完整模式、手機系統(iPhone/安卓)、是否從主畫面打開。<br>不包含任何金額、平台、位置或個人資料,製作者也無法從編號知道你是誰。不想參與,可以在上面「不具名使用人數統計」取消勾選。');
   h += para('📄 隱私權政策', '完整說明記帳本會處理哪些資料、存在哪裡、保存多久:<br><a style="'+link+'" target="_blank" rel="noopener" href="https://welson0986.github.io/taxi-ledger/privacy.html">查看隱私權政策 ›</a>');
   h += para('📍 車友熱區', '同意分享的人,記帳本每天會送出前一天的「約 1 公里一格的上車區域、時段、趟數」,不含精確位置、金額、平台。至少 3 位車友都上過車的地方才會顯示給有分享的人看,看不到任何人的個人紀錄。可以隨時在上面取消分享。');
@@ -5490,6 +5508,7 @@ function saveSettings(){
   if(keyNew!==keyBefore) setCloudKey(keyNew).then(function(ok){ if(!ok) alert(cloudKeyNote()); });
   var seEl = document.getElementById('f-sync-every');
   if(seEl && +seEl.value!==syncEveryMin()){ state.syncEvery = +seEl.value; if(cloudSyncTimer) scheduleCloudSync(); }
+  pruneDefaultSettings();
   if(getCloudKey()!==keyBefore || state.syncUrl!==prevSyncUrl){ cloudGen++; state.lastCloudConfirmAt = 0; state.lastCloudBasicAt = 0; setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(true); }); }, 300); }
   save(); closeModal(); renderAll();
   if(state.syncUrl && state.syncUrl!==prevSyncUrl && !hasMeaningfulData()){
@@ -6067,6 +6086,7 @@ document.addEventListener('change', function(e){
   keys.forEach(function(k){ if(!(k in state.ui)){ state.ui[k] = base[k]; changed = true; } });
   if(changed) save();
 })();
+pruneDefaultSettings();
 applyTheme();
 applyFontScale();
 applyLayoutWidth();
