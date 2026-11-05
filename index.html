@@ -193,6 +193,13 @@ body{
   background:var(--surface-sunken);cursor:pointer;font-size:10.5px;gap:1px;border:2px solid transparent;
 }
 .cal-cell.empty{visibility:hidden;cursor:default}
+/* tablets: the column widens (自動 caps it, 填滿螢幕 does not), more buttons share a row, calendar days stop being tall squares */
+.wide-ui .app{max-width:1040px}
+.wide-ui.full-ui .app{max-width:none}
+.wide-ui .modal{max-width:720px}
+.wide-ui .platform-grid,.wide-ui .expense-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+.wide-ui.big-ui .platform-grid,.wide-ui.big-ui .expense-grid{grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}
+.wide-ui .cal-cell{aspect-ratio:auto;min-height:64px}
 .cal-cell{min-width:0;overflow:hidden}
 .cal-cell .n{max-width:100%;overflow:hidden;white-space:nowrap}
 /* large type: seven columns must still fit the screen */
@@ -4054,6 +4061,20 @@ function applyFontScale(){
   de.style.setProperty('--zoom', String(z)); // vh grows with zoom too, so pop-ups divide it back to fit the screen
   de.classList.toggle('big-ui', z>=1.3);
 }
+var LAYOUT_WIDTHS = [['自動','auto'],['手機寬度','phone'],['填滿螢幕','full']];
+function layoutWidthLabel(){ var m = LAYOUT_WIDTHS.filter(function(x){ return x[1]===state.layoutWidth; })[0]; return m ? m[0] : '自動'; }
+// a tablet is a screen whose short side is at least 600 points; a phone turned sideways stays a phone
+function isTabletScreen(){ return Math.min(screen.width||0, screen.height||0) >= 600; }
+function applyLayoutWidth(){
+  var mode = state.layoutWidth||'auto', de = document.documentElement;
+  de.classList.toggle('wide-ui', mode==='full' || (mode==='auto' && isTabletScreen()));
+  de.classList.toggle('full-ui', mode==='full');
+}
+function setLayoutWidth(label){
+  var m = LAYOUT_WIDTHS.filter(function(x){ return x[0]===label; })[0];
+  state.layoutWidth = m ? m[1] : 'auto';
+  save(); applyLayoutWidth(); renderAll();
+}
 function setFontScale(label, trying){
   var m = FONT_SCALES.filter(function(x){ return x[0]===label; })[0];
   state.fontScale = m ? m[1] : 1;
@@ -4108,6 +4129,8 @@ function uiSettingsHtml(part){
     '<option value="dark"'+(state.theme==='dark'?' selected':'')+'>深色</option></select></div>';
   hb += '<div class="form-row"><label>🔠 字體大小(字、圖示、按鈕一起放大)</label>'+chipRowHtml('fontScale', FONT_SCALES.map(function(x){ return x[0]; }), fontScaleLabel())+
     '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5">點了馬上換,不用按儲存。特大、超大的平台按鈕會改成一排 2 個。</div></div>';
+  hb += '<div class="form-row"><label>📐 畫面寬度(平板用)</label>'+chipRowHtml('layoutWidth', LAYOUT_WIDTHS.map(function(x){ return x[0]; }), layoutWidthLabel())+
+    '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5">自動:平板自動加寬、手機不變。手機寬度:跟手機一樣窄、放在中間。填滿螢幕:用滿整個寬度。只影響這台裝置,點了馬上換。</div></div>';
   return part==='basic' ? hb : h;
 }
 function saveUiSettings(){
@@ -4813,7 +4836,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.05.4';
+var APP_VERSION = '2026.11.05.5';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -5079,7 +5102,7 @@ function keepUndoCopy(label, done){
 }
 // settings that belong to this phone, not to the ledger: a restored backup must not switch sharing or
 // statistics back on, bring back an old sharing id, or claim this phone's cloud backup state
-var DEVICE_KEYS = ['undoMeta','syncUrl','syncEvery','lastCloudBasicAt','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale'];
+var DEVICE_KEYS = ['undoMeta','syncUrl','syncEvery','lastCloudBasicAt','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale','layoutWidth'];
 var LEDGER_PART_NAMES = {expenses:'支出', dailyMeta:'每日工時與里程', fixedCosts:'固定成本', fixedOverrides:'固定成本覆寫', targets:'目標', feeRules:'手續費設定', platformOverrides:'平台設定', customPlatforms:'自訂平台', platformOrder:'平台排列', payoutSettings:'撥款設定', payouts:'撥款核對', pendingTrips:'行程'};
 // '' when the data can be used as a ledger, otherwise what is wrong with it
 function ledgerProblem(p){
@@ -5872,6 +5895,7 @@ document.addEventListener('click', function(e){
     var hi = document.getElementById('chip-'+groupId);
     if(hi) hi.value = value;
     if(groupId==='fontScale'){ setFontScale(value); return; }
+    if(groupId==='layoutWidth'){ setLayoutWidth(value); return; }
     if(groupId==='fareType'){
       var meterEl = document.getElementById('sec-meterExtra');
       var estEl = document.getElementById('sec-estimateExtra');
@@ -5958,6 +5982,7 @@ document.addEventListener('change', function(e){
 })();
 applyTheme();
 applyFontScale();
+applyLayoutWidth();
 // the native app carries its files inside the install; only the website needs the offline copy
 // where the ledger lives, for messages: the app on a phone, or this browser
 function hereName(){ return isNativeApp() ? '這支手機' : '這個瀏覽器'; }
