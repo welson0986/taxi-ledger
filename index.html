@@ -1228,25 +1228,31 @@ var cloudAuthStatus = 'unknown';
 // So a failed save never falls back to the older password, and a failed clear never brings the old one back.
 var CLOUD_KEY_PENDING = 'taxi_ledger_cloudkey_pending';
 var cloudKeyMem = null;
-// '' normal; 'pending' a change is waiting in the web storage; 'unreadable' the protected storage could not be read now
+// '' normal; 'pending' a change is waiting in the web storage; 'unsaved' the change could not be kept anywhere (both
+// the protected storage and the waiting note failed), so it lasts only until the app closes; 'unreadable' the
+// protected storage could not be read now
 var cloudKeyState = '';
 function keyStore(){ var nt = nativeTools(); return nt && nt.setKey ? nt : null; }
 function plainCloudKey(){ try{ return localStorage.getItem(CLOUD_KEY_STORAGE)||''; }catch(e){ return ''; } }
 function dropPlainCloudKey(){ try{ localStorage.removeItem(CLOUD_KEY_STORAGE); }catch(e){} }
 function pendingCloudKey(){ try{ var o = JSON.parse(localStorage.getItem(CLOUD_KEY_PENDING)||'null'); return o && (o.op==='set' || o.op==='clear') ? o : null; }catch(e){ return null; } }
-function setPendingCloudKey(o){ try{ if(o) localStorage.setItem(CLOUD_KEY_PENDING, JSON.stringify(o)); else localStorage.removeItem(CLOUD_KEY_PENDING); }catch(e){} }
-// writes one change to the protected storage; resolves true only when it confirmed it
-function applyCloudKey(ks, o){
+// true only when the note really was written (or removed)
+function setPendingCloudKey(o){ try{ if(o) localStorage.setItem(CLOUD_KEY_PENDING, JSON.stringify(o)); else localStorage.removeItem(CLOUD_KEY_PENDING); return true; }catch(e){ return false; } }
+// writes one change to the protected storage; resolves true only when it confirmed it. noted: whether the waiting
+// note for this change is really stored — only then can a failure promise another try at the next start.
+// (If removing the note after a success fails, the leftover note holds the same change, so applying it again at
+// the next start changes nothing.)
+function applyCloudKey(ks, o, noted){
   var job = o.op==='set' ? ks.setKey({value:o.v}) : ks.removeKey();
   return job.then(function(){ setPendingCloudKey(null); dropPlainCloudKey(); cloudKeyState = ''; return true; },
-    function(){ cloudKeyState = 'pending'; return false; });
+    function(){ cloudKeyState = noted ? 'pending' : 'unsaved'; return false; });
 }
 function loadCloudKey(){
   var plain = plainCloudKey(), ks = keyStore(), pend = pendingCloudKey();
   if(!ks){ cloudKeyMem = pend ? (pend.op==='set' ? pend.v : '') : plain; return Promise.resolve(); }
   if(pend){
     cloudKeyMem = pend.op==='set' ? pend.v : '';
-    return applyCloudKey(ks, pend).then(function(){});
+    return applyCloudKey(ks, pend, true).then(function(){});
   }
   return ks.getKey().then(function(r){
     var held = (r && r.value) || '';
@@ -1265,12 +1271,12 @@ function setCloudKey(k){
   var ks = keyStore();
   if(!ks){ try{ if(k) localStorage.setItem(CLOUD_KEY_STORAGE, k); else localStorage.removeItem(CLOUD_KEY_STORAGE); }catch(e){} return Promise.resolve(true); }
   var o = k ? {op:'set', v:k} : {op:'clear'};
-  setPendingCloudKey(o);
-  return applyCloudKey(ks, o);
+  return applyCloudKey(ks, o, setPendingCloudKey(o));
 }
 function cloudKeyNote(){
   return {
     pending:'⚠️ 手機的保護區這次沒有存進雲端密碼,先暫存在記帳本裡,下次打開會再試。若一直出現,請到設定重新輸入密碼。',
+    unsaved:'⚠️ 這次雲端密碼的更改沒有存下來(手機的保護區和記帳本都存不進去,可能是手機空間滿了)。關掉記帳本後會回到原本的設定,請清出空間後再改一次。',
     unreadable:'⚠️ 手機的保護區暫時讀不到雲端密碼,請把記帳本完全關掉再打開;還是不行,請重新輸入密碼。'
   }[cloudKeyState] || '';
 }
@@ -4940,7 +4946,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.05.10';
+var APP_VERSION = '2026.11.05.11';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
