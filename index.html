@@ -1334,6 +1334,11 @@ function withTimeout(p, ms){
     p.then(function(v){ clearTimeout(t); resolve(v); }, function(e){ clearTimeout(t); reject(e); });
   });
 }
+// the line under the sync buttons; refreshed after every push so it never contradicts the result shown below it
+function cloudConfirmText(){
+  return (state.lastCloudConfirmAt?('上次確認雲端存好:'+fmtTs(state.lastCloudConfirmAt)):''+hereName()+'還沒有確認過雲端備份')+((state.lastCloudSendAt||0)>(state.lastCloudConfirmAt||0)?((state.lastCloudBasicAt||0)>(state.lastCloudConfirmAt||0)?' · 最近一次雲端有收到,但沒辦法完整核對':' · 最近一次已送出、尚未確認'):'')+((state.lastChangeAt||0)>(state.lastCloudConfirmAt||0)&&state.lastCloudConfirmAt?' · 之後的變動還沒確認備份':'');
+}
+function refreshCloudConfirmLine(){ var el = document.getElementById('cloudConfirmLine'); if(el) el.textContent = cloudConfirmText(); }
 function recordCloudResult(kind, builtAt, gen){
   if(gen!==cloudGen) return;
   if(kind==='full' && builtAt > (state.lastCloudConfirmAt||0)) state.lastCloudConfirmAt = builtAt;
@@ -1381,6 +1386,7 @@ function pushCloudSnapshot(onResult){
     cloudPushBusy = false;
     var full = ok===true && kind==='full';
     waiters.forEach(function(f){ try{ f(full, kind||''); }catch(e){} });
+    refreshCloudConfirmLine();
     if(full) cloudRetryN = 0; else scheduleCloudRetry();
     if(cloudPushAgain){ cloudPushAgain = false; pushCloudSnapshot(); }
   }
@@ -1453,7 +1459,8 @@ function cloudSyncIfBehind(force){
   if(!state.syncUrl || !canSyncLedger() || !cloudBehind()) return;
   if(force===true) cloudSyncTick(); else scheduleCloudSync();
 }
-window.addEventListener('online', function(){ setTimeout(cloudSyncIfBehind, 1500); setTimeout(hotDeleteFlush, 2000); });
+// back online: a send that failed is retried right away (the screen promised that); otherwise keep the interval
+window.addEventListener('online', function(){ setTimeout(function(){ cloudSyncIfBehind(cloudRetryN > 0); }, 1500); setTimeout(hotDeleteFlush, 2000); });
 // leaving the app: a phone may freeze the page, so send now if the interval has passed
 function flushCloudSync(){
   if(cloudSyncTimer && Date.now() >= (state.lastCloudSendAt||0) + syncEveryMin()*60000) cloudSyncTick();
@@ -4928,7 +4935,7 @@ function openSettingsModal(){
 
   h += '<div style="height:10px"></div>';
   h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="sync-all">立即同步到雲端</button><button class="btn btn-ghost" style="flex:1" data-act="open-restore">從雲端還原</button></div>';
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">'+(state.lastCloudConfirmAt?('上次確認雲端存好:'+fmtTs(state.lastCloudConfirmAt)):''+hereName()+'還沒有確認過雲端備份')+((state.lastCloudSendAt||0)>(state.lastCloudConfirmAt||0)?((state.lastCloudBasicAt||0)>(state.lastCloudConfirmAt||0)?' · 最近一次雲端有收到,但沒辦法完整核對':' · 最近一次已送出、尚未確認'):'')+((state.lastChangeAt||0)>(state.lastCloudConfirmAt||0)&&state.lastCloudConfirmAt?' · 之後的變動還沒確認備份':'')+'</div>';
+  h += '<div id="cloudConfirmLine" style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">'+esc(cloudConfirmText())+'</div>';
   h += '<div id="syncStatus" style="font-size:12px;color:var(--text-muted);margin-top:8px;text-align:center"></div>';
   h += '<div style="height:14px"></div>';
 
@@ -4946,7 +4953,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.05.11';
+var APP_VERSION = '2026.11.05.12';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -5829,6 +5836,7 @@ document.addEventListener('click', function(e){
       var el = document.getElementById('syncStatus'); if(!el) return;
       el.textContent = ok ? '✓ 雲端已確認存好('+nI+' 筆收入、'+nE+' 筆支出)'
         : kind==='basic' ? '已送出,雲端有收到這份,但沒辦法完整核對內容(同步程式不是最新的 v6,或'+hereName()+'不支援)。在那之前也請定期存備份檔。'
+        : navigator.onLine===false ? '現在沒有網路,這次沒有送出。恢復網路後會自動再試;也可以連上網路後再按一次。'
         : '已送出,但還沒確認雲端有存好。稍後會自動再試;也可以確認網路和密碼後再按一次。';
     });
     if(!sent && statusEl) statusEl.textContent = '現在沒辦法送出(資料正在另一個畫面使用中)。請關掉其他記帳本畫面,重新開啟後再按一次。';
@@ -5840,7 +5848,8 @@ document.addEventListener('click', function(e){
     if(urlEl && urlEl.value.trim()) state.syncUrl = urlEl.value.trim();
     if(keyEl && keyEl.value.trim()!==getCloudKey()) setCloudKey(keyEl.value.trim());
     if(tcLine) tcLine.textContent = '檢查中…';
-    cloudAuthCheck(function(){ var l=document.getElementById('cloudAuthLine'); if(l) l.textContent = cloudStatusText(); });
+    var oldSync = document.getElementById('syncStatus'); if(oldSync) oldSync.textContent = '';  // an earlier sync result no longer describes this connection
+    cloudAuthCheck(function(){ var l=document.getElementById('cloudAuthLine'); if(l) l.textContent = cloudStatusText(); refreshCloudConfirmLine(); });
   }
   else if(cmd==='trip-start'){ tripStart(); }
   else if(cmd==='trip-accept'){ tripAccept(); }
