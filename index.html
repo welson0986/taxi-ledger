@@ -1312,7 +1312,8 @@ var cloudPushBusy = false, cloudPushAgain = false, cloudPushWaiters = [];
 // content it really stored. Only a matching id AND fingerprint is a full confirmation ('full'); an older
 // script, or a browser that cannot compute the fingerprint, can only show the backup arrived ('basic').
 // 'basic' never counts as backed up, so the backup-file reminder stays on.
-var cloudServerV = 0;
+// null = not known yet for this address (a send asks first); 0 = an old script that names no version
+var cloudServerV = null;
 // bumped when the destination, the password or the whole ledger changes: answers to older sends no longer count
 var cloudGen = 0;
 function newSnapshotId(){
@@ -1406,7 +1407,7 @@ function cloudConflictText(){
   var what = '雲端最新的備份('+fmtTs(+f.time)+',收入 '+f.income+' 筆、支出 '+f.expense+' 筆)';
   return f.unknown
     ? '⚠️ '+hereName()+'是第一次在新版本同步(或還沒在這個雲端同步過),沒辦法確認'+what+'是不是'+hereName()+'送的。為了避免舊帳蓋掉別台比較新的帳,已暫停自動同步,請到 ⚙️「雲端與備份」按「立即同步到雲端」確認一次。'
-    : '⚠️ '+what+'不是'+hereName()+'送的,而且比'+hereName()+'上次同步還新,可能是另一台手機或平板記的帳。已暫停自動同步,請到 ⚙️「雲端與備份」確認哪一台才是最新的。';
+    : '⚠️ '+what+'不是'+hereName()+'送的,而且比'+hereName()+'上次同步還新,可能是另一台手機或平板記的帳。已暫停自動同步;'+hereName()+'之後記的帳還只在'+hereName()+',沒有上雲端。請到 ⚙️「雲端與備份」確認哪一台才是最新的。';
 }
 // A ledger the driver emptied on purpose is still sent (the cloud should not keep showing deleted trips);
 // a brand-new empty one is not, so a fresh install can never blank an existing backup.
@@ -1438,6 +1439,19 @@ function pushCloudSnapshot(onResult, overrule){
       body: JSON.stringify(snap)
     }), 60000);
   }
+  // which script answers decides how the send is checked; an unknown one is asked first, never taken for an old
+  // script (that path has no check against another device's newer backup). No answer: nothing is sent.
+  if(cloudServerV == null){
+    cloudGet({action:'ping'}).then(function(res){
+      if(!res || !res.ok){ done(false, res && res.error==='unauthorized' ? '' : 'unsent'); return; }
+      cloudServerV = +res.v || 0;
+      send();
+    }, function(){ done(false, 'unsent'); });
+    return true;
+  }
+  send();
+  return true;
+  function send(){
   if(cloudServerV >= 6){
     snap.snapshotId = newSnapshotId();
     // first look at the cloud's newest backup (a failed look sends nothing, like a failed send); the send then
@@ -1456,7 +1470,7 @@ function pushCloudSnapshot(onResult, overrule){
         }, function(){ done(false, 'unsent'); });
       });
     }, function(){ done(false, 'unsent'); }).catch(function(){ done(false); });
-    return true;
+    return;
   }
   cloudListVersions().then(function(vs){
     var before = {};
@@ -1471,7 +1485,7 @@ function pushCloudSnapshot(onResult, overrule){
       confirmCloudBackup(before, builtAt, snap.incomeCount, snap.expenseCount, gen, done);
     }, function(){ done(false, 'unsent'); });
   }).catch(function(){ done(false); });
-  return true;
+  }
 }
 // Automatic backups go out at most once per chosen interval (each one is a file in the driver's Drive),
 // half a minute after the latest change so a burst of edits travels together. Clocking out and the
@@ -5010,7 +5024,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.05.17';
+var APP_VERSION = '2026.11.05.18';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -5189,7 +5203,8 @@ function doCloudRestore(i){
   var v = lastCloudVersions[i]; if(!v) return;
   var newer = lastCloudVersions.some(function(x){ return !x.legacy && +x.time > +v.time; });
   if(!confirm('確定要用 '+fmtTs(v.time)+' 的雲端備份(收入 '+v.income+' 筆、支出 '+v.expense+' 筆)覆蓋'+hereName()+'目前的所有資料嗎?'+
-      (newer ? '\n\n這不是雲端最新的那份。還原後'+hereName()+'下次同步前,如果雲端上有別台送的較新備份,會先問你,不會直接蓋掉。' : ''))) return;
+      (newer ? '\n\n這不是雲端最新的那份。還原後'+hereName()+'下次同步前,如果雲端上有別台送的較新備份,會先問你,不會直接蓋掉。' : '')+
+      (cloudBehind() ? '\n\n⚠️ '+hereName()+'上次確認雲端存好之後記的帳還沒上雲端,還原後會被取代(還原前會先在'+hereName()+'另外保留一份,可以用「復原」拿回;建議先按 💾 存成備份檔)。' : ''))) return;
   var el = document.getElementById('restoreList');
   if(el) el.textContent = '下載備份中…';
   cloudGet({action:'get', time:v.time}).then(function(res){
@@ -5582,7 +5597,7 @@ function saveSettings(){
   var seEl = document.getElementById('f-sync-every');
   if(seEl && +seEl.value!==syncEveryMin()){ state.syncEvery = +seEl.value; if(cloudSyncTimer) scheduleCloudSync(); }
   pruneDefaultSettings();
-  if(state.syncUrl!==prevSyncUrl){ delete state.cloudBaseTime; state.cloudSentSids = []; cloudConflict = null; }  // another sheet: start over
+  if(state.syncUrl!==prevSyncUrl){ delete state.cloudBaseTime; state.cloudSentSids = []; cloudConflict = null; cloudServerV = null; }  // another sheet: start over
   if(getCloudKey()!==keyBefore || state.syncUrl!==prevSyncUrl){ cloudGen++; state.lastCloudConfirmAt = 0; state.lastCloudBasicAt = 0; setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(true); }); }, 300); }
   save(); closeModal(); renderAll();
   if(state.syncUrl && state.syncUrl!==prevSyncUrl && !hasMeaningfulData()){
@@ -5900,10 +5915,11 @@ document.addEventListener('click', function(e){
         if(confirm((f.unknown ? '沒辦法確認雲端最新的備份是不是'+hereName()+'送的('+hereName()+'是第一次在新版本同步,或還沒在這個雲端同步過):' : '雲端最新的備份不是'+hereName()+'送的:')+
             '\n\n☁️ 雲端:'+fmtTs(+f.time)+',收入 '+f.income+' 筆、支出 '+f.expense+' 筆\n📱 '+hereName()+':收入 '+nI+' 筆、支出 '+nE+' 筆\n\n'+
             (f.unknown ? '如果最近只用'+hereName()+'記帳,通常就是'+hereName()+'自己的。\n\n' : '它比'+hereName()+'上次同步還新,可能是另一台手機或平板記的帳。\n\n')+
-            '・'+hereName()+'的帳才是最新的 → 按「確定」送出(雲端那份備份還會保留)\n・另一台的帳比較新 → 按「取消」,再按「從雲端還原」拿那份')){
+            '・'+hereName()+'的帳才是最新的 → 按「確定」送出(雲端那份備份還會保留)\n・另一台的帳比較新 → 按「取消」\n\n'+
+            hereName()+'上次同步之後記的帳還沒上雲端,只在'+hereName()+';兩台都記了新帳的話,請先按右上角 💾 把'+hereName()+'存成備份檔,再決定用哪一台。從雲端還原不會把兩台的帳合併。')){
           if(el) el.textContent = '送出中,正在確認雲端有沒有存好…';
           pushCloudSnapshot(syncResult, true);
-        } else if(el) el.textContent = '沒有送出。如果另一台的帳比較新,請按「從雲端還原」選最上面那份;自動同步會先暫停。';
+        } else if(el) el.textContent = '沒有送出,'+hereName()+'上次同步之後記的帳還只在'+hereName()+'。如果另一台的帳比較新:先按右上角 💾 把'+hereName()+'存成備份檔,再按「從雲端還原」選最上面那份(還原會取代'+hereName()+'的帳,不會合併)。自動同步會先暫停。';
         return;
       }
       if(!el) return;
@@ -5921,7 +5937,7 @@ document.addEventListener('click', function(e){
   else if(cmd==='test-cloud'){
     var tcLine = document.getElementById('cloudAuthLine');
     var urlEl = document.getElementById('f-sync-url'), keyEl = document.getElementById('f-cloud-key');
-    if(urlEl && urlEl.value.trim()) state.syncUrl = urlEl.value.trim();
+    if(urlEl && urlEl.value.trim()){ if(urlEl.value.trim()!==state.syncUrl) cloudServerV = null; state.syncUrl = urlEl.value.trim(); }
     if(keyEl && keyEl.value.trim()!==getCloudKey()) setCloudKey(keyEl.value.trim());
     if(tcLine) tcLine.textContent = '檢查中…';
     var oldSync = document.getElementById('syncStatus'); if(oldSync) oldSync.textContent = '';  // an earlier sync result no longer describes this connection
