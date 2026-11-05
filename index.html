@@ -185,6 +185,7 @@ body{
 .month-nav .m-title{font-weight:700;font-size:15px}
 .month-nav button{background:var(--surface);border:1px solid var(--border);width:32px;height:32px;border-radius:9px;font-size:15px;cursor:pointer;color:var(--text)}
 
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px;margin-bottom:6px}
 .cal-dow{text-align:center;font-size:10.5px;color:var(--text-muted);font-weight:700;padding-bottom:2px}
 .cal-cell{
@@ -2404,7 +2405,8 @@ function renderHistory(){
     if(ds===t) cls+=' today';
     if(ds===selectedDay) cls+=' selected';
     if(TW_HOLIDAYS[ds]) cls+=' holiday';
-    h += '<div class="'+cls+'" data-act="select-day:'+ds+'"><span class="d">'+d+'</span>'+(net?('<span class="n">'+(net>0?'+':'')+calAmount(net)+'</span>'):'')+'</div>';
+    var said = (mo+1)+' 月 '+d+' 日'+(net ? ',結餘 '+(net<0?'負 ':'')+Math.abs(Math.round(net)).toLocaleString('zh-Hant-TW')+' 元' : '')+(TW_HOLIDAYS[ds]?',假日':'')+(ds===selectedDay?',已選取':'');
+    h += '<div class="'+cls+'" data-act="select-day:'+ds+'" aria-label="'+esc(said)+'"><span class="d">'+d+'</span>'+(net?('<span class="n">'+(net>0?'+':'')+calAmount(net)+'</span>'):'')+'</div>';
   }
   h += '</div></div>';
 
@@ -2679,7 +2681,7 @@ function patternsHtml(recs){
   var byWd = avgBy(function(d){ return (new Date(d+'T00:00:00').getDay()+6)%7; }, [0,1,2,3,4,5,6]);
   h += '<div style="font-size:13px;font-weight:700;margin:14px 0 6px">星期(平均每個出車日實收)</div>';
   h += barChartHtml('weekday', byWd.map(function(x){
-    return {value:x.avg, axis:wd[x.key], tip:'週'+wd[x.key]+' · 平均 '+fmtMoney(x.avg)+' / 天('+x.n+' 天)'};
+    return {value:x.avg, axis:wd[x.key], tip:'週'+wd[x.key]+' · 平均每天 '+fmtMoney(x.avg)+'(出車 '+x.n+' 天)'};
   }), '');
   }
 
@@ -2688,7 +2690,7 @@ function patternsHtml(recs){
   var byDom = avgBy(function(d){ return +d.slice(8,10); }, dom);
   h += '<div style="font-size:13px;font-weight:700;margin:14px 0 6px">每月幾號(平均每個出車日實收)</div>';
   h += barChartHtml('dom', byDom.map(function(x){
-    return {value:x.avg, axis:((x.key===1||x.key%5===0)?x.key:''), tip:x.key+' 號 · 平均 '+fmtMoney(x.avg)+' / 天('+x.n+' 天)'};
+    return {value:x.avg, axis:((x.key===1||x.key%5===0)?x.key:''), tip:x.key+' 號 · 平均每天 '+fmtMoney(x.avg)+'(出車 '+x.n+' 天)'};
   }), '');
   var thirds = avgBy(function(d){ var n=+d.slice(8,10); return n<=10?0:(n<=20?1:2); }, [0,1,2]);
   h += '<div class="summary-row" style="grid-template-columns:1fr 1fr 1fr;margin-top:8px">'+
@@ -2702,7 +2704,7 @@ function patternsHtml(recs){
     var byMonth = avgBy(function(d){ return +d.slice(5,7); }, [1,2,3,4,5,6,7,8,9,10,11,12]);
     h += '<div style="font-size:13px;font-weight:700;margin:14px 0 6px">月份(平均每個出車日實收)</div>';
     h += barChartHtml('month', byMonth.map(function(x){
-      return {value:x.avg, axis:x.key, tip:x.key+' 月 · 平均 '+fmtMoney(x.avg)+' / 天('+x.n+' 天)'};
+      return {value:x.avg, axis:x.key, tip:x.key+' 月 · 平均每天 '+fmtMoney(x.avg)+'(出車 '+x.n+' 天)'};
     }), '');
   }
   h += '</div>';
@@ -4811,7 +4813,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.05.2';
+var APP_VERSION = '2026.11.05.3';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
@@ -5394,6 +5396,46 @@ function openFeeApplyModal(){
    each form label is tied to its field, tappable boxes are announced and reachable as buttons,
    and icon-only close buttons get a name. */
 var a11yQueued = false, a11yUid = 0;
+// TalkBack reads "$" as US dollars and reads every emoji by its long name ("鉛筆類別的表情符號"),
+// so amounts get a spoken "元" twin and decorative emoji and the "—" placeholders are skipped
+var A11Y_EMOJI = '(?:[\\u2600-\\u27BF\\u2B00-\\u2BFF]|\\uD83C[\\uDC00-\\uDFFF]|\\uD83D[\\uDC00-\\uDFFF]|\\uD83E[\\uDC00-\\uDFFF])[\\uFE0F\\u200D]*';
+var A11Y_MONEY = '([+\\-\\u2212]?)\\$\\s?([\\d,]+(?:\\.\\d+)?)';
+function a11ySpeak(s){
+  return String(s).replace(new RegExp(A11Y_MONEY, 'g'), function(m, sign, num){ return (sign && sign!=='+' ? '負 ' : '')+num+' 元'; })
+    .replace(new RegExp(A11Y_EMOJI, 'g'), '').replace(/\s+/g, ' ').trim();
+}
+function a11yText(){
+  var hit = new RegExp(A11Y_EMOJI+'|\\$\\s?[\\d,]|^\\s*[\\u2014\\u2013]\\s*$'), todo = [], n;
+  var w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+  while((n = w.nextNode())){
+    var p = n.parentNode;
+    if(!p || !hit.test(n.nodeValue) || p.closest('[aria-hidden="true"],script,style,textarea,option,svg,.sr-only')) continue;
+    todo.push(n);
+  }
+  todo.forEach(function(t){
+    var p = t.parentNode, v = t.nodeValue, ctl = p.closest('button,a,[role=button],[role=tab],label');
+    // an icon-only control with no name keeps its emoji, or it would be announced as a nameless button
+    if(ctl && !ctl.hasAttribute('aria-label') && !a11ySpeak(ctl.textContent)) return;
+    if(p!==ctl && p.childNodes.length===1 && !a11ySpeak(v)){ p.setAttribute('aria-hidden', 'true'); return; }
+    if(/^\s*[—–]\s*$/.test(v)){ var dash = document.createElement('span'); dash.setAttribute('aria-hidden', 'true'); p.replaceChild(dash, t); dash.appendChild(t); return; }
+    var re = new RegExp(A11Y_EMOJI+'|'+A11Y_MONEY, 'g'), frag = document.createDocumentFragment(), last = 0, m;
+    while((m = re.exec(v))){
+      if(m.index>last) frag.appendChild(document.createTextNode(v.slice(last, m.index)));
+      var shown = document.createElement('span'); shown.setAttribute('aria-hidden', 'true'); shown.textContent = m[0]; frag.appendChild(shown);
+      if(m[0].indexOf('$')>=0){ var said = document.createElement('span'); said.className = 'sr-only'; said.textContent = a11ySpeak(m[0]); frag.appendChild(said); }
+      last = re.lastIndex;
+    }
+    if(last<v.length) frag.appendChild(document.createTextNode(v.slice(last)));
+    p.replaceChild(frag, t);
+  });
+  var named = document.querySelectorAll('[aria-label]');
+  for(var i=0;i<named.length;i++){
+    var lb = named[i].getAttribute('aria-label'), sp = a11ySpeak(lb);
+    if(sp && sp!==lb) named[i].setAttribute('aria-label', sp);
+  }
+}
+// the text as shown, without the spoken twins added above
+function a11yVisible(el){ var c = el.cloneNode(true), s = c.querySelectorAll('.sr-only'); for(var i=0;i<s.length;i++) s[i].parentNode.removeChild(s[i]); return c.textContent; }
 function a11yPass(){
   a11yQueued = false;
   var rows = document.querySelectorAll('.form-row');
@@ -5422,10 +5464,11 @@ function a11yPass(){
     var row = dels[d].closest('.list-item'), what = '';
     if(row){
       var ti = row.querySelector('.li-title'), am = row.querySelector('.li-amt');
-      what = ((ti ? ti.textContent : '')+' '+(am ? am.textContent : '')).replace(/\s+/g, ' ').trim();
+      what = a11ySpeak((ti ? a11yVisible(ti) : '')+' '+(am ? a11yVisible(am) : ''));
     }
     dels[d].setAttribute('aria-label', '刪除'+(what ? ' '+what : ''));
   }
+  a11yText();
   var stepNames = {'month:-1':'上個月', 'month:1':'下個月', 'year:-1':'上一年', 'year:1':'下一年', 'day:-1':'前一天', 'day:1':'後一天'};
   var steps = document.querySelectorAll('[data-act^="month:"]:not([aria-label]),[data-act^="year:"]:not([aria-label]),[data-act^="day:"]:not([aria-label])');
   for(var q=0;q<steps.length;q++){ var sn = stepNames[steps[q].getAttribute('data-act')]; if(sn) steps[q].setAttribute('aria-label', sn); }
