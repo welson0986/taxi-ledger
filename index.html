@@ -4065,11 +4065,16 @@ var LAYOUT_WIDTHS = [['自動','auto'],['手機寬度','phone'],['填滿螢幕',
 function layoutWidthLabel(){ var m = LAYOUT_WIDTHS.filter(function(x){ return x[1]===state.layoutWidth; })[0]; return m ? m[0] : '自動'; }
 // a tablet is a screen whose short side is at least 600 points; a phone turned sideways stays a phone
 function isTabletScreen(){ return Math.min(screen.width||0, screen.height||0) >= 600; }
+// on a tablet the ledger may share the screen with a fleet app, so 自動 looks at this window's own width
+// (in points after the font size zoom): a narrow split-screen pane gets the phone layout, a wide one the tablet layout
 function applyLayoutWidth(){
   var mode = state.layoutWidth||'auto', de = document.documentElement;
-  de.classList.toggle('wide-ui', mode==='full' || (mode==='auto' && isTabletScreen()));
+  var paneWide = (window.innerWidth||0) / (+state.fontScale||1) >= 600;
+  de.classList.toggle('wide-ui', mode==='full' || (mode==='auto' && isTabletScreen() && paneWide));
   de.classList.toggle('full-ui', mode==='full');
 }
+var layoutResizeTimer = null;
+window.addEventListener('resize', function(){ clearTimeout(layoutResizeTimer); layoutResizeTimer = setTimeout(applyLayoutWidth, 150); });
 function setLayoutWidth(label){
   var m = LAYOUT_WIDTHS.filter(function(x){ return x[0]===label; })[0];
   state.layoutWidth = m ? m[1] : 'auto';
@@ -4079,7 +4084,7 @@ function setFontScale(label, trying){
   var m = FONT_SCALES.filter(function(x){ return x[0]===label; })[0];
   state.fontScale = m ? m[1] : 1;
   if(!trying) state.fontAsked = true;
-  save(); applyFontScale();
+  save(); applyFontScale(); applyLayoutWidth();
 }
 function fontAskHtml(){
   if(state.fontAsked) return '';
@@ -4130,7 +4135,7 @@ function uiSettingsHtml(part){
   hb += '<div class="form-row"><label>🔠 字體大小(字、圖示、按鈕一起放大)</label>'+chipRowHtml('fontScale', FONT_SCALES.map(function(x){ return x[0]; }), fontScaleLabel())+
     '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5">點了馬上換,不用按儲存。特大、超大的平台按鈕會改成一排 2 個。</div></div>';
   hb += '<div class="form-row"><label>📐 畫面寬度(平板用)</label>'+chipRowHtml('layoutWidth', LAYOUT_WIDTHS.map(function(x){ return x[0]; }), layoutWidthLabel())+
-    '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5">自動:平板自動加寬、手機不變。手機寬度:跟手機一樣窄、放在中間。填滿螢幕:用滿整個寬度。只影響這台裝置,點了馬上換。</div></div>';
+    '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5">自動:平板自動加寬、手機不變;跟車隊 App 分割畫面變窄時,自動改用手機排法。手機寬度:跟手機一樣窄、放在中間。填滿螢幕:用滿整個寬度。只影響這台裝置,點了馬上換。</div></div>';
   return part==='basic' ? hb : h;
 }
 function saveUiSettings(){
@@ -4836,7 +4841,7 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.05.5';
+var APP_VERSION = '2026.11.05.6';
 var WHATS_NEW = [
   '🔁 活動卡可以「每週重複」:例如平日 17:00–21:00 跑 5 趟拿 $130,勾週一到週五,每天自動出現;整週活動每 7 天自動建下一週',
   '🎯 活動追蹤新增「達標後回饋車資 %」:例如 BOLT 一週完成 100 趟後每趟額外 5%,可選只算達標後的趟次,或達標後整段都回饋(要先在 ⚙️ 打開「活動獎勵」)',
