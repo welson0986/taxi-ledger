@@ -29,6 +29,12 @@
   --expense:#B8402C;
   --expense-soft:#F8E1DA;
   --shadow: 0 1px 2px rgba(35,31,24,.06), 0 4px 14px rgba(35,31,24,.06);
+  /* solid buttons and badges: the fill colour and the text on it (light: deep fill + white text) */
+  --accent-fill:#9C6110;
+  --income-fill:#1E7A4C;
+  --expense-fill:#B8402C;
+  --muted-fill:#7A735F;
+  --on-fill:#FFFFFF;
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
@@ -46,6 +52,11 @@
     --expense:#E5715A;
     --expense-soft:#3A1D16;
     --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 18px rgba(0,0,0,.35);
+    --accent-fill:#E5A33D;
+    --income-fill:#4FC98A;
+    --expense-fill:#E5715A;
+    --muted-fill:#A79C82;
+    --on-fill:#15130F;
   }
 }
 :root[data-theme="dark"]{
@@ -63,6 +74,12 @@
   --expense:#E5715A;
   --expense-soft:#3A1D16;
   --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 18px rgba(0,0,0,.35);
+  /* dark: bright fill + dark text */
+  --accent-fill:#E5A33D;
+  --income-fill:#4FC98A;
+  --expense-fill:#E5715A;
+  --muted-fill:#A79C82;
+  --on-fill:#15130F;
 }
 *{box-sizing:border-box}
 html,body{height:100%}
@@ -105,8 +122,8 @@ body{
 /* small buttons keep their look but get a finger-sized hit area around them (about 48px) */
 .icon-btn::after{content:'';position:absolute;inset:-3px}
 .backup-btn{position:relative}
-.backup-btn .bk-days{position:absolute;top:-6px;right:-6px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:var(--text-muted);color:#fff;font-size:10px;font-weight:700;line-height:16px;text-align:center;font-style:normal}
-.backup-btn .bk-days.due{background:var(--expense)}
+.backup-btn .bk-days{position:absolute;top:-6px;right:-6px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:var(--muted-fill);color:var(--on-fill);font-size:10px;font-weight:700;line-height:16px;text-align:center;font-style:normal}
+.backup-btn .bk-days.due{background:var(--expense-fill)}
 .content{flex:1;overflow-y:auto;padding:14px 16px 24px;-webkit-overflow-scrolling:touch}
 .bottom-nav{
   position:sticky;bottom:0;z-index:20;
@@ -120,7 +137,7 @@ body{
   padding:6px 2px;border-radius:10px;cursor:pointer;font-family:inherit;
 }
 .nav-btn .ic{font-size:19px;position:relative}
-.nav-badge{position:absolute;top:-5px;right:-11px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:var(--expense);color:#fff;font-size:10px;font-weight:700;line-height:16px;text-align:center;font-style:normal}
+.nav-badge{position:absolute;top:-5px;right:-11px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:var(--expense-fill);color:var(--on-fill);font-size:10px;font-weight:700;line-height:16px;text-align:center;font-style:normal}
 .nav-btn.active{color:var(--accent-strong)}
 
 .card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:14px;box-shadow:var(--shadow)}
@@ -240,7 +257,7 @@ body{
 
 .btn-row{display:flex;gap:8px}
 .btn{flex:1;border:none;border-radius:12px;padding:11px;font-weight:700;font-size:14px;cursor:pointer;font-family:inherit}
-.btn-primary{background:var(--accent);color:#fff}
+.btn-primary{background:var(--accent-fill);color:var(--on-fill)}
 .btn-ghost{background:var(--surface-sunken);color:var(--text)}
 .btn-danger{background:var(--expense-soft);color:var(--expense)}
 .add-fixed-btn{
@@ -291,7 +308,7 @@ body{
   border-radius:20px;padding:9px 14px;min-height:40px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;position:relative;
 }
 .chip-opt::after{content:'';position:absolute;inset:-3px 0}
-.chip-opt.selected{background:var(--accent);border-color:var(--accent);color:#fff}
+.chip-opt.selected{background:var(--accent-fill);border-color:var(--accent-fill);color:var(--on-fill)}
 
 .plat-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)}
 .plat-row:last-child{border-bottom:none}
@@ -313,7 +330,7 @@ body{
 .legend-row{display:flex;align-items:center;gap:8px;font-size:12.5px}
 .chart-toggle{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;flex:none}
 .chart-toggle button{background:none;border:none;color:var(--text-muted);font-family:inherit;font-size:12px;font-weight:700;padding:8px 13px;min-height:38px;cursor:pointer}
-.chart-toggle button.on{background:var(--accent);color:#fff}
+.chart-toggle button.on{background:var(--accent-fill);color:var(--on-fill)}
 .pie-wrap{display:flex;align-items:center;gap:14px}
 .pie{width:108px;height:108px;border-radius:50%;flex:none;position:relative}
 .pie::after{content:'';position:absolute;inset:27%;border-radius:50%;background:var(--surface)}
@@ -2234,18 +2251,18 @@ function attachTripToRecord(t, rec){
 }
 function tripCardHtml(){
   var a = state.activeTrip, pend = state.pendingTrips||[];
-  var big = 'width:100%;border:none;border-radius:16px;padding:18px;font-size:22px;font-weight:900;color:#fff;cursor:pointer;font-family:inherit;letter-spacing:2px';
+  var big = 'width:100%;border:none;border-radius:16px;padding:18px;font-size:22px;font-weight:900;color:var(--on-fill);cursor:pointer;font-family:inherit;letter-spacing:2px';
   var h = '<div class="section"><div class="card" style="padding:14px">';
   if(a){
     h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">🚕 載客中 · '+hhmm(a.pickup.ts)+' 上車 · 已 '+Math.round((Date.now()-a.pickup.ts)/60000)+' 分鐘'+(a.pickup.lat!=null?' · 📍已定位':'')+'</div>';
-    h += '<button data-act="trip-end" style="'+big+';background:var(--expense)">下車</button>';
+    h += '<button data-act="trip-end" style="'+big+';background:var(--expense-fill)">下車</button>';
     h += '<div style="text-align:right;margin-top:8px"><a data-act="trip-cancel" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">按錯了,取消這趟</a></div>';
   } else if(state.trackAccept && !state.pendingAccept){
-    h += '<button data-act="trip-accept" style="'+big+';background:var(--accent)">📲 接到單了</button>';
+    h += '<button data-act="trip-accept" style="'+big+';background:var(--accent-fill)">📲 接到單了</button>';
     h += '<div style="text-align:right;margin-top:8px"><a data-act="trip-start" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">路招/沒有接單時間,直接上車</a></div>';
   } else {
     if(state.pendingAccept) h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">📲 '+hhmm(state.pendingAccept.ts)+' 接單 · 前往上車點 '+Math.round((Date.now()-state.pendingAccept.ts)/60000)+' 分鐘</div>';
-    h += '<button data-act="trip-start" style="'+big+';background:var(--income)">上車</button>';
+    h += '<button data-act="trip-start" style="'+big+';background:var(--income-fill)">上車</button>';
     if(state.pendingAccept) h += '<div style="text-align:right;margin-top:8px"><a data-act="accept-cancel" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">客人取消了 / 按錯了</a></div>';
     if(!state.geoAsked) h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;line-height:1.5">第一次按,手機會問要不要讓記帳本取得位置,請按「允許」。只在按下的那一刻抓一次位置,不會一直追蹤。</div>';
   }
@@ -5052,12 +5069,13 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.06.1';
+var APP_VERSION = '2026.11.06.2';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.06.2', '👀 畫面優化:按鈕上的字更清楚。深色模式改成亮色按鈕配深色字,淺色模式改成深色按鈕配白字,白天晚上都好認'],
   ['2026.11.06.1', '📊 分析功能優化:上一期虧損、這一期轉為賺錢時,改寫「由虧轉盈」和多賺多少,不再出現看不懂的百分比;兩種「淨利」都註明固定成本怎麼算'],
   ['2026.11.06.1', '✏️ 記帳功能優化:欄位比較多的收入、支出表單,「儲存」固定在下方,打開鍵盤也按得到;關閉、刪除、車種等小按鈕加大,比較好點'],
   ['2026.11.05.21', '☁️ 雲端同步更穩定:發現另一台有比較新的備份時會先提醒,降低舊帳誤蓋新帳的風險;斷線後會自動再試'],
