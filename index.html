@@ -3947,7 +3947,7 @@ function openYearReportModal(year){
     }).join('')+'</div>';
     h += '<div style="font-size:11px;color:var(--text-muted);margin:-6px 0 12px;line-height:1.5">報稅季可以拿這份明細,對照財政部所得資料或平台給的扣繳憑單。要不要申報、怎麼申報,以國稅局資料為準。</div>';
   }
-  h += '<div class="btn-row"><button class="btn btn-primary" data-act="year-report-csv:'+year+'">下載 / 分享 Excel 表(CSV)</button></div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="year-report-csv:'+year+'">下載 / 分享報表檔(CSV)</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">表格有每個月的車資、手續費、實收、各類支出、固定成本、淨利、里程、工時,最後是各平台全年合計。可用 Excel、Numbers 或 Google 試算表打開。右邊數字是當月淨利。</div>';
   openModal(h);
 }
@@ -4939,7 +4939,7 @@ var HELP = [
     ['平台佔比、平台效率', '各平台賺多少、每趟平均;佔比圖右上角可切長條 / 圓餅。', 'platShare'],
     ['時段、星期、月份', '哪個時段、星期幾最好賺。', 'timeslot'],
     ['收入目標', '⚙️「收入目標」設定每天 / 每月目標,記帳頁和分析頁顯示進度。', 'todayTarget'],
-    ['📊 年度報表', '⚙️「年度報表」,可以匯出 Excel。']
+    ['📊 年度報表', '⚙️「年度報表」,可以匯出 CSV 檔,用 Excel、Numbers 或 Google 試算表都能打開。']
   ]],
   ['撥款', [
     ['撥款頁', '看各平台什麼時候匯多少錢給你;下面出現紅色數字 = 有還沒對帳的批次。', 'payoutTab'],
@@ -5286,7 +5286,7 @@ function openSettingsModal(){
     '<div style="text-align:right;margin-top:6px"><a data-act="open-export" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">其他匯出方式(複製文字)</a></div></div>';
   h += '<div style="height:8px"></div>';
   h += '<div class="form-row" style="margin-top:6px"><label>報表</label></div>';
-  h += '<div class="btn-row"><button class="btn btn-ghost" data-act="year-report">📊 年度報表(可匯出 Excel)</button></div>';
+  h += '<div class="btn-row"><button class="btn btn-ghost" data-act="year-report">📊 年度報表(可匯出,用 Excel 就能打開)</button></div>';
   h += '<div style="height:14px"></div>';
 
   var dsz = dataSizeChars(), dmb = dsz/1048576, bigStore = !!__BOOT.idb, dpct = bigStore ? 0 : Math.min(100, dsz/(2.5*1048576)*100);
@@ -5325,7 +5325,7 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.06.6';
+var APP_VERSION = '2026.11.06.7';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
