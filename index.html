@@ -90,18 +90,20 @@ body{
 .big-ui .topbar-right{gap:6px}
 .big-ui .brand{min-width:0;overflow:hidden}
 .big-ui .brand-name{min-width:0;overflow:hidden;text-overflow:ellipsis}
-.big-ui .icon-btn{width:30px;height:30px;font-size:14px;flex:none}
+.big-ui .icon-btn{width:32px;height:32px;font-size:14px;flex:none}
 .big-ui .today-net{font-size:13px}
 .big-ui .summary-row{grid-template-columns:1fr 1fr !important}
-.today-net{font-family:'Space Grotesk';font-weight:700;font-size:15px;text-align:right;line-height:1.25}
+.today-net{font-family:'Space Grotesk';font-weight:700;font-size:15px;text-align:right;line-height:1.25;word-break:keep-all}
 .brand-name{white-space:nowrap}
 .today-net.pos{color:var(--income)}
 .today-net.neg{color:var(--expense)}
 .icon-btn{
-  width:36px;height:36px;border-radius:10px;border:1px solid var(--border);
+  width:42px;height:42px;border-radius:11px;border:1px solid var(--border);
   background:var(--surface);display:flex;align-items:center;justify-content:center;
-  font-size:16px;cursor:pointer;color:var(--text);
+  font-size:17px;cursor:pointer;color:var(--text);position:relative;
 }
+/* small buttons keep their look but get a finger-sized hit area around them (about 48px) */
+.icon-btn::after{content:'';position:absolute;inset:-3px}
 .backup-btn{position:relative}
 .backup-btn .bk-days{position:absolute;top:-6px;right:-6px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:var(--text-muted);color:#fff;font-size:10px;font-weight:700;line-height:16px;text-align:center;font-style:normal}
 .backup-btn .bk-days.due{background:var(--expense)}
@@ -179,7 +181,7 @@ body{
 .li-amt{font-family:'Space Grotesk';font-weight:700;font-size:14.5px;white-space:nowrap}
 .li-amt.income{color:var(--income)}
 .li-amt.expense{color:var(--expense)}
-.li-del{background:none;border:none;color:var(--text-muted);font-size:16px;cursor:pointer;padding:4px 2px}
+.li-del{background:none;border:none;color:var(--text-muted);font-size:16px;cursor:pointer;padding:0;min-width:40px;min-height:44px;margin-right:-8px;display:inline-flex;align-items:center;justify-content:center}
 
 .month-nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
 .month-nav .m-title{font-weight:700;font-size:15px}
@@ -268,7 +270,11 @@ body{
 .set-sec-bd input:not([type=checkbox]):not([type=color]),.set-sec-bd select,.set-sec-bd textarea{max-width:100%;box-sizing:border-box}
 .settings-save{position:sticky;bottom:calc(-18px - env(safe-area-inset-bottom,0px));background:var(--surface);padding:10px 0 calc(12px + env(safe-area-inset-bottom,0px));margin-top:10px;border-top:1px solid var(--border);z-index:2}
 .modal-title{font-size:16px;font-weight:900;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center}
-.modal-title .close{background:var(--surface-sunken);border:none;width:30px;height:30px;border-radius:9px;font-size:15px;cursor:pointer;color:var(--text)}
+.modal-title .close{background:var(--surface-sunken);border:none;width:40px;height:40px;border-radius:10px;font-size:16px;cursor:pointer;color:var(--text);position:relative;flex:none}
+.modal-title .close::after{content:'';position:absolute;inset:-4px}
+/* 儲存 stays in sight above the keyboard on long forms; the gap keeps a focused field from hiding under it */
+.form-save{position:sticky;bottom:calc(-18px - env(safe-area-inset-bottom,0px));background:var(--surface);padding:10px 0 calc(12px + env(safe-area-inset-bottom,0px));margin-top:4px;z-index:2}
+.modal{scroll-padding-bottom:84px}
 .form-row{margin-bottom:12px}
 .form-row label{display:block;font-size:12.5px;font-weight:700;color:var(--text-muted);margin-bottom:6px}
 .form-row input, .form-row select{
@@ -282,8 +288,9 @@ body{
 .chip-row{display:flex;flex-wrap:wrap;gap:7px}
 .chip-opt{
   border:1px solid var(--border);background:var(--surface-sunken);color:var(--text-muted);
-  border-radius:20px;padding:7px 13px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit;
+  border-radius:20px;padding:9px 14px;min-height:40px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;position:relative;
 }
+.chip-opt::after{content:'';position:absolute;inset:-3px 0}
 .chip-opt.selected{background:var(--accent);border-color:var(--accent);color:#fff}
 
 .plat-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)}
@@ -305,7 +312,7 @@ body{
 .donut-legend{display:flex;flex-direction:column;gap:7px;margin-top:2px}
 .legend-row{display:flex;align-items:center;gap:8px;font-size:12.5px}
 .chart-toggle{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;flex:none}
-.chart-toggle button{background:none;border:none;color:var(--text-muted);font-family:inherit;font-size:11px;font-weight:700;padding:3px 9px;cursor:pointer}
+.chart-toggle button{background:none;border:none;color:var(--text-muted);font-family:inherit;font-size:12px;font-weight:700;padding:8px 13px;min-height:38px;cursor:pointer}
 .chart-toggle button.on{background:var(--accent);color:#fff}
 .pie-wrap{display:flex;align-items:center;gap:14px}
 .pie{width:108px;height:108px;border-radius:50%;flex:none;position:relative}
@@ -2747,6 +2754,20 @@ function recentDaysAverage(day){
   var n = days.length;
   return {days:days, m:{net:net/n, profit:(net-exp)/n, trips:Math.round(trips/n*10)/10, hourly:hours>0?net/hours:null, perKm:km>0?net/km:null}};
 }
+// how this period moved against the one it is compared with. A percentage only means something between two positive
+// numbers; across a loss or from zero it would read as nonsense (−$308 → $2,455 showed "▲ 896.2%"), so those cases are
+// said in words with the amount of change. Only the wording changes here, the numbers themselves are computed as before.
+function compareDelta(x, y, fmt, label){
+  var up = 'var(--income)', down = 'var(--expense)', flat = 'var(--text-muted)';
+  if(x==null || y==null) return {t:'—', c:flat};
+  if(x===y) return {t:'持平', c:flat};
+  if(y===0) return {t:'無可比基準', c:flat};
+  if(y<0 && x>=0) return {t:'由虧轉盈', s:'比'+label+'多 '+fmt(x-y), c:up};
+  if(y>0 && x<0) return {t:'由盈轉虧', s:'比'+label+'少 '+fmt(y-x), c:down};
+  if(y<0 && x<0) return x>y ? {t:'虧損減少 '+fmt(x-y), c:up} : {t:'虧損增加 '+fmt(y-x), c:down};
+  var pct = (x-y)/y*100;
+  return {t:(pct>=0?'▲ ':'▼ ')+Math.abs(pct).toFixed(1)+'%', c:pct>=0?up:down};
+}
 function comparisonHtml(range){
   var cr = comparisonRanges(range);
   if(!cr) return '';
@@ -2757,19 +2778,14 @@ function comparisonHtml(range){
     b = avg.m; cr.label = '前 '+avg.days.length+' 個工作日平均'; cr.prev = {from:avg.days[0], to:avg.days[avg.days.length-1]};
   } else b = periodMetrics(cr.prev.from, cr.prev.to);
   function row(name, x, y, fmt){
-    var delta = '—', color = 'var(--text-muted)';
-    if(x!=null && y!=null && y!==0){
-      var pct = (x-y)/Math.abs(y)*100;
-      delta = (pct>=0?'▲ ':'▼ ')+Math.abs(pct).toFixed(1)+'%';
-      color = pct>=0?'var(--income)':'var(--expense)';
-    }
-    return '<div class="list-item"><div class="li-body"><div class="li-title">'+name+'</div><div class="li-sub">'+cr.label+' '+(y!=null?fmt(y):'—')+'</div></div><div style="text-align:right"><div class="num" style="font-weight:700">'+(x!=null?fmt(x):'—')+'</div><div class="num" style="font-size:12px;color:'+color+'">'+delta+'</div></div></div>';
+    var d = compareDelta(x, y, fmt, cr.label);
+    return '<div class="list-item"><div class="li-body"><div class="li-title">'+name+'</div><div class="li-sub">'+cr.label+' '+(y!=null?fmt(y):'—')+'</div></div><div style="text-align:right"><div class="num" style="font-weight:700">'+(x!=null?fmt(x):'—')+'</div><div class="num" style="font-size:12px;font-weight:700;color:'+d.c+'">'+d.t+'</div>'+(d.s?'<div class="num" style="font-size:11.5px;color:'+d.c+'">'+d.s+'</div>':'')+'</div></div>';
   }
   var h = '<div class="section"><div class="section-title">與'+cr.label+'比較('+shortRange(cr.cur)+' vs '+shortRange(cr.prev)+')</div><div class="card">';
   h += row('實收', a.net, b.net, fmtMoney);
   // fixed costs here are counted for the days in each range (so a month in progress compares fairly), unlike the
   // period card above, which counts the whole month
-  h += row('淨利(固定成本按天攤)', a.profit, b.profit, fmtMoney);
+  h += row(range.to>todayStr() ? '淨利(固定成本攤到今天)' : '淨利(固定成本按天攤)', a.profit, b.profit, fmtMoney);
   h += row('趟數', a.trips, b.trips, function(v){ return v+' 趟'; });
   h += row('實際時薪', a.hourly, b.hourly, fmtMoney2);
   h += row('每公里實收', a.perKm, b.perKm, fmtMoney2);
@@ -2954,7 +2970,10 @@ function renderAnalytics(){
   h += '</div>';
   h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
   h += '<div class="stat-tile"><div class="lbl">總支出(含固定攤提)</div><div class="val expense num">'+fmtMoney(totalExp)+'</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">淨利</div><div class="val num">'+fmtMoney(profit)+'</div></div>';
+  // while the period is still running this card already takes the whole period's fixed costs, so it differs from the
+  // comparison below (fixed costs up to today); the label says which one it is
+  var profitLbl = (range.to>todayStr() && fixExp>0) ? '淨利(扣'+({week:'整週',month:'整月',year:'整年'}[analyticsPeriod]||'整段')+'固定成本)' : '淨利';
+  h += '<div class="stat-tile"><div class="lbl">'+profitLbl+'</div><div class="val num">'+fmtMoney(profit)+'</div></div>';
   h += '</div></div>';
   if(uiShow('compare')) h += comparisonHtml(range);
 
@@ -3919,9 +3938,9 @@ function openIncomeModal(key, editId){
   }
   if(!def.tipOnly) h += tripChoiceHtml(existing);
   if(uiOn('note')) h += '<div class="form-row"><label>備註(選填)</label><input id="f-note" type="text" placeholder="" value="'+esc((existing&&existing.note)||'')+'"></div>';
-  h += '<div class="btn-row">';
+  h += '<div class="form-save"><div class="btn-row">';
   if(existing) h += '<button class="btn btn-danger" data-act="del-income-close:'+existing.id+'">刪除這筆</button>';
-  h += '<button class="btn btn-primary" data-act="save-income:'+key+(existing?(':'+existing.id):'')+'">儲存</button></div>';
+  h += '<button class="btn btn-primary" data-act="save-income:'+key+(existing?(':'+existing.id):'')+'">儲存</button></div></div>';
   openModal(h);
   currentIncomeModalKey = key;
   currentIncomeEditFees = existing ? (existing.fees||null) : null;
@@ -4052,9 +4071,9 @@ function openExpenseModal(catKey, editId){
   if(curSub && subs.indexOf(curSub)<0) subs.push(curSub);
   if(subs.length && uiOn('expSub')) h += '<div class="form-row"><label>細項(選填)</label>'+chipRowHtml('expsub', ['不指定'].concat(subs), curSub||'不指定')+'</div>';
   h += '<div class="form-row"><label>備註(選填)</label><input id="f-note" type="text" placeholder="" value="'+esc((existing&&existing.note)||'')+'"></div>';
-  h += '<div class="btn-row">';
+  h += '<div class="form-save"><div class="btn-row">';
   if(existing) h += '<button class="btn btn-danger" data-act="del-expense-close:'+existing.id+'">刪除這筆</button>';
-  h += '<button class="btn btn-primary" data-act="save-expense:'+catKey+(existing?(':'+existing.id):'')+'">儲存</button></div>';
+  h += '<button class="btn btn-primary" data-act="save-expense:'+catKey+(existing?(':'+existing.id):'')+'">儲存</button></div></div>';
   openModal(h);
   setTimeout(function(){ var el=document.getElementById('f-liters')||document.getElementById('f-amount'); if(el) el.focus(); }, 50);
 }
@@ -5033,13 +5052,15 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.05.23';
+var APP_VERSION = '2026.11.06.1';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
-  ['2026.11.05.21', '☁️ 雲端同步更穩定:另一台手機或平板已經送了比較新的帳時會先問你,不會讓舊帳蓋掉新帳;沒網路或送到一半斷線,恢復後會自動補送'],
+  ['2026.11.06.1', '📊 分析功能優化:上一期虧損、這一期轉為賺錢時,改寫「由虧轉盈」和多賺多少,不再出現看不懂的百分比;兩種「淨利」都註明固定成本怎麼算'],
+  ['2026.11.06.1', '✏️ 記帳功能優化:欄位比較多的收入、支出表單,「儲存」固定在下方,打開鍵盤也按得到;關閉、刪除、車種等小按鈕加大,比較好點'],
+  ['2026.11.05.21', '☁️ 雲端同步更穩定:發現另一台有比較新的備份時會先提醒,降低舊帳誤蓋新帳的風險;斷線後會自動再試'],
   ['2026.11.05.16', '✅ 確認視窗的按鈕改成中文「確定／取消」', 'app'],
   ['2026.11.05.10', '⚙️ 設定功能優化:只記住你改過的設定,其他跟著內建預設;以後內建費率更新,沒改過的地方會自動跟上'],
   ['2026.11.05.8', '🔒 雲端密碼改存在手機系統的保護區,更安全', 'app'],
