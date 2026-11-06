@@ -447,7 +447,7 @@ var PLATFORM_DEFS = [
   {key:'street', label:'路招', icon:'👋🏻', color:'#F5A85C'},
   {key:'reservation', label:'預約單', icon:'📅', color:'#B08D57', paymentOptions:['現金','綁定支付'], subPlatformOptions:['Uber','台灣大車隊','大都會','BOLT','YOXI','Line Go','呼叫小黃']},
   {key:'phonecall', label:'接電', icon:'🔋', color:'#E53935', subtypeOptions:['台灣大車隊','大都會','路招客'], paymentOptions:['現金','綁定支付']},
-  {key:'tipbox', label:'小費/小費箱', icon:'💰', color:'#2FA0A0', tipOnly:true},
+  {key:'tipbox', label:'小費', icon:'💰', color:'#2FA0A0', tipOnly:true},
   {key:'bonus', label:'活動獎勵', icon:'🎁', color:'#D4A017', tipOnly:true, bonus:true}
 ];
 var BONUS_TYPES_DEFAULT = ['趟次獎勵','限時活動','推薦獎金','其他'];
@@ -2830,7 +2830,7 @@ function platformEfficiencyHtml(recs){
       '<div style="height:8px;margin:6px 0 4px;background:var(--surface-sunken);border-radius:4px"><div style="height:8px;width:'+w.toFixed(1)+'%;background:var(--accent);border-radius:4px"></div></div>'+
       '<div style="font-size:11.5px;color:var(--text-muted)">'+m.trips+' 趟 · 實收 '+fmtMoney(m.net)+' · 手續費佔車資 '+(m.feePct>0?m.feePct.toFixed(1)+'%':'0%')+'</div></div>';
   }).join('');
-  h += '<div style="font-size:11px;color:var(--text-muted);padding-top:8px">平均每趟實收已扣手續費、含小費;小費箱不列入。</div></div></div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);padding-top:8px">平均每趟實收已扣手續費、含記在該趟的小費;另外用「'+esc(platformDef('tipbox').label)+'」記的不列入。</div></div></div>';
   return h;
 }
 function barChartHtml(id, items, emptyNote){
@@ -4901,16 +4901,31 @@ function openOnboardCar(){
 function onboardPlatKeys(){
   return allPlatforms().filter(function(p){ return !p.custom && !p.tipOnly && p.key!=='bonus' && !(isRental() && RENTAL_HIDE.indexOf(p.key)>=0); }).map(function(p){ return p.key; });
 }
+// the first-run list in two groups: fleets/apps that dispatch (most take a fee, so the driver should pick them with care)
+// and passengers the driver gets on their own. A key in neither list (a future built-in) joins the second group.
+var OB_FLEET_KEYS = ['uber','tdc','metro','bolt','yoxi','linego','hailyellow'];
+var obPlatsChosen = false; // nothing is ticked until the driver has picked once (going back keeps their picks)
 function openOnboardPlats(){
+  var keys = onboardPlatKeys();
+  var fleet = keys.filter(function(k){ return OB_FLEET_KEYS.indexOf(k)>=0; });
+  var own = keys.filter(function(k){ return OB_FLEET_KEYS.indexOf(k)<0; });
   var h = onboardStep(2, '你有在跑哪些?');
-  h += '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 10px;line-height:1.6">沒在跑的取消勾選,記帳頁就不會出現。之後可以在 ⚙️「平台管理」改。</div>';
-  h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">';
-  onboardPlatKeys().forEach(function(k){
-    var p = platformDef(k);
-    h += '<label style="display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-sunken);font-size:14px;cursor:pointer">'+
-      '<input type="checkbox" id="ob-plat-'+k+'" style="width:18px;height:18px"'+(p.hidden?'':' checked')+'>'+esc((p.icon||'')+' '+p.label)+'</label>';
-  });
-  h += '</div><div class="btn-row"><button class="btn btn-primary" data-act="ob-plats">下一步</button></div>';
+  h += '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 10px;line-height:1.6">勾選你有在跑的,記帳頁只會出現勾選的項目。小費、活動獎勵會一直都在。</div>';
+  function group(title, list){
+    if(!list.length) return '';
+    var g = '<div style="font-size:13px;font-weight:700;margin:4px 0 6px">'+title+'</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">';
+    list.forEach(function(k){
+      var p = platformDef(k);
+      g += '<label style="display:flex;align-items:center;gap:8px;padding:12px;min-height:48px;box-sizing:border-box;border:1px solid var(--border);border-radius:12px;background:var(--surface-sunken);font-size:14px;cursor:pointer">'+
+        '<input type="checkbox" id="ob-plat-'+k+'" style="width:20px;height:20px;flex:none"'+(obPlatsChosen && !p.hidden ? ' checked' : '')+'>'+esc((p.icon||'')+' '+p.label)+'</label>';
+    });
+    return g + '</div>';
+  }
+  h += group('派車平台/車隊', fleet);
+  h += group('其他接客方式 <span style="font-weight:400;color:var(--text-muted)">(選填,沒有可以不勾)</span>', own);
+  h += '<div id="ob-plat-msg" role="alert" style="font-size:13px;font-weight:700;color:var(--expense);margin:-4px 0 10px"></div>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">之後可以在 ⚙️「平台管理」加回、排序,或新增自訂平台。</div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="ob-plats">下一步</button></div>';
   openModal(h);
 }
 function openOnboardFont(){
@@ -5069,12 +5084,13 @@ function openSettingsModal(){
   wirePlatformDrag();
   wireFeePlatToggle();
 }
-var APP_VERSION = '2026.11.06.2';
+var APP_VERSION = '2026.11.06.3';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.06.3', '💰「小費/小費箱」改名為「小費」;想用別的名稱,可以到 ⚙️「平台管理」自己改'],
   ['2026.11.06.2', '👀 畫面優化:按鈕上的字更清楚。深色模式改成亮色按鈕配深色字,淺色模式改成深色按鈕配白字,白天晚上都好認'],
   ['2026.11.06.1', '📊 分析功能優化:上一期虧損、這一期轉為賺錢時,改寫「由虧轉盈」和多賺多少,不再出現看不懂的百分比;兩種「淨利」都註明固定成本怎麼算'],
   ['2026.11.06.1', '✏️ 記帳功能優化:欄位比較多的收入、支出表單,「儲存」固定在下方,打開鍵盤也按得到;關閉、刪除、車種等小按鈕加大,比較好點'],
@@ -6166,6 +6182,9 @@ document.addEventListener('click', function(e){
   }
   else if(cmd==='ob-car'){ state.carType = arg==='yellow'||arg==='rental' ? arg : 'multi'; save(); renderAll(); openOnboardPlats(); }
   else if(cmd==='ob-plats'){
+    var anyPicked = onboardPlatKeys().some(function(k){ var el = document.getElementById('ob-plat-'+k); return el && el.checked; });
+    if(!anyPicked){ var obm = document.getElementById('ob-plat-msg'); if(obm) obm.textContent = '請至少勾選一項你有在跑的'; return; }
+    obPlatsChosen = true;
     onboardPlatKeys().forEach(function(k){
       var el = document.getElementById('ob-plat-'+k); if(!el) return;
       var ov = state.platformOverrides[k] || {}; ov.hidden = !el.checked; state.platformOverrides[k] = ov;
