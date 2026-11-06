@@ -1129,19 +1129,31 @@ function weekStartOf(dateStr){
 // Fee rules that look at other trips (BOLT's weekly count, LINE GO 小黃's monthly cap) used to scan the whole
 // ledger for every trip, which takes many seconds on a few years of records. One pass builds the lookups;
 // they are rebuilt only when the ledger has changed since.
-var tripIndexStamp = null, boltWeekCounts = {}, linegoTaxiByMonth = {};
+var tripIndexStamp = null, boltWeekCounts = {}, linegoTaxiByMonth = {}, linegoTaxiDates = null, linegoTaxiBefore = null;
 function tripIndex(){
   var stamp = state.records.length+'|'+(state.lastChangeAt||0);
   if(tripIndexStamp===stamp && tripIndexRecords===state.records) return;
   tripIndexStamp = stamp; tripIndexRecords = state.records;
-  boltWeekCounts = {}; linegoTaxiByMonth = {};
+  boltWeekCounts = {}; linegoTaxiByMonth = {}; linegoTaxiDates = new WeakMap(); linegoTaxiBefore = new WeakMap();
   state.records.forEach(function(x){
     if(!x.date) return;
     if(x.platform==='bolt'){ var w = weekStartOf(x.date); boltWeekCounts[w] = (boltWeekCounts[w]||0)+1; }
     else if(x.platform==='linego' && (x.fees ? x.fees.linegoTaxi : isYellowCab())){
-      var ym = x.date.slice(0,7);
+      var date = settleDateOf(x), ym = date.slice(0,7);
+      linegoTaxiDates.set(x, date);
       (linegoTaxiByMonth[ym] || (linegoTaxiByMonth[ym] = [])).push(x);
     }
+  });
+  // Prefix sums avoid scanning every trip in the month again for each historical record.
+  Object.keys(linegoTaxiByMonth).forEach(function(ym){
+    var sum = 0;
+    linegoTaxiByMonth[ym].map(function(r,i){ return {r:r, i:i, d:linegoTaxiDates.get(r)}; }).sort(function(a,b){
+      return a.d<b.d ? -1 : a.d>b.d ? 1 : ((+a.r.ts||0)-(+b.r.ts||0) || a.i-b.i);
+    }).forEach(function(x){
+      linegoTaxiBefore.set(x.r, sum);
+      var g = +x.r.revenue||0;
+      if(g>0) sum += linegoDispatchFee(g, x.r.fees||resolvedFeeRules());
+    });
   });
 }
 var tripIndexRecords = null;
@@ -1207,11 +1219,19 @@ function linegoDispatchFee(gross, fees){
 }
 // LINE GO 小黃 dispatch fees already charged this calendar month before trip r (for the monthly cap)
 function linegoMonthDispatchBefore(r){
-  var d = r.date || currentEntryDate(), ym = d.slice(0,7), ts = r.ts || Date.now(), sum = 0;
+  var d = settleDateOf(r) || currentEntryDate(), ym = d.slice(0,7), ts = r.ts || 0, sum = 0;
   tripIndex();
-  (linegoTaxiByMonth[ym] || []).forEach(function(x){
-    if(x.id===r.id) return;
-    if(x.date>d || (x.date===d && (x.ts||0)>=ts)) return;
+  if(linegoTaxiBefore.has(r)) return linegoTaxiBefore.get(r);
+  var trips = linegoTaxiByMonth[ym] || [], pos = trips.indexOf(r);
+  // Editing uses a preview copy with the same id. A new preview follows stored trips at the same instant.
+  if(pos<0 && r.id!=null){ for(var i=0;i<trips.length;i++){ if(trips[i].id===r.id){ pos=i; break; } } }
+  if(pos>=0) return linegoTaxiBefore.get(trips[pos]);
+  if(pos<0) pos = trips.length;
+  trips.forEach(function(x, i){
+    if(i===pos) return;
+    var xd = linegoTaxiDates.get(x), xt = x.ts || 0;
+    // Keep a strict order even for imported trips sharing a timestamp (or having no timestamp/id).
+    if(xd>d || (xd===d && (xt>ts || (xt===ts && i>=pos)))) return;
     var g = +x.revenue||0;
     if(g>0) sum += linegoDispatchFee(g, x.fees||resolvedFeeRules());
   });
@@ -1249,7 +1269,7 @@ function rawNet(r){
     var thresholdEnabled = fees.boltThresholdEnabled!==false;
     if(thresholdEnabled){
       var threshold = fees.boltThreshold!=null?fees.boltThreshold:15;
-      var weekCount = boltWeekTripCount(r.date);
+      var weekCount = boltWeekTripCount(r.date) + (r._newPreview ? 1 : 0);
       if(weekCount>=threshold){
         var pctB = fees.boltPct!=null?fees.boltPct:10;
         return round2(gross*(1-pctB/100));
@@ -3979,7 +3999,12 @@ function openModal(html){
 function computePreviewRecordFromForm(key){
   var def = platformDef(key);
   function grab(id){ var el=document.getElementById(id); return el?el.value:null; }
-  var rec = {platform:key, fees:currentIncomeEditFees||resolvedFeeRules(), id:currentIncomeEditId||undefined, date:currentIncomeEditDate||undefined, ts:currentIncomeEditTs||undefined};
+  var rec = {platform:key, fees:currentIncomeEditFees||resolvedFeeRules(), id:currentIncomeEditId||undefined, date:currentIncomeEditDate||currentEntryDate(), ts:currentIncomeEditId ? currentIncomeEditTs : Date.now(), _newPreview:!currentIncomeEditId};
+  // Match the settlement date saveIncome will use, without attaching/ending a real trip during preview.
+  var linked = currentIncomeEditId ? state.records.filter(function(x){ return x.id===currentIncomeEditId; })[0] : null;
+  var choice = grab('f-trip-link');
+  if(choice && choice!=='none') linked = findPendingTrip(choice) || (state.activeTrip && state.activeTrip.id===choice ? state.activeTrip : null);
+  if(linked){ rec.pickup = linked.pickup; rec.dropoff = linked.dropoff || (linked===state.activeTrip ? {ts:Date.now()} : undefined); }
   rec.revenue = +grab('f-revenue')||0;
   var tf0 = tipFromForm(); rec.tip = tf0 ? tf0.tip : 0;
   if(def.fareTypeOptions){ var fte=document.getElementById('chip-fareType'); rec.fareType = fte?fte.value:def.fareTypeOptions[0]; }
@@ -5325,12 +5350,14 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.06.7';
+var APP_VERSION = '2026.11.06.8';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.06.8', '✏️ 記帳功能優化:BOLT 的實收預覽與儲存後一致;修正 LINE GO 小黃跨月夜班與相同時間紀錄的月派遣費上限計算'],
+  ['2026.11.06.8', '💾 備份功能優化:還原前會檢查收入與支出的日期是否存在,避免匯入錯誤日期'],
   ['2026.11.06.6', '🎨 換圖示的選單擴充到 108 個立體圖示,新增「錢、收入」一組,還有紅包、便利商店、站牌、餐廳、貓、彩虹、火箭、風景、OK 和勝利手勢等;到 ⚙️「平台管理」點圖示就能換'],
   ['2026.11.06.5', '🎨 畫面優化:平台、支出項目換成立體彩色圖示,每支手機看起來都一樣,舊手機也不會變成方框;下方分頁和按鈕的線條圖示也更新了。想換圖示一樣到 ⚙️「平台管理」,也可以用手機鍵盤自己選'],
   ['2026.11.06.4', '🎨 畫面優化:下方分頁和右上角按鈕換成統一的線條圖示,現在在哪一頁更清楚;小字稍微放大;平板改成左右兩欄、分頁移到左邊'],
@@ -5637,7 +5664,7 @@ function keepUndoCopy(label, done){
 var DEVICE_KEYS = ['undoMeta','seenVersion','syncUrl','syncEvery','lastCloudBasicAt','cloudBaseTime','cloudSentSids','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale','layoutWidth'];
 var LEDGER_PART_NAMES = {expenses:'支出', dailyMeta:'每日工時與里程', fixedCosts:'固定成本', fixedOverrides:'固定成本覆寫', targets:'目標', feeRules:'手續費設定', platformOverrides:'平台設定', customPlatforms:'自訂平台', platformOrder:'平台排列', payoutSettings:'撥款設定', payouts:'撥款核對', pendingTrips:'行程'};
 // '' when the data can be used as a ledger, otherwise what is wrong with it
-function ledgerProblem(p){
+function ledgerProblem(p, strictDates){
   if(!p || typeof p!=='object' || Array.isArray(p)) return '這不是記帳本的備份資料';
   if(+p.fmt > LEDGER_FMT) return '這份備份是比較新版的記帳本做的,請先更新記帳本(完全關掉再打開)再還原';
   if(!Array.isArray(p.records)) return '找不到收入資料';
@@ -5648,10 +5675,18 @@ function ledgerProblem(p){
   }
   function isObj(x){ return !!x && typeof x==='object' && !Array.isArray(x); }
   function finiteOrEmpty(v){ return v==null || v==='' || isFinite(+v); }
+  // Existing on-device ledgers keep the legacy read path; reject impossible dates on explicit restore only.
+  function validDate(v){
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v||''));
+    if(!m) return false;
+    if(!strictDates) return true;
+    var d = new Date(m[0]+'T00:00:00');
+    return d.getFullYear()===+m[1] && d.getMonth()+1===+m[2] && d.getDate()===+m[3];
+  }
   function badList(list, what, amountKey, typeKey){
     for(var i=0;i<list.length;i++){
       var x = list[i];
-      if(!isObj(x) || !/^\d{4}-\d{2}-\d{2}$/.test(String(x.date||''))) return what+'第 '+(i+1)+' 筆的日期格式不對';
+      if(!isObj(x) || !validDate(x.date)) return what+'第 '+(i+1)+' 筆的日期格式不對';
       if(typeof x[typeKey]!=='string') return what+'第 '+(i+1)+' 筆少了類別';
       if(!finiteOrEmpty(x[amountKey]) || !finiteOrEmpty(x.tip) || !finiteOrEmpty(x.ts)) return what+'第 '+(i+1)+' 筆的金額格式不對';
       if(x.fees!=null && !isObj(x.fees)) return what+'第 '+(i+1)+' 筆的手續費資料格式不對';
@@ -5688,7 +5723,7 @@ function ledgerProblem(p){
 var replacingLedger = false;
 function replaceLedger(parsed, undoLabel, okMsg){
   if(replacingLedger){ alert('上一個還原還在處理中,請稍等幾秒。'); return false; }
-  var prob = ledgerProblem(parsed);
+  var prob = ledgerProblem(parsed, true);
   if(prob){ alert('這份資料不能還原:'+prob+'。\n\n目前的帳沒有任何改變。'); return false; }
   replacingLedger = true;
   keepUndoCopy(undoLabel, function(kept){
@@ -5744,7 +5779,7 @@ function doImportData(){
   if(!ta || !ta.value.trim()){ alert('請先貼上備份文字。'); return; }
   var parsed;
   try{ parsed = unpackState(JSON.parse(ta.value.trim())); }catch(err){ alert('這段文字看起來不是有效的備份資料,請確認有整段複製完整。'); return; }
-  var prob = ledgerProblem(parsed);
+  var prob = ledgerProblem(parsed, true);
   if(prob){ alert('這份資料不能還原:'+prob+'。\n\n目前的帳沒有任何改變。'); return; }
   var inFile = ledgerSummary(parsed), now = ledgerSummary(state);
   var older = now.to && inFile.to < now.to;
@@ -6344,6 +6379,7 @@ document.addEventListener('click', function(e){
     var tpEl = document.getElementById('f-trip-link');
     if(tpEl) tpEl.value = arg;
     Array.prototype.forEach.call(t.parentNode.querySelectorAll('.chip-opt'), function(b){ b.classList.toggle('selected', b===t); });
+    updateIncomePreview();
   }
   else if(cmd==='unlink-trip'){
     var ur = state.records.filter(function(r){ return r.id===arg; })[0];
