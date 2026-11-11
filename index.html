@@ -1374,6 +1374,7 @@ function describeRecord(r){
   if(r.tipFx){ var fxn = FX_CURS.filter(function(c){ return c[0]===r.tipFx.cur; })[0]; parts.push('小費 '+r.tipFx.amt+' '+(fxn?fxn[1]:r.tipFx.cur)+'(×'+r.tipFx.rate+')'); }
   if(r.dispatchPct!=null) parts.push('派遣費'+r.dispatchPct+'%');
   if(r.tripBonus) parts.push('🎯活動+$'+r.tripBonus);
+  if(r.tollRefund>0) parts.push('過路費$'+r.tollRefund);
   if(r.addOn) parts.push('加價$'+r.addOn);
   if(r.coupon) parts.push('優惠券$'+r.coupon+(r.couponType==='absorb'?'(自己吸收)':'(平台補回)'));
   if(r.pickup && r.dropoff) parts.push('🚕'+Math.round((r.dropoff.ts-r.pickup.ts)/60000)+'分');
@@ -1975,13 +1976,161 @@ function monthRange(m){
   return {from:from, to:to};
 }
 
+/* ---------- 車輛提醒: maintenance by odometer, inspection and insurance by date ---------- */
+var VEH_POLICY_DEFAULTS = ['強制險','任意險(第三責任險)','旅客責任險'];
+function veh(){ return state.vehicle || {}; }
+function vehOn(){ var v = veh(); return !!(v.odo || (v.maint && v.maint.next) || (v.inspect && v.inspect.next) || (v.policies||[]).some(function(p){ return p.due; })); }
+// the reading the driver last typed in, plus the daily km recorded on the days after it
+function vehOdoEstimate(){
+  var o = veh().odo; if(!o || !(o.base>0)) return null;
+  var add = 0;
+  Object.keys(state.dailyMeta).forEach(function(d){ if(d>o.baseDate) add += (+state.dailyMeta[d].km||0); });
+  return {km:Math.round(o.base+add), base:o.base, baseDate:o.baseDate, added:Math.round(add)};
+}
+function vehSetOdo(km, date){
+  var v = state.vehicle = Object.assign({}, veh());
+  var cur = v.odo;
+  if(cur && cur.baseDate && date < cur.baseDate) return false;
+  v.odo = {base:Math.round(+km), baseDate:date, at:Date.now()};
+  return true;
+}
+function addMonthsStr(ds, n){
+  var d = new Date(ds+'T00:00:00'), day = d.getDate();
+  d.setDate(1); d.setMonth(d.getMonth()+n);
+  var last = new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
+  d.setDate(Math.min(day, last));
+  return toDateStr(d);
+}
+function daysUntil(ds){ return Math.round((new Date(ds+'T00:00:00') - new Date(todayStr()+'T00:00:00'))/86400000); }
+// what needs the driver's attention now, most urgent first
+function vehDue(){
+  var v = veh(), out = [], today = todayStr();
+  var m = v.maint || {}, est = vehOdoEstimate();
+  if(m.next>0 && est){
+    var left = m.next - est.km, warn = m.warn!=null ? +m.warn : 300;
+    if(left <= warn) out.push({kind:'maint', urgent:left<=0, text: left>0 ? ('🔧 保養快到了:推估目前 '+fmtNum(est.km,0)+' 公里,下次保養 '+fmtNum(m.next,0)+' 公里,還差約 '+fmtNum(left,0)+' 公里') : ('🔧 已經超過保養里程:推估目前 '+fmtNum(est.km,0)+' 公里,原訂 '+fmtNum(m.next,0)+' 公里保養'), act:'veh-done-maint', btn:'已保養'});
+  }
+  var warnDays = v.warnDays!=null ? +v.warnDays : 30;
+  var ins = v.inspect || {};
+  if(ins.next){ var dl = daysUntil(ins.next); if(dl <= warnDays) out.push({kind:'inspect', urgent:dl<0, text:'🚗 驗車日 '+ins.next+(dl>=0?('(還有 '+dl+' 天)'):('(已經過了 '+(-dl)+' 天)')), act:'veh-done-inspect', btn:'已驗車'}); }
+  (v.policies||[]).forEach(function(p, i){
+    if(!p.due) return;
+    var dp = daysUntil(p.due);
+    if(dp <= warnDays) out.push({kind:'policy', urgent:dp<0, text:'🛡️ '+esc(p.name)+' 到期 '+p.due+(dp>=0?('(還有 '+dp+' 天)'):('(已經過期 '+(-dp)+' 天)')), act:'veh-done-policy:'+i, btn:'已續保'});
+  });
+  // once a month: read the dashboard, since off-duty driving is not in the daily km
+  if(v.odo && v.odo.at && Date.now()-v.odo.at > 30*86400000 && (m.next>0)) out.push({kind:'odo', urgent:false, text:'📏 一個月沒有校正里程了,看一下儀表板,讓保養提醒更準', act:'veh-odo', btn:'校正里程'});
+  out.sort(function(a,b){ return (b.urgent?1:0)-(a.urgent?1:0); });
+  return out;
+}
+function vehHomeHtml(){
+  var v = veh(); if(v.snoozeUntil && Date.now() < v.snoozeUntil) return '';
+  var due = vehDue(); if(!due.length) return '';
+  var urgent = due.some(function(d){ return d.urgent; });
+  return '<div class="card" style="border-color:'+(urgent?'var(--expense)':'var(--accent)')+';margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6">'+
+    '<b>車輛提醒</b>'+due.map(function(d){
+      return '<div style="display:flex;align-items:center;gap:8px;margin-top:8px"><div style="flex:1">'+d.text+'</div><button class="btn btn-ghost" style="flex:none;padding:6px 12px" data-act="'+d.act+'">'+d.btn+'</button></div>';
+    }).join('')+
+    '<div style="display:flex;gap:8px;margin-top:10px"><button class="btn btn-ghost" style="flex:1" data-act="open-vehicle">車輛提醒設定</button><button class="btn btn-ghost" style="flex:1" data-act="veh-snooze">明天再提醒</button></div></div>';
+}
+function vehCardHtml(){
+  var v = veh(), est = vehOdoEstimate(), m = v.maint || {}, lines = [];
+  if(est) lines.push('目前里程(推估)'+fmtNum(est.km,0)+' 公里');
+  if(m.next>0) lines.push('下次保養 '+fmtNum(m.next,0)+' 公里'+(est?('(還差 '+fmtNum(m.next-est.km,0)+')'):''));
+  if(v.inspect && v.inspect.next) lines.push('驗車 '+v.inspect.next);
+  (v.policies||[]).forEach(function(p){ if(p.due) lines.push(esc(p.name)+' '+p.due); });
+  return '<div class="section"><div class="card" style="padding:12px 14px"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div><div style="font-weight:700;font-size:13.5px">🔧 車輛提醒</div>'+
+    '<div style="font-size:12px;color:var(--text-muted);margin-top:3px;line-height:1.6">'+(lines.length?lines.join(' · '):'設定保養里程、驗車日、保險到期日,快到時首頁提醒')+'</div></div>'+
+    '<button class="btn btn-ghost" style="flex:none" data-act="open-vehicle">'+(lines.length?'修改':'設定')+'</button></div></div></div>';
+}
+function vehInput(id, val, ph, type){
+  return '<input class="num-input" id="'+id+'" type="'+(type||'number')+'" min="0" step="1" inputmode="numeric" placeholder="'+(ph||'')+'" value="'+(val!=null&&val!==''?esc(String(val)):'')+'">';
+}
+function openVehicleModal(){
+  var v = veh(), est = vehOdoEstimate(), m = v.maint || {}, ins = v.inspect || {};
+  var h = '<div class="modal-title">🔧 車輛提醒<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">快到時會在首頁提醒,不填的項目就不提醒。</div>';
+  h += '<div class="section-title" style="margin-top:4px">保養(依里程)</div><div class="card" style="padding:10px 14px;margin-bottom:12px">';
+  h += '<div class="form-row"><label>目前儀表板里程(公里)</label>'+vehInput('f-veh-odo', '', est?String(est.km):'例如 125000')+
+    '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">'+(est?('推估 '+fmtNum(est.km,0)+' 公里('+est.baseDate+' 填 '+fmtNum(est.base,0)+',之後每天記的里程加 '+fmtNum(est.added,0)+')。跟儀表板不一樣才填。'):'填一次就好,之後會加上每天記的里程。下班私人用車不會算到,記加油、保養時可以順手校正。')+'</div></div>';
+  h += '<div class="form-grid2"><div class="form-row"><label>保養間隔(公里)</label>'+vehInput('f-veh-interval', m.interval||5000)+'</div>'+
+    '<div class="form-row"><label>提前幾公里提醒</label>'+vehInput('f-veh-warn', m.warn!=null?m.warn:300)+'</div></div>';
+  h += '<div class="form-row"><label>下次保養里程(公里)</label>'+vehInput('f-veh-next', m.next||'', '例如 130000')+'</div></div>';
+  h += '<div class="section-title">驗車</div><div class="card" style="padding:10px 14px;margin-bottom:12px"><div class="form-grid2">'+
+    '<div class="form-row"><label>下次驗車日期</label><input type="date" id="f-veh-inspect" value="'+(ins.next||'')+'"></div>'+
+    '<div class="form-row" style="min-width:0"><label>驗車週期</label><select id="f-veh-cycle" style="width:100%;min-width:0"><option value="12"'+(ins.cycle==6?'':' selected')+'>一年一次</option><option value="6"'+(ins.cycle==6?' selected':'')+'>半年一次</option></select></div></div></div>';
+  var pols = (v.policies||[]).slice();
+  if(!pols.length) pols = VEH_POLICY_DEFAULTS.map(function(n){ return {name:n, due:'', years:1}; });
+  pols.push({name:'', due:'', years:1});
+  h += '<div class="section-title">保險(每張保單各自的到期日)</div><div class="card" style="padding:10px 14px;margin-bottom:12px">';
+  pols.forEach(function(p, i){
+    h += '<div style="padding:8px 0;'+(i?'border-top:1px solid var(--border)':'')+'">'+
+      '<div class="form-row" style="margin-bottom:6px"><input id="f-veh-pn-'+i+'" type="text" maxlength="16" placeholder="其他保單名稱(選填)" value="'+esc(p.name||'')+'"></div>'+
+      '<div style="display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:6px">'+
+      '<div class="form-row" style="min-width:0;margin:0"><label style="font-size:11px">到期日</label><input id="f-veh-pd-'+i+'" type="date" value="'+(p.due||'')+'" style="width:100%;min-width:0;box-sizing:border-box"></div>'+
+      '<div class="form-row" style="min-width:0;margin:0"><label style="font-size:11px">保險期間</label><select id="f-veh-py-'+i+'" style="width:100%;min-width:0;box-sizing:border-box"><option value="1"'+(p.years==2?'':' selected')+'>1 年</option><option value="2"'+(p.years==2?' selected':'')+'>2 年</option></select></div></div></div>';
+  });
+  h += '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.5">旅客責任險的到期日常跟強制險不同,請各自填。保費請另外在「固定成本」或支出記帳。</div></div>';
+  h += '<div class="form-row"><label>日期類提前幾天提醒</label>'+vehInput('f-veh-days', v.warnDays!=null?v.warnDays:30)+'</div>';
+  h += '<div class="form-save"><div class="btn-row"><button class="btn btn-primary" data-act="save-vehicle:'+pols.length+'">儲存</button></div></div>';
+  openModal(h);
+}
+function saveVehicle(n){
+  function val(id){ var el = document.getElementById(id); return el ? el.value.trim() : ''; }
+  function num(id, dflt){ var x = val(id); return x==='' || isNaN(+x) || +x<0 ? dflt : Math.round(+x); }
+  var v = Object.assign({}, veh());
+  var odo = val('f-veh-odo');
+  if(odo!=='' && !isNaN(+odo) && +odo>0){ state.vehicle = v; vehSetOdo(+odo, todayStr()); v = state.vehicle; }
+  v.maint = {interval:num('f-veh-interval', 5000), warn:num('f-veh-warn', 300), next:num('f-veh-next', null)};
+  v.inspect = {next:val('f-veh-inspect') || null, cycle:+val('f-veh-cycle')===6 ? 6 : 12};
+  var pols = [];
+  for(var i=0;i<n;i++){
+    var name = val('f-veh-pn-'+i), due = val('f-veh-pd-'+i);
+    if(!name && !due) continue;
+    pols.push({name:name || '保單', due:due || null, years:+val('f-veh-py-'+i)===2 ? 2 : 1});
+  }
+  v.policies = pols;
+  v.warnDays = num('f-veh-days', 30);
+  state.vehicle = v;
+  save(); closeModal(); renderAll();
+}
+function openVehOdoModal(forMaint){
+  var est = vehOdoEstimate(), m = veh().maint || {};
+  var h = '<div class="modal-title">'+(forMaint?'🔧 已保養':'📏 校正里程')+'<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div class="form-row"><label>'+(forMaint?'保養時的儀表板里程(公里)':'儀表板現在的里程(公里)')+'</label>'+vehInput('f-veh-odo1', est?est.km:'', '例如 125000')+'</div>';
+  if(forMaint) h += '<div style="font-size:12px;color:var(--text-muted);margin:-4px 0 12px;line-height:1.6">下次保養會設成這個里程 + '+fmtNum(m.interval||5000,0)+' 公里,之後可以在「車輛提醒」改。</div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-veh-odo:'+(forMaint?1:0)+'">儲存</button></div>';
+  openModal(h);
+}
+function saveVehOdo(forMaint){
+  var x = document.getElementById('f-veh-odo1').value;
+  if(x==='' || isNaN(+x) || +x<=0){ alert('請輸入儀表板上的里程。'); return; }
+  state.vehicle = Object.assign({}, veh());
+  vehSetOdo(+x, todayStr());
+  if(forMaint){ var m = Object.assign({interval:5000, warn:300}, state.vehicle.maint||{}); m.next = Math.round(+x) + (+m.interval||5000); state.vehicle.maint = m; }
+  save(); closeModal(); renderAll();
+  showToast(forMaint ? ('✓ 下次保養 '+fmtNum(state.vehicle.maint.next,0)+' 公里') : '✓ 里程已校正', 2400);
+}
+function vehDoneDate(kind, idx){
+  var v = state.vehicle = Object.assign({}, veh());
+  if(kind==='inspect' && v.inspect && v.inspect.next){
+    v.inspect = Object.assign({}, v.inspect, {next:addMonthsStr(v.inspect.next, v.inspect.cycle==6?6:12)});
+    save(); renderAll(); showToast('✓ 下次驗車 '+v.inspect.next+',可以在「車輛提醒」修改', 2800);
+  } else if(kind==='policy' && v.policies && v.policies[idx] && v.policies[idx].due){
+    v.policies = v.policies.slice(); var p = v.policies[idx] = Object.assign({}, v.policies[idx]);
+    p.due = addMonthsStr(p.due, 12*(p.years==2?2:1));
+    save(); renderAll(); showToast('✓ '+p.name+' 下次到期 '+p.due, 2800);
+  }
+}
+
 /* ---------- payouts: cash vs platform, batches, reconciliation ---------- */
 var WEEKDAY_NAMES = ['一','二','三','四','五','六','日'];
 var PAYOUT_DEFAULTS = {
   uber:{collect:'platform', schedule:'weekly', weekday:3, days:2, cashFeeFromPayout:true},
   bolt:{collect:'platform', schedule:'weekly', weekday:4, days:2, cashFeeFromPayout:true},
   tdc:{collect:'platform', schedule:'tplus', weekday:3, days:2, cashFeeFromPayout:true},
-  metro:{collect:'platform', schedule:'tplus', weekday:3, days:2, cashFeeFromPayout:true},
+  // 大都會 takes every fee (派次費, monthly fees) from the driver's wallet, not from the card payout
+  metro:{collect:'platform', schedule:'tplus', weekday:3, days:2, cashFeeFromPayout:false},
   yoxi:{collect:'platform', schedule:'map', map:[7,6,5,7,6,5,4], shift:'period', weekday:3, days:2, cashFeeFromPayout:true},
   linego:{collect:'platform', schedule:'map', map:[8,7,6,8,7,6,5], weekday:3, days:2, cashFeeFromPayout:true},
   hailyellow:{collect:'cash', schedule:'tplus', weekday:3, days:2, cashFeeFromPayout:false}
@@ -2024,7 +2173,7 @@ function settleDateOf(r){
 }
 function payoutCfg(key){
   var base = PAYOUT_DEFAULTS[key] || {collect:'cash', schedule:'none', weekday:3, days:2, cashFeeFromPayout:true};
-  base = Object.assign({map:PAY_MAP_DEFAULT, shift:true}, base);
+  base = Object.assign({map:PAY_MAP_DEFAULT, shift:true, bank:''}, base);
   var ov = (state.payoutSettings||{})[key] || {};
   var out = {};
   for(var k in base) out[k] = (ov[k]!=null) ? ov[k] : base[k];
@@ -2136,12 +2285,107 @@ function payoutLedgerCompute(){
     });
     if(owed>0.5) owedByPlatform[pk] = owed;
   });
+  // tolls the platform pays back with that batch (entered from its statement, not per trip)
+  var tolls = state.tollRefunds || {}, tripTolls = {};
+  state.records.forEach(function(r){
+    if(!(r.tollRefund>0)) return;
+    var tb = payoutBatchOf(r); if(!tb) return;
+    tripTolls[tb.id] = (tripTolls[tb.id]||0) + (+r.tollRefund);
+  });
+  Object.keys(map).forEach(function(id){
+    var t = tolls[id], amt = (t && +t.amount>0) ? +t.amount : (tripTolls[id]||0);
+    if(tripTolls[id]) map[id].tripToll = Math.round(tripTolls[id]*100)/100;
+    if(amt>0){ map[id].toll = Math.round(amt*100)/100; map[id].expected += amt; }
+  });
   var paid = {};
   (state.payouts||[]).forEach(function(p){ paid[p.batch] = p; });
   var batches = Object.keys(map).map(function(k){ var b=map[k]; b.payout = paid[k]||null; return b; });
-  return {batches:batches, owed:owedByPlatform};
+  var wallet = metroWalletSim(batches);
+  return {batches:batches, owed:owedByPlatform, wallet:wallet};
 }
 function payoutBatches(){ return payoutLedger().batches; }
+// tolls paid back by platforms, dated by the last trip of their batch; they offset the E-Tag expense
+function tollRefundInRange(from,to){
+  var t = 0, all = state.tollRefunds || {};
+  Object.keys(all).forEach(function(k){ var x = all[k]; if(x && +x.amount>0 && x.date && inRange(x.date,from,to)) t += +x.amount; });
+  // trips' own tolls count on their day, unless the whole batch was typed on the payout page instead
+  state.records.forEach(function(r){
+    if(!(r.tollRefund>0) || !inRange(r.date,from,to)) return;
+    var tb = payoutBatchOf(r); if(tb && all[tb.id] && +all[tb.id].amount>0) return;
+    t += +r.tollRefund;
+  });
+  return t;
+}
+function bankOf(key){ var b = (payoutCfg(key).bank||'').trim(); return b; }
+/* 大都會 wallet: fares go in, every fee is taken from it, and a card payout first tops it up to the safety level + 200
+   before the rest reaches the bank. Estimated from the driver's own records since the balance they last typed in. */
+var METRO_WALLET_STOP_RESERVE = 500;
+function metroWalletOn(){ var w = state.metroWallet; return !!(w && w.on); }
+function metroWalletSim(batches){
+  var w = state.metroWallet;
+  if(!w || !w.on || w.bal==null || !w.balAt) return null;
+  var level = w.level!=null ? +w.level : 1200, admin = w.admin!=null ? +w.admin : 100;
+  var startDay = toDateStr(new Date(w.balAt)), today = todayStr();
+  var ev = [];
+  state.records.forEach(function(r){
+    if(payKey(r)!=='metro' || (r.ts||0)<=w.balAt) return;
+    var f = moneyFlow(r);
+    if(f.cashFee && !f.netted) ev.push({d:settleDateOf(r), o:1, amt:-f.cashFee});
+  });
+  // the monthly fee comes off at the start of each month
+  if(admin>0){
+    var m = new Date(startDay+'T00:00:00'); m = new Date(m.getFullYear(), m.getMonth()+1, 1);
+    var last = addDays(today, 60);
+    while(toDateStr(m)<=last){ ev.push({d:toDateStr(m), o:2, amt:-admin, admin:true}); m = new Date(m.getFullYear(), m.getMonth()+1, 1); }
+  }
+  batches.forEach(function(b){ if(b.platform==='metro' && b.payDate && b.payDate>startDay) ev.push({d:b.payDate, o:0, batch:b}); });
+  ev.sort(function(a,b){ return a.d<b.d?-1:(a.d>b.d?1:a.o-b.o); });
+  var bal = +w.bal, now = null;
+  ev.forEach(function(e){
+    if(now===null && e.d>today) now = bal;
+    if(e.batch){
+      var amt = e.batch.payout ? +e.batch.payout.amount||0 : e.batch.expected;
+      var top = bal<level ? Math.min(Math.max(0, amt), level+200-bal) : 0;
+      e.batch.walletTopUp = top; bal += top;
+    } else bal += e.amt;
+  });
+  if(now===null) now = bal;
+  return {balance:now, level:level, since:w.balAt};
+}
+function metroWalletCardHtml(){
+  if(!metroWalletOn()) return '';
+  var wl = payoutLedger().wallet;
+  if(!wl) return '<div class="section"><div class="card" style="padding:12px 14px;font-size:12.5px;line-height:1.6"><b>👛 大都會錢包</b><br>請先輸入現在的錢包餘額,記帳本才能幫你推算。'+
+    '<div style="margin-top:8px"><button class="btn btn-ghost" data-act="open-metro-wallet">輸入錢包餘額</button></div></div></div>';
+  var b = wl.balance, warn = b<0 ? 'var(--expense)' : (b<METRO_WALLET_STOP_RESERVE ? 'var(--accent)' : 'var(--border)');
+  var msg = b<0 ? '<b style="color:var(--expense)">錢包可能已經是負的,即時派會被停,請先儲值</b>' :
+    (b<METRO_WALLET_STOP_RESERVE ? '<b style="color:var(--accent)">錢包可能低於 500,預約派(送機、預約、包車)會被停</b>' : '低於 500 停預約派、0 元以下停即時派');
+  return '<div class="section"><div class="card" style="padding:12px 14px;border-color:'+warn+'"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:13px;font-weight:700">👛 大都會錢包(推估)</span><span class="num" style="font-weight:700">'+fmtMoney(b)+'</span></div>'+
+    '<div style="font-size:12px;color:var(--text-muted);margin-top:4px;line-height:1.6">'+msg+'<br>安全水位 '+fmtMoney(wl.level)+' · 依 '+toDateStr(new Date(wl.since))+' 輸入的餘額和之後的記帳推算,跟大都會 App 不一樣時請更新。用 ATM 儲值錢包不是支出,不用記帳,更新餘額就好。</div>'+
+    '<div style="margin-top:8px"><button class="btn btn-ghost" data-act="open-metro-wallet">更新實際餘額</button></div></div></div>';
+}
+function metroWalletHomeHtml(){
+  if(!metroWalletOn()) return '';
+  var wl = payoutLedger().wallet; if(!wl || wl.balance>=METRO_WALLET_STOP_RESERVE) return '';
+  return '<div class="card" style="border-color:'+(wl.balance<0?'var(--expense)':'var(--accent)')+';margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6">'+
+    '<b>👛 大都會錢包推估剩 '+fmtMoney(wl.balance)+'</b><br>'+(wl.balance<0?'0 元以下會停即時派,':'低於 500 會停預約派,')+'要跑大都會請先儲值;已經儲值就更新一下餘額。'+
+    '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" style="flex:1" data-act="open-metro-wallet">更新錢包餘額</button></div></div>';
+}
+function openMetroWalletModal(){
+  var w = state.metroWallet || {};
+  var wl = payoutLedger().wallet;
+  var h = '<div class="modal-title">大都會錢包餘額<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">打開大都會 App 看錢包現在的金額,填在這裡。之後記的大都會現金單手續費、每月行政費會從這個數字往下扣,刷卡車資撥款時補回安全水位。'+(wl?'<br>目前推估:'+fmtMoney(wl.balance):'')+'</div>';
+  h += '<div class="form-row"><label>錢包現在的餘額</label><input class="num-input" id="f-mw-bal" type="number" inputmode="numeric" step="1" placeholder="例如 1200" value=""></div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-metro-wallet">儲存</button></div>';
+  openModal(h);
+}
+function saveMetroWalletBalance(){
+  var v = document.getElementById('f-mw-bal').value;
+  if(v==='' || isNaN(+v)){ alert('請輸入錢包現在的金額。'); return; }
+  state.metroWallet = Object.assign({on:true, level:1200, admin:100}, state.metroWallet||{}, {bal:+v, balAt:Date.now()});
+  save(); closeModal(); renderAll();
+}
 function shortDate(ds){ return ds.slice(5).replace('-','/'); }
 function batchTitle(b){
   var name = platformDef(b.platform).label;
@@ -2154,8 +2398,10 @@ function batchRowHtml(b, growing){
     var diff = (+b.payout.amount||0) - Math.round(b.expected);
     diffHtml = '<div class="num" style="font-size:12px;color:'+(Math.abs(diff)<1?'var(--income)':'var(--expense)')+'">'+(Math.abs(diff)<1?'✓ 金額相符':('差 '+(diff>0?'+':'')+fmtMoney(diff)))+'</div>';
   }
-  var sub = b.trips+' 趟'+(b.bonus?' + 活動獎勵 '+fmtMoney(b.bonus):'')+' · '+shortDate(b.from)+(b.to!==b.from?('–'+shortDate(b.to)):'')+(b.cashFees>0?(' · 扣累積現金單手續費 '+fmtMoney(b.cashFees)):'');
+  var sub = b.trips+' 趟'+(b.bonus?' + 活動獎勵 '+fmtMoney(b.bonus):'')+' · '+shortDate(b.from)+(b.to!==b.from?('–'+shortDate(b.to)):'')+(b.cashFees>0?(' · 扣累積現金單手續費 '+fmtMoney(b.cashFees)):'')+(b.toll>0?(' · 含過路費退款 '+fmtMoney(b.toll)):'');
   if(growing) sub += ' · 還在累計中';
+  if(b.walletTopUp>0.5) sub += ' · 先補進大都會錢包 '+fmtMoney(b.walletTopUp)+',匯到銀行約 '+fmtMoney(Math.max(0,(b.payout?+b.payout.amount||0:b.expected)-b.walletTopUp));
+  var bk = bankOf(b.platform); if(bk) sub += ' · 🏦 匯入 '+esc(bk);
   return '<div class="list-item" data-act="open-payout:'+b.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+esc(batchTitle(b))+'</div><div class="li-sub">'+sub+'</div></div>'+
     '<div style="text-align:right;flex:none"><div class="num" style="font-weight:700">'+(b.payout?fmtMoney(b.payout.amount):fmtMoney(b.expected))+'</div>'+
     (b.payout?('<div style="font-size:11px;color:var(--text-muted)">預計 '+fmtMoney(b.expected)+'</div>'):'')+diffHtml+'</div></div>';
@@ -2185,6 +2431,17 @@ function renderPayoutTab(){
     h += '<div class="section"><div class="card" style="padding:12px 14px"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font-size:13px;font-weight:700">累積待扣的現金單手續費</span><span class="num expense" style="font-weight:700">'+fmtMoney(owedTotal)+'</span></div>'+
       '<div style="font-size:12px;color:var(--text-muted);margin-top:4px;line-height:1.6">'+owedKeys.map(function(k){ return esc(platformDef(k).label)+' '+fmtMoney(ledger.owed[k]); }).join(' · ')+'<br>會從之後的非現金單撥款裡扣回去。</div></div></div>';
   }
+  h += metroWalletCardHtml();
+  var byBank = {}, bankOrder = [];
+  due.concat(upcoming.filter(function(b){ return b.payDate<=addDays(today,1); })).forEach(function(b){
+    var bk = bankOf(b.platform); if(!bk) return;
+    var amt = b.expected - (b.walletTopUp>0.5 ? b.walletTopUp : 0);
+    if(!byBank[bk]){ byBank[bk] = {amt:0, names:[]}; bankOrder.push(bk); }
+    byBank[bk].amt += amt; var nm = platformDef(b.platform).label; if(byBank[bk].names.indexOf(nm)<0) byBank[bk].names.push(nm);
+  });
+  if(bankOrder.length) h += '<div class="section"><div class="section-title">今明兩天要核對的帳戶</div><div class="card">'+bankOrder.map(function(bk){
+    return '<div class="list-item"><div class="li-body"><div class="li-title">🏦 '+esc(bk)+'</div><div class="li-sub">'+esc(byBank[bk].names.join('、'))+'</div></div><div class="li-amt num">'+fmtMoney(byBank[bk].amt)+'</div></div>';
+  }).join('')+'</div></div>';
   h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-4px 0 12px;line-height:1.6">平台撥款 = 非現金單的實收(已扣它自己的手續費,含小費),再扣掉之前累積的現金單手續費(依時間順序往後扣,不夠扣就繼續累積)。錢入帳後點那一筆,輸入實際金額,系統會比對差多少。</div>';
   h += '<div class="btn-row" style="margin-bottom:14px"><button class="btn btn-ghost" data-act="open-payout-settings">⚙️ 撥款設定(各平台撥款時間)</button></div>';
   if(due.length) h += '<div class="section"><div class="section-title">已到撥款日,請確認有沒有入帳</div><div class="card">'+due.map(function(b){ return batchRowHtml(b); }).join('')+'</div></div>';
@@ -2204,8 +2461,13 @@ function openPayoutModal(batchId){
   h += '<div class="card" style="margin-bottom:12px">'+
     '<div class="list-item"><div class="li-body"><div class="li-title">非現金單實收(已扣自己的手續費,含小費)</div></div><div class="li-amt num">'+fmtMoney(b.earned)+'</div></div>'+
     (b.cashFees>0?'<div class="list-item"><div class="li-body"><div class="li-title">扣:之前累積的現金單手續費</div></div><div class="li-amt expense num">-'+fmtMoney(b.cashFees)+'</div></div>':'')+
-    '<div class="list-item"><div class="li-body"><div class="li-title"><b>系統預計撥款</b></div><div class="li-sub">'+b.trips+' 趟 · '+b.from+(b.to!==b.from?(' ~ '+b.to):'')+'</div></div><div class="li-amt num"><b>'+fmtMoney(b.expected)+'</b></div></div>'+
+    (b.toll>0?'<div class="list-item"><div class="li-body"><div class="li-title">加:過路費退款</div></div><div class="li-amt income num">+'+fmtMoney(b.toll)+'</div></div>':'')+
+    '<div class="list-item"><div class="li-body"><div class="li-title"><b>系統預計撥款</b></div><div class="li-sub">'+b.trips+' 趟 · '+b.from+(b.to!==b.from?(' ~ '+b.to):'')+(bankOf(b.platform)?(' · 匯入 '+esc(bankOf(b.platform))):'')+'</div></div><div class="li-amt num"><b>'+fmtMoney(b.expected)+'</b></div></div>'+
+    (b.walletTopUp>0.5?'<div class="list-item"><div class="li-body"><div class="li-title">其中先補進大都會錢包(推估)</div><div class="li-sub">錢包低於安全水位,撥款時先補到水位+200</div></div><div class="li-amt num">-'+fmtMoney(b.walletTopUp)+'</div></div>':'')+
     '</div>';
+  var tr = (state.tollRefunds||{})[b.id];
+  h += '<div class="form-row"><label>過路費退款(選填,這一批的總額)</label><input class="num-input" id="f-payout-toll" type="number" inputmode="decimal" min="0" step="0.01" placeholder="'+(b.tripToll>0?('逐趟已記 '+b.tripToll+',不同再填'):'看平台明細的「過路費／收費公路」')+'" value="'+(tr&&tr.amount?tr.amount:'')+'">'+
+    '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">平台跟車資一起退的過路費。'+(b.tripToll>0?('記車資時已經逐趟填了 '+fmtMoney2(b.tripToll)+';明細上的總額不一樣才填這裡,填了就以這裡為準。'):'填這一批的總額就好,不用每趟記。')+'會加進預計撥款,分析頁拿來抵 E-Tag 支出,不算車資、不算趟數。</div></div>';
   h += '<div class="form-grid2"><div class="form-row"><label>實際入帳金額</label><input class="num-input" id="f-payout-amount" type="number" inputmode="numeric" step="1" placeholder="'+Math.round(b.expected)+'" value="'+(p?p.amount:'')+'"></div>'+
     '<div class="form-row"><label>入帳日期</label><input type="date" id="f-payout-date" value="'+(p?p.receivedDate:(b.payDate&&b.payDate<=todayStr()?b.payDate:todayStr()))+'"></div></div>';
   h += '<div class="form-row"><label>備註(選填)</label><input id="f-payout-note" type="text" value="'+esc(p?(p.note||''):'')+'"></div>';
@@ -2214,8 +2476,21 @@ function openPayoutModal(batchId){
 }
 function savePayout(batchId){
   var amt = document.getElementById('f-payout-amount').value;
-  if(amt==='' || isNaN(+amt)){ alert('請輸入實際入帳金額。'); return; }
   var b = payoutBatches().filter(function(x){ return x.id===batchId; })[0];
+  var tollEl = document.getElementById('f-payout-toll'), tollV = tollEl ? tollEl.value : '';
+  if(tollV!=='' && (isNaN(+tollV) || +tollV<0)){ alert('過路費退款請輸入金額。'); return; }
+  var tollOld = (state.tollRefunds||{})[batchId], tollNew = tollV==='' ? 0 : Math.round(+tollV*100)/100;
+  var tollChanged = (tollOld ? +tollOld.amount : 0) !== tollNew;
+  if(tollChanged){
+    state.tollRefunds = Object.assign({}, state.tollRefunds||{});
+    if(tollNew>0) state.tollRefunds[batchId] = {amount:tollNew, platform:b?b.platform:batchId.split('|')[0], date:b?b.to:todayStr()};
+    else delete state.tollRefunds[batchId];
+  }
+  if(amt==='' || isNaN(+amt)){
+    if(tollChanged && amt===''){ save(); closeModal(); renderAll(); return; }
+    alert('請輸入實際入帳金額。'); return;
+  }
+  b = payoutBatches().filter(function(x){ return x.id===batchId; })[0];
   state.payouts = (state.payouts||[]).filter(function(p){ return p.batch!==batchId; });
   state.payouts.push({id:uid(), batch:batchId, platform:b?b.platform:batchId.split('|')[0], amount:+amt,
     expectedAtSave:b?Math.round(b.expected):null, receivedDate:document.getElementById('f-payout-date').value||todayStr(),
@@ -2245,6 +2520,16 @@ function openPayoutSettingsModal(){
     h += '</div>';
     h += payMapHtml(p.key, cfg);
     if(hasPay) h += '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);margin-top:8px"><input type="checkbox" id="f-po-cashfee-'+p.key+'"'+(cfg.cashFeeFromPayout?' checked':'')+'>現金單的手續費從撥款扣(不勾 = 另外繳,例如儲值金扣款)</label>';
+    h += '<div style="margin-top:8px"><label style="font-size:11px">匯入哪個帳戶(選填,只填銀行名稱,不要填帳號)</label><input id="f-po-bank-'+p.key+'" type="text" maxlength="16" placeholder="例如:國泰世華、郵局" value="'+esc(cfg.bank||'')+'" style="width:100%;box-sizing:border-box;background:var(--surface-sunken);border:1px solid var(--border);border-radius:9px;padding:8px;color:var(--text);font-family:inherit;font-size:13px"></div>';
+    if(p.key==='metro'){
+      var mw = state.metroWallet || {};
+      h += '<div style="margin-top:8px;padding:8px 10px;background:var(--surface-sunken);border-radius:9px">'+
+        '<label style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700"><input type="checkbox" id="f-mw-on"'+(mw.on?' checked':'')+'>👛 大都會用司機錢包(推算餘額、低於 500 提醒)</label>'+
+        '<div style="font-size:11.5px;color:var(--text-muted);margin:4px 0 6px;line-height:1.5">打開後,現金單手續費改成從錢包扣;刷卡車資撥款時,錢包低於安全水位會先補到「水位+200」,剩下的才匯到銀行。</div>'+
+        '<div class="form-grid2"><div><label style="font-size:11px">安全水位</label><input id="f-mw-level" type="number" min="0" step="1" inputmode="numeric" value="'+(mw.level!=null?mw.level:1200)+'" style="width:100%;box-sizing:border-box;background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:8px;color:var(--text);font-family:inherit;font-size:13px"></div>'+
+        '<div><label style="font-size:11px">每月行政費(月初扣)</label><input id="f-mw-admin" type="number" min="0" step="1" inputmode="numeric" value="'+(mw.admin!=null?mw.admin:100)+'" style="width:100%;box-sizing:border-box;background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:8px;color:var(--text);font-family:inherit;font-size:13px"></div></div>'+
+        '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.5">行政費請另外在「固定成本」記一筆,這裡只用來推算錢包。錢包餘額在撥款頁輸入。</div></div>';
+    }
     h += '</div>';
   });
   h += '<div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" data-act="save-payout-settings">儲存撥款設定</button></div>';
@@ -2308,12 +2593,21 @@ function savePayoutSettings(){
     o.weekday = +v('f-po-weekday-'+p.key);
     o.days = Math.max(0, +v('f-po-days-'+p.key)||0);
     var cf = document.getElementById('f-po-cashfee-'+p.key); if(cf) o.cashFeeFromPayout = cf.checked;
+    var bkEl = document.getElementById('f-po-bank-'+p.key); if(bkEl && bkEl.value.trim()) o.bank = bkEl.value.trim().slice(0,16);
     if(document.getElementById('f-po-map-'+p.key+'-0')){
       o.map = WEEKDAY_NAMES.map(function(n,i){ return +v('f-po-map-'+p.key+'-'+i)||2; });
       o.shift = v('f-po-shift-'+p.key);
     }
     state.payoutSettings[p.key] = o;
   });
+  var mwOn = document.getElementById('f-mw-on');
+  if(mwOn){
+    var mwPrev = state.metroWallet || {};
+    var lv = +document.getElementById('f-mw-level').value, ad = +document.getElementById('f-mw-admin').value;
+    state.metroWallet = Object.assign({}, mwPrev, {on:mwOn.checked, level:isFinite(lv)&&lv>=0?lv:1200, admin:isFinite(ad)&&ad>=0?ad:100});
+    // with the wallet on, cash-trip fees come out of the wallet, not the next card payout
+    if(mwOn.checked && state.payoutSettings.metro) state.payoutSettings.metro.cashFeeFromPayout = false;
+  }
   save(); closeModal(); renderAll();
 }
 
@@ -2588,7 +2882,7 @@ function renderEntry(){
   var platformTotals = {};
   todayRecs.forEach(function(r){ platformTotals[r.platform]=(platformTotals[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
 
-  var h = saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudConflictHtml() + cloudStaleHtml() + fontAskHtml();
+  var h = saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudConflictHtml() + cloudStaleHtml() + metroWalletHomeHtml() + vehHomeHtml() + fontAskHtml();
   if(state.syncUrl && cloudAuthStatus==='bad'){
     h += '<div class="card" style="border-color:var(--expense);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 雲端密碼不對,資料沒有同步到雲端</b><br>手機裡的帳都還在。請到右上角設定確認「雲端密碼」,改好後會自動補送。</div>';
   }
@@ -2880,6 +3174,7 @@ function renderExpenseTab(){
     h += '</div></div>';
   }
 
+  h += vehCardHtml();
   h += '<div class="section"><div class="section-title">明細</div><div class="card">';
   h += exps.length ? exps.map(function(e){
     var ci = catInfo(e.category);
@@ -2940,7 +3235,7 @@ function comparisonRanges(range){
 function periodMetrics(from,to){
   var recs = recordsInRange(from,to);
   var net = sumNetIncome(recs).total;
-  var exp = sumExpense(expensesInRange(from,to))+fixedTotalForRange(from,to);
+  var exp = sumExpense(expensesInRange(from,to))+fixedTotalForRange(from,to)-tollRefundInRange(from,to);
   var hours = totalHoursInRange(from,to);
   var km = totalKmInRange(from,to);
   return {
@@ -3125,7 +3420,8 @@ function renderAnalytics(){
   var gross = sumIncome(recs);
   var net = sumNetIncome(recs);
   var feeTotal = gross.total-net.total-recs.reduce(function(a,r){ return a + (r.couponType==='absorb' ? (+r.coupon||0) : 0); }, 0);
-  var varExp = sumExpense(exps);
+  var tollRef = tollRefundInRange(range.from, range.to);
+  var varExp = sumExpense(exps) - tollRef;
   var fixExp = fixedTotalForRange(range.from, range.to);
   var totalExp = varExp+fixExp;
   var profit = net.total-totalExp;
@@ -3160,8 +3456,8 @@ function renderAnalytics(){
     h += '<div class="month-nav" style="margin-top:-4px"><button data-act="year:-1">‹</button><div class="m-title">'+uiMonth.getFullYear()+' 年</div><button data-act="year:1">›</button></div>';
   } else if(analyticsPeriod==='custom'){
     h += '<div class="section"><div class="form-grid2">'+
-      '<div class="form-row"><label>起始日期</label><input type="date" id="customFrom" value="'+customFrom+'"></div>'+
-      '<div class="form-row"><label>結束日期</label><input type="date" id="customTo" value="'+customTo+'"></div>'+
+      '<div class="form-row"><label>起始日期</label><input type="date" id="customFrom" value="'+customFrom+'" max="'+customTo+'"></div>'+
+      '<div class="form-row"><label>結束日期</label><input type="date" id="customTo" value="'+customTo+'" min="'+customFrom+'"></div>'+
       '</div></div>';
   } else if(analyticsPeriod==='all'){
     h += '<div style="text-align:center;font-size:12.5px;color:var(--text-muted);margin:-4px 0 12px">全部資料:'+range.from+' ~ '+range.to+'</div>';
@@ -3182,7 +3478,12 @@ function renderAnalytics(){
   // comparison below (fixed costs up to today); the label says which one it is
   var profitLbl = (range.to>todayStr() && fixExp>0) ? '淨利(扣'+({week:'整週',month:'整月',year:'整年'}[analyticsPeriod]||'整段')+'固定成本)' : '淨利';
   h += '<div class="stat-tile"><div class="lbl">'+profitLbl+'</div><div class="val num">'+fmtMoney(profit)+'</div></div>';
-  h += '</div></div>';
+  h += '</div>';
+  if(tollRef>0){
+    var etag = exps.reduce(function(a,e){ return a + (e.category==='toll' ? (+e.amount||0) : 0); }, 0);
+    h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;line-height:1.6">🛣️ 過路費:'+(etag>0 ? ('E-Tag 支出 '+fmtMoney2(etag)+' − 平台退款 '+fmtMoney2(tollRef)+' = 實際花 '+fmtMoney2(etag-tollRef)) : ('平台退款 '+fmtMoney2(tollRef)+'。這段期間沒有記 E-Tag 支出,過路費退款會讓淨利略高;建議每月收到 E-Tag 帳單時記一筆總額'))+'。總支出已扣掉退款。</div>';
+  }
+  h += '</div>';
   if(uiShow('compare')) h += comparisonHtml(range);
 
   if(uiShow('overview')){
@@ -3899,10 +4200,10 @@ function yearReportData(year){
     var g = sumIncome(recs), nt = sumNetIncome(recs);
     var byCat = {}; allCats().forEach(function(c){ byCat[c.key]=0; });
     exps.forEach(function(e){ byCat[e.category] = (byCat[e.category]||0) + (+e.amount||0); });
-    var fix = fixedTotalForRange(from,to);
+    var fix = fixedTotalForRange(from,to), tollR = tollRefundInRange(from,to);
     rows.push({month:year+'-'+pad(mo), trips:recs.filter(function(r){ return !platformDef(r.platform).tipOnly; }).length,
-      gross:g.rev, tip:g.tip, fee:g.total-nt.total, net:nt.total, byCat:byCat, varExp:sumExpense(exps), fixed:fix,
-      profit:nt.total-sumExpense(exps)-fix, km:totalKmInRange(from,to), hours:totalHoursInRange(from,to), days:workingDaysInRange(from,to)});
+      gross:g.rev, tip:g.tip, fee:g.total-nt.total, net:nt.total, byCat:byCat, varExp:sumExpense(exps), toll:tollR, fixed:fix,
+      profit:nt.total-sumExpense(exps)+tollR-fix, km:totalKmInRange(from,to), hours:totalHoursInRange(from,to), days:workingDaysInRange(from,to)});
   }
   var plat = {};
   recordsInRange(year+'-01-01', year+'-12-31').forEach(function(r){
@@ -3923,11 +4224,11 @@ function yearReportData(year){
 }
 function yearReportCsv(year){
   var d = yearReportData(year), r2 = function(x){ return Math.round(x); };
-  var head = ['月份','營業天數','趟數','車資','小費','平台手續費','實收'].concat(allCats().map(function(c){ return '支出-'+c.label; })).concat(['變動支出合計','固定成本攤提','淨利','里程km','工時(小時)']);
+  var head = ['月份','營業天數','趟數','車資','小費','平台手續費','實收'].concat(allCats().map(function(c){ return '支出-'+c.label; })).concat(['變動支出合計','平台過路費退款','固定成本攤提','淨利','里程km','工時(小時)']);
   var lines = [head];
   var tot = null;
   d.rows.forEach(function(r){
-    var line = [r.month, r.days, r.trips, r2(r.gross), r2(r.tip), r2(r.fee), r2(r.net)].concat(allCats().map(function(c){ return r2(r.byCat[c.key]||0); })).concat([r2(r.varExp), r2(r.fixed), r2(r.profit), +r.km.toFixed(1), +r.hours.toFixed(2)]);
+    var line = [r.month, r.days, r.trips, r2(r.gross), r2(r.tip), r2(r.fee), r2(r.net)].concat(allCats().map(function(c){ return r2(r.byCat[c.key]||0); })).concat([r2(r.varExp), r2(r.toll), r2(r.fixed), r2(r.profit), +r.km.toFixed(1), +r.hours.toFixed(2)]);
     lines.push(line);
     tot = tot ? tot.map(function(v,i){ return i===0?v:+(v+line[i]).toFixed(2); }) : ['全年合計'].concat(line.slice(1));
   });
@@ -3955,10 +4256,10 @@ function openYearReportModal(year){
   h += '<div class="summary-row" style="grid-template-columns:1fr 1fr;margin-bottom:12px">'+
     '<div class="stat-tile"><div class="lbl">全年實收</div><div class="val income num">'+fmtMoney(sum(function(r){return r.net;}))+'</div></div>'+
     '<div class="stat-tile"><div class="lbl">全年平台手續費</div><div class="val expense num">'+fmtMoney(sum(function(r){return r.fee;}))+'</div></div>'+
-    '<div class="stat-tile"><div class="lbl">全年支出(含固定)</div><div class="val expense num">'+fmtMoney(sum(function(r){return r.varExp+r.fixed;}))+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">全年支出(含固定)</div><div class="val expense num">'+fmtMoney(sum(function(r){return r.varExp+r.fixed-r.toll;}))+'</div></div>'+
     '<div class="stat-tile"><div class="lbl">全年淨利</div><div class="val num">'+fmtMoney(sum(function(r){return r.profit;}))+'</div></div></div>';
   h += '<div class="card" style="margin-bottom:12px">'+d.rows.filter(function(r){ return r.trips||r.varExp||r.days; }).map(function(r){
-    return '<div class="list-item"><div class="li-body"><div class="li-title">'+r.month+'</div><div class="li-sub">'+r.trips+' 趟 · 支出 '+fmtMoney(r.varExp+r.fixed)+'</div></div><div class="li-amt num">'+fmtMoney(r.profit)+'</div></div>';
+    return '<div class="list-item"><div class="li-body"><div class="li-title">'+r.month+'</div><div class="li-sub">'+r.trips+' 趟 · 支出 '+fmtMoney(r.varExp+r.fixed-r.toll)+'</div></div><div class="li-amt num">'+fmtMoney(r.profit)+'</div></div>';
   }).join('')+'</div>';
   if(d.bonus.length){
     var bTot = 0; d.bonus.forEach(function(b){ bTot += b.amt; });
@@ -4115,7 +4416,7 @@ function buildIncomeForm(key, existing){
       '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">接單時看到的優惠 %。車資打跟乘客收的金額,系統扣這個 % 算實收(已含刷卡手續費)</div></div>';
   }
   if(def.discountOptions){
-    h += off('discount', '<div class="form-row"><label>優惠派別</label>'+chipRowHtml('discountTier', def.discountOptions, (existing&&existing.discountTier)||def.discountOptions[0])+'<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">車資請輸入大都會 App 顯示的「跟乘客收的金額」(已含優惠與加價),派別只是記錄用</div></div>');
+    h += off('discount', '<div class="form-row"><label>優惠派別</label>'+chipRowHtml('discountTier', def.discountOptions, (existing&&existing.discountTier)||def.discountOptions[0])+'<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">只是記錄這一單是什麼派,不影響金額計算</div></div>');
   }
   var curFareType = (existing&&existing.fareType) || (def.fareTypeOptions&&def.fareTypeOptions[0]);
   var meterLike = curFareType==='跳表' || curFareType==='固定價' || (!def.fareTypeOptions);
@@ -4182,9 +4483,14 @@ function openIncomeModal(key, editId){
   } else if(def.tipOnly){
     h += tipFieldHtml('金額', existing);
   } else {
-    var revLabel = (key==='uber') ? (isYellowCab() ? '跳表金額' : 'App 顯示金額(已扣手續費的實收)') : (key==='bolt' ? '車資金額(未扣手續費)' : '車資金額');
-    h += '<div class="form-row"><label>'+revLabel+'</label><input class="num-input" id="f-revenue" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.revenue)||'')+'"></div>';
+    var revLabel = (key==='uber') ? (isYellowCab() ? '跳表金額' : '下車時顯示的金額(不含小費)') : (key==='bolt' ? '車資金額(未扣手續費)' : (key==='metro' ? '車資(大都會 App 顯示的實收金額)' : '車資金額'));
+    var revHint = key==='metro' ? '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">請輸入大都會 App 上這一單的實收金額,<b>不是跳表機上的金額</b>。優惠折扣大都會已經算好了,下面的派別只是記錄這一單是什麼派,不會再折一次。</div>' : '';
+    h += '<div class="form-row"><label>'+revLabel+'</label><input class="num-input" id="f-revenue" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.revenue)||'')+'">'+revHint+'</div>';
     if(uiOn('tip')) h += tipFieldHtml('小費(選填)', existing);
+    if((key==='uber' || key==='bolt') && uiOn('tripToll')){
+      h += '<div class="form-row"><label>過路費(選填,平台會跟車資一起退)</label><input class="num-input" id="f-trip-toll" type="number" min="0" step="0.01" placeholder="0" inputmode="decimal" value="'+((existing&&existing.tollRefund)||'')+'">'+
+        '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">不算車資、不扣手續費,會加進那一批的預計撥款。沒空填也沒關係,可以之後在撥款頁一次填整批。</div></div>';
+    }
     h += '<div id="incomePreview" style="margin-bottom:12px"></div>';
     h += campaignCheckHtml(key, existing);
     h += buildIncomeForm(key, existing);
@@ -4252,6 +4558,8 @@ function saveIncome(key, editId){
   }
   var rec = existing || {id:uid(), date:currentEntryDate(), ts:Date.now(), platform:key, fees:resolvedFeeRules()};
   rec.revenue = revenue; rec.tip = tip; rec.note = note;
+  var tripTollEl = document.getElementById('f-trip-toll');
+  if(tripTollEl){ var tripToll = +tripTollEl.value || 0; rec.tollRefund = tripToll>0 ? Math.round(tripToll*100)/100 : undefined; }
   if(tipF) rec.tipFx = (tipF.fx && tipF.fx.amt>0) ? tipF.fx : undefined;
   if(def.subtypeOptions && grab('chip-subtype')!=null) rec.subtype = grab('chip-subtype');
   else if(key==='uber' && isYellowCab() && !(existing&&existing.subtype)) rec.subtype = '優步小黃';
@@ -4320,6 +4628,11 @@ function openExpenseModal(catKey, editId){
   } else {
     h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-amount" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.amount)||'')+'"></div>';
   }
+  if((catKey==='fuel' || catKey==='repair' || catKey==='charge') && vehOn()){
+    var estO = vehOdoEstimate();
+    h += '<div class="form-row"><label>儀表板里程(選填,校正保養提醒)</label><input class="num-input" id="f-exp-odo" type="number" min="0" step="1" inputmode="numeric" placeholder="'+(estO?('推估 '+estO.km):'例如 125000')+'" value="'+((existing&&existing.odo)||'')+'">'+
+      (catKey==='repair' ? '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">細項選「定期保養」又填了里程,下次保養里程會自動往後算。</div>' : '')+'</div>';
+  }
   var subs = catSubs(catKey).slice(), curSub = existing && existing.sub;
   if(curSub && subs.indexOf(curSub)<0) subs.push(curSub);
   if(subs.length && uiOn('expSub')) h += '<div class="form-row"><label>細項(選填)</label>'+chipRowHtml('expsub', ['不指定'].concat(subs), curSub||'不指定')+'</div>';
@@ -4349,8 +4662,20 @@ function saveExpense(catKey, editId){
   if(kwhEl) rec.kwh = kwhEl.value!=='' ? +kwhEl.value : undefined;
   var subEl = document.getElementById('chip-expsub');
   if(subEl) rec.sub = subEl.value==='不指定' ? undefined : subEl.value;
+  var odoEl = document.getElementById('f-exp-odo'), odoMsg = '';
+  if(odoEl){
+    var odoV = odoEl.value!=='' && +odoEl.value>0 ? Math.round(+odoEl.value) : undefined;
+    if(odoV && odoV!==rec.odo){
+      state.vehicle = Object.assign({}, veh());
+      if(vehSetOdo(odoV, rec.date)){
+        odoMsg = ' · 里程已校正';
+        if(catKey==='repair' && rec.sub==='定期保養'){ var mm = Object.assign({interval:5000, warn:300}, state.vehicle.maint||{}); mm.next = odoV + (+mm.interval||5000); state.vehicle.maint = mm; odoMsg = ' · 下次保養 '+fmtNum(mm.next,0)+' 公里'; }
+      }
+    }
+    rec.odo = odoV;
+  }
   if(!existing) state.expenses.push(rec);
-  var okMsgE = '✓ '+(existing?'已更新':'已記')+'支出 '+catInfo(catKey).label+' '+fmtMoney(amount);
+  var okMsgE = '✓ '+(existing?'已更新':'已記')+'支出 '+catInfo(catKey).label+' '+fmtMoney(amount)+odoMsg;
   save(function(ok){ if(ok) showToast(okMsgE, 2200); }); closeModal(); renderAll();
 }
 
@@ -4481,7 +4806,7 @@ function wireFeePlatToggle(){
   });
 }
 /* ---------- 顯示模式與功能開關 ---------- */
-var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/悠遊卡/愛心卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(Uber 小黃)'],['tip','小費'],['fxTip','外幣小費(美金、日圓…自動換算台幣)'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
+var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/悠遊卡/愛心卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(Uber 小黃)'],['tip','小費'],['tripToll','過路費(Uber、BOLT 記車資時順手填)'],['fxTip','外幣小費(美金、日圓…自動換算台幣)'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
 var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['liveRate','今日行車顯示目前時薪'],['restRemind','休息提醒(連續開太久、今天上班太久)'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告']];
 var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度']];
 var UI_DEFAULT_OFF = ['shiftFix','campaign','restRemind','fxTip'];  // extras nobody sees unless they turn them on
@@ -4938,7 +5263,8 @@ var HELP = [
     ['記一筆支出', '記帳頁下方點項目(加油、停車、保養…)→ 打金額 → 儲存。'],
     ['公升數、充電度數', '選填,填了才能算油耗、電耗。', 'fuelQty'],
     ['支出細項', '例如保養維修 → 輪胎、機油。⚙️ 支出項目管理可以設定。', 'expSub'],
-    ['固定成本', '「支出」頁新增靠行費、保險、月費等,每月自動算進成本。']
+    ['固定成本', '「支出」頁新增靠行費、保險、月費等,每月自動算進成本。'],
+    ['車輛提醒', '「支出」頁上方「🔧 車輛提醒」:設定保養里程、驗車日、各張保單到期日,快到時首頁提醒。目前里程會加上每天記的里程;記加油、保養維修時可以填儀表板里程校正,細項選「定期保養」會自動算下次保養。']
   ]],
   ['上班與工時', [
     ['上下班打卡、休息', '記帳頁「今日行車」按上班打卡 / 下班打卡,休息按休息開始 / 結束。忘了打下班卡,下次打開會問你。', 'shift'],
@@ -5350,12 +5676,18 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.06.9';
+var APP_VERSION = '2026.11.11.1';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.11.1', '🔧 車輛提醒:「支出」頁可以設定保養里程、驗車日、強制險/任意險/旅客責任險各自的到期日,快到時首頁提醒;目前里程會跟著每天記的里程自動增加,記加油、保養維修時可以順手填儀表板里程校正'],
+  ['2026.11.11.1', '🛣️ 過路費退款:Uber、BOLT 記車資時可以順手填這趟的過路費(選填),也可以在撥款頁一次填整批;預計撥款會加上去,分析頁拿它抵 E-Tag 支出,不算車資、不算趟數'],
+  ['2026.11.11.1', '🏦 撥款設定可以填每個平台「匯入哪個帳戶」(只填銀行名稱,不用帳號),撥款頁會顯示哪個帳戶要入帳多少,方便去對帳'],
+  ['2026.11.11.1', '👛 大都會錢包:到「撥款設定」打開後,記帳本會依你的記帳推算錢包餘額,低於 500(停預約派)、0 元(停即時派)前提醒你;刷卡車資撥款時先補到安全水位的部分也會算出來,銀行入帳金額更準'],
+  ['2026.11.11.1', '✏️ 記帳功能優化:Uber 金額欄改成「下車時顯示的金額(不含小費)」,避免小費算兩次;大都會車資欄說明要輸入大都會 App 的實收金額,不是跳表機上的金額'],
+  ['2026.11.11.1', '📊 分析功能優化:自訂區間的結束日期不會早於起始日期'],
   ['2026.11.06.8', '✏️ 記帳功能優化:BOLT 的實收預覽與儲存後一致;修正 LINE GO 小黃跨月夜班與相同時間紀錄的月派遣費上限計算'],
   ['2026.11.06.8', '💾 備份功能優化:還原前會檢查收入與支出的日期是否存在,避免匯入錯誤日期'],
   ['2026.11.06.6', '🎨 換圖示的選單擴充到 108 個立體圖示,新增「錢、收入」一組,還有紅包、便利商店、站牌、餐廳、貓、彩虹、火箭、風景、OK 和勝利手勢等;到 ⚙️「平台管理」點圖示就能換'],
@@ -5669,7 +6001,7 @@ function keepUndoCopy(label, done){
 // settings that belong to this phone, not to the ledger: a restored backup must not switch sharing or
 // statistics back on, bring back an old sharing id, or claim this phone's cloud backup state
 var DEVICE_KEYS = ['undoMeta','seenVersion','syncUrl','syncEvery','lastCloudBasicAt','cloudBaseTime','cloudSentSids','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale','layoutWidth'];
-var LEDGER_PART_NAMES = {expenses:'支出', dailyMeta:'每日工時與里程', fixedCosts:'固定成本', fixedOverrides:'固定成本覆寫', targets:'目標', feeRules:'手續費設定', platformOverrides:'平台設定', customPlatforms:'自訂平台', platformOrder:'平台排列', payoutSettings:'撥款設定', payouts:'撥款核對', pendingTrips:'行程'};
+var LEDGER_PART_NAMES = {expenses:'支出', dailyMeta:'每日工時與里程', fixedCosts:'固定成本', fixedOverrides:'固定成本覆寫', targets:'目標', feeRules:'手續費設定', platformOverrides:'平台設定', customPlatforms:'自訂平台', platformOrder:'平台排列', payoutSettings:'撥款設定', payouts:'撥款核對', pendingTrips:'行程', tollRefunds:'過路費退款', metroWallet:'大都會錢包', vehicle:'車輛提醒'};
 // '' when the data can be used as a ledger, otherwise what is wrong with it
 function ledgerProblem(p, strictDates){
   if(!p || typeof p!=='object' || Array.isArray(p)) return '這不是記帳本的備份資料';
@@ -5721,6 +6053,9 @@ function ledgerProblem(p, strictDates){
     objList(p.payouts||[], '撥款核對') || objList(p.pendingTrips||[], '行程') ||
     ((p.platformOrder||[]).some(function(k){ return typeof k!=='string'; }) ? '「平台排列」的格式不對' : '') ||
     objValues(p.dailyMeta||{}, '每日工時與里程') || objValues(p.payoutSettings||{}, '撥款設定') ||
+    ((p.tollRefunds!=null && (typeof p.tollRefunds!=='object' || Array.isArray(p.tollRefunds))) ? '「過路費退款」的格式不對' : objValues(p.tollRefunds||{}, '過路費退款')) ||
+    ((p.metroWallet!=null && (typeof p.metroWallet!=='object' || Array.isArray(p.metroWallet))) ? '「大都會錢包」的格式不對' : '') ||
+    ((p.vehicle!=null && (typeof p.vehicle!=='object' || Array.isArray(p.vehicle) || (p.vehicle.policies!=null && !Array.isArray(p.vehicle.policies)))) ? '「車輛提醒」的格式不對' : '') ||
     numValues(p.feeRules||{}, '手續費設定') || numValues(p.targets||{}, '目標') ||
     ((p.activeTrip!=null && !isObj(p.activeTrip)) ? '「載客中的行程」格式不對' : '');
 }
@@ -6401,6 +6736,16 @@ document.addEventListener('click', function(e){
   else if(cmd==='save-payout'){ savePayout(arg); }
   else if(cmd==='del-payout'){ state.payouts=(state.payouts||[]).filter(function(p){ return p.batch!==arg; }); save(); closeModal(); renderAll(); }
   else if(cmd==='open-payout-settings'){ openPayoutSettingsModal(); }
+  else if(cmd==='open-metro-wallet'){ openMetroWalletModal(); }
+  else if(cmd==='open-vehicle'){ openVehicleModal(); }
+  else if(cmd==='save-vehicle'){ saveVehicle(+arg||0); }
+  else if(cmd==='veh-done-maint'){ openVehOdoModal(true); }
+  else if(cmd==='veh-odo'){ openVehOdoModal(false); }
+  else if(cmd==='save-veh-odo'){ saveVehOdo(arg==='1'); }
+  else if(cmd==='veh-done-inspect'){ vehDoneDate('inspect'); }
+  else if(cmd==='veh-done-policy'){ vehDoneDate('policy', +arg); }
+  else if(cmd==='veh-snooze'){ state.vehicle = Object.assign({}, veh(), {snoozeUntil:Date.now()+20*3600000}); save(); renderAll(); }
+  else if(cmd==='save-metro-wallet'){ saveMetroWalletBalance(); }
   else if(cmd==='save-payout-settings'){ savePayoutSettings(); }
   else if(cmd==='apply-fees-from'){
     var afFrom = document.getElementById('f-fee-apply-from').value;
@@ -6570,8 +6915,8 @@ document.addEventListener('change', function(e){
     save();
   }
   else if(e.target.id==='dayPicker'){ if(e.target.value){ analyticsDay = e.target.value; renderAll(); } }
-  else if(e.target.id==='customFrom'){ if(e.target.value){ customFrom = e.target.value; renderAll(); } }
-  else if(e.target.id==='customTo'){ if(e.target.value){ customTo = e.target.value; renderAll(); } }
+  else if(e.target.id==='customFrom'){ if(e.target.value){ customFrom = e.target.value; if(customTo<customFrom){ customTo = customFrom; showToast('結束日期不能早於起始日期,已一起改成 '+customFrom); } renderAll(); } }
+  else if(e.target.id==='customTo'){ if(e.target.value){ if(e.target.value<customFrom){ customTo = customFrom; showToast('結束日期不能早於起始日期 '+customFrom); } else customTo = e.target.value; renderAll(); } }
 });
 
 (function(){
