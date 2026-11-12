@@ -2128,7 +2128,8 @@ var WEEKDAY_NAMES = ['一','二','三','四','五','六','日'];
 var PAYOUT_DEFAULTS = {
   uber:{collect:'platform', schedule:'weekly', weekday:3, days:2, cashFeeFromPayout:true},
   bolt:{collect:'platform', schedule:'weekly', weekday:4, days:2, cashFeeFromPayout:true},
-  tdc:{collect:'platform', schedule:'tplus', weekday:3, days:2, cashFeeFromPayout:true},
+  // 台灣大車隊客服 2026-11-12: card / bound / company-account fares reach the bank in about 3 working days, holidays push it on
+  tdc:{collect:'platform', schedule:'tplus', weekday:3, days:3, cashFeeFromPayout:true},
   // 大都會 takes every fee (派次費, monthly fees) from the driver's wallet, not from the card payout
   metro:{collect:'platform', schedule:'tplus', weekday:3, days:2, cashFeeFromPayout:false},
   yoxi:{collect:'platform', schedule:'map', map:[7,6,5,7,6,5,4], shift:'period', weekday:3, days:2, cashFeeFromPayout:true},
@@ -2142,6 +2143,12 @@ if(!state.boltPayoutThuSet){
   state.boltPayoutThuSet = true;
 }
 // one-time: 大都會 pays like 台灣大車隊, the 2nd bank day after the trip
+// one-time: 台灣大車隊 pays in 3 working days, not 2; a saved 2 was the old default, not the driver's choice
+if(!state.tdcT3Set){
+  var tdcOv = (state.payoutSettings||{}).tdc;
+  if(tdcOv && tdcOv.schedule==='tplus' && +tdcOv.days===2) tdcOv.days = 3;
+  state.tdcT3Set = true;
+}
 if(!state.metroTplusSet){
   var metroOv = (state.payoutSettings||{}).metro;
   if(metroOv && metroOv.schedule==='unset'){ metroOv.schedule = 'tplus'; metroOv.days = 2; }
@@ -2727,6 +2734,14 @@ function attachTripToRecord(t, rec){
   if(t.accept) rec.accept = t.accept;
   state.pendingTrips = (state.pendingTrips||[]).filter(function(x){ return x.id!==t.id; });
 }
+// once a driver has used 上車/下車 for 30 trips, offer the 接到單了 step one time
+function acceptTipHtml(){
+  if(state.trackAccept || state.acceptTipDone || state.activeTrip || state.pendingAccept) return '';
+  var n = 0; for(var i=0;i<state.records.length && n<30;i++){ if(state.records[i].pickup) n++; }
+  if(n<30) return '';
+  return '<div style="margin-top:10px;padding:10px 12px;border:1px dashed var(--border);border-radius:12px;font-size:12.5px;line-height:1.6">💡 想知道每趟<b>開去接客</b>花多少時間、多少公里嗎?打開「接到單了」,接到單時多按一下就好,分析頁會幫你各平台比一比。'+
+    '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" style="flex:1" data-act="accept-tip-on">打開</button><button class="btn btn-ghost" style="flex:1" data-act="accept-tip-off">不用了</button></div></div>';
+}
 function tripCardHtml(){
   var a = state.activeTrip, pend = state.pendingTrips||[];
   var big = 'width:100%;border:none;border-radius:16px;padding:18px;font-size:22px;font-weight:900;color:var(--on-fill);cursor:pointer;font-family:inherit;letter-spacing:2px';
@@ -2750,6 +2765,7 @@ function tripCardHtml(){
       return '<div class="list-item" data-act="open-trip-link:'+t.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+tripLabel(t)+'</div><div class="li-sub">'+businessDayOf(t.pickup.ts)+(t.pickup.lat!=null?' · 📍有位置':' · 無位置')+'</div></div><div class="li-amt num" style="color:var(--accent)">記帳</div></div>';
     }).join('');
   }
+  h += acceptTipHtml();
   h += '</div></div>';
   return h;
 }
@@ -3694,6 +3710,7 @@ function tripInsightsHtml(range){
     h += '<div style="font-size:12.5px;font-weight:700;margin:14px 0 2px">各平台的空檔時間(下車到下一趟上車,越短越好)</div>';
     h += pl.map(function(p){ return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(p.label)+'</div><div class="li-sub">'+p.cnt+' 次</div></div><div class="li-amt num">'+fmtNum(p.avg,1)+' 分</div></div>'; }).join('');
   }
+  if(!accN && !state.trackAccept) h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:10px;line-height:1.6">📲 想知道空檔裡等單和開去接客各花多久?到 ⚙️「隱私與分享」打開「記錄接單時間」,上車前多按一下「接到單了」就好。</div>';
   if(accN){
     h += '<div style="font-size:12.5px;font-weight:700;margin:14px 0 6px">📲 空檔拆解(有按「接到單了」的 '+accN+' 趟)</div>';
     h += '<div class="summary-row" style="grid-template-columns:1fr 1fr">';
@@ -5680,12 +5697,14 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.12.1';
+var APP_VERSION = '2026.11.12.2';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.12.2', '🏦 台灣大車隊(多元、小黃)非現金車資的撥款預估改成 3 個工作天(台灣大車隊客服確認,遇假日順延);你自己改過的不受影響'],
+  ['2026.11.12.2', '📲 記帳頁會提示可以打開「接到單了」:上車前多按一下,分析頁就看得到每趟接客花多久、多少公里,各平台比一比'],
   ['2026.11.12.1', '👛 大都會錢包推算更準:事後補記以前日期的現金單,不會重複扣錢包餘額;撥款頁的金額改成實際會匯到銀行的錢(已扣掉先補進錢包的部分),對帳不會誤判'],
   ['2026.11.11.1', '🔧 車輛提醒:「支出」頁可以設定保養里程、驗車日、強制險/任意險/旅客責任險各自的到期日,快到時首頁提醒;目前里程會跟著每天記的里程自動增加,記加油、保養維修時可以順手填儀表板里程校正'],
   ['2026.11.11.1', '🛣️ 過路費退款:Uber、BOLT 記車資時可以順手填這趟的過路費(選填),也可以在撥款頁一次填整批;預計撥款會加上去,分析頁拿它抵 E-Tag 支出,不算車資、不算趟數'],
@@ -6670,6 +6689,8 @@ document.addEventListener('click', function(e){
   }
   else if(cmd==='trip-start'){ tripStart(); }
   else if(cmd==='trip-accept'){ tripAccept(); }
+  else if(cmd==='accept-tip-on'){ state.trackAccept = true; state.acceptTipDone = true; save(); renderAll(); showToast('已打開:接到單時先按「接到單了」,客人上車再按「上車」', 4000); }
+  else if(cmd==='accept-tip-off'){ state.acceptTipDone = true; save(); renderAll(); }
   else if(cmd==='accept-cancel'){ if(confirm('取消這次接單紀錄?')){ state.pendingAccept = null; save(); renderAll(); } }
   else if(cmd==='trip-end'){ tripEnd(); }
   else if(cmd==='trip-resume'){ tripResume(arg); }
