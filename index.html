@@ -2137,7 +2137,7 @@ function vehDoneDate(kind, idx){
 
 // phone notifications for the vehicle reminders (installed app only; the home card stays the main reminder).
 // Scheduled on the phone itself, nothing goes over the network. Rebuilt whenever the dates or the km change.
-var VEH_NOTIF_BASE = 7100, VEH_NOTIF_MAX = 40;
+var VEH_NOTIF_BASE = 7100, VEH_NOTIF_MAX = 40;   // not exact alarms: those send Android users to the 「鬧鐘和提醒」 settings page
 function notifPlugin(){ try{ return isNativeApp() && window.Capacitor.Plugins && window.Capacitor.Plugins.LocalNotifications || null; }catch(e){ return null; } }
 function vehKmPerDay(){
   var from = addDays(todayStr(), -30), sum = 0;
@@ -2178,7 +2178,7 @@ function vehNotifySync(ask){
     return P.cancel({notifications:ids}).catch(function(){}).then(function(){
       if(!ok || !plan.length) return {ok:ok, n:0};
       return P.schedule({notifications: plan.map(function(x, i){
-        return {id:VEH_NOTIF_BASE+i, title:x.title, body:x.body, schedule:{at:new Date(x.at+'T09:00:00'), allowWhileIdle:true}};
+        return {id:VEH_NOTIF_BASE+i, title:x.title, body:x.body, isExactNotification:false, schedule:{at:new Date(x.at+'T09:00:00'), allowWhileIdle:true}};
       })}).then(function(){ return {ok:true, n:plan.length}; });
     });
   }).catch(function(){ return null; });
@@ -6001,12 +6001,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.12.6';
+var APP_VERSION = '2026.11.12.7';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.12.7', '🔔 修正:開啟車輛提醒通知時,不會再跳到手機的「鬧鐘和提醒」設定頁', 'app'],
   ['2026.11.12.6', '🔔 車輛提醒會跳手機通知了(App 版):驗車、保險到期前和前 3 天早上 9 點通知,保養依最近每天的里程推估;不要的話到「車輛提醒」取消勾選', 'app'],
   ['2026.11.12.5', '📱 平板上的輸入視窗改成置中顯示,手比較好按'],
   ['2026.11.12.5', '📷 截圖辨識優化:日期讀不完整、有兩種可能時,自動選離今天最近的那一週', 'app'],
