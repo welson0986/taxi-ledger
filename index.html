@@ -702,7 +702,7 @@ function platformDef(key){
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function pad(n){ return n<10?'0'+n:''+n; }
 function toDateStr(d){ return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
-function dayCutoffHour(){ return (typeof state!=='undefined' && state && state.dayCutoffHour!=null) ? +state.dayCutoffHour : 5; }
+function dayCutoffHour(){ return (typeof state!=='undefined' && state && state.dayCutoffHour!=null) ? +state.dayCutoffHour : 4; }
 function businessDayOf(ts){
   var d = new Date(ts);
   if(d.getHours() < dayCutoffHour()) d.setDate(d.getDate()-1);
@@ -780,7 +780,7 @@ function defaultState(){
     customPlatforms:[],
     platformOrder:PLATFORM_DEFS.map(function(p){return p.key;}),
     syncUrl:'',
-    dayCutoffHour:5,
+    dayCutoffHour:4,
     payoutSettings:{},
     payouts:[],
     activeTrip:null,
@@ -2316,6 +2316,149 @@ function payoutLedgerCompute(){
   return {batches:batches, owed:owedByPlatform, wallet:wallet};
 }
 function payoutBatches(){ return payoutLedger().batches; }
+/* ---------- 截圖核對：BOLT 每週收入明細、Uber 每週行程費用（App 版，手機上辨識，圖片不上傳） ---------- */
+function ocrPlugin(){ try{ return isNativeApp() && window.Capacitor.Plugins && window.Capacitor.Plugins.TextRecognition || null; }catch(e){ return null; } }
+function ocrAvailable(){ return !!(ocrPlugin() && NATIVE_FS && window.Capacitor.getPlatform && window.Capacitor.getPlatform()==='android'); }
+function ocrNum(t){
+  var m = String(t).replace(/[，,]/g,'').replace(/[＄]/g,'$').replace(/[－—–]/g,'-').match(/([-+]?)\s*\$?\s*(\d+(?:\.\d{1,2})?)/);
+  return m ? (m[1]==='-' ? -1 : 1) * parseFloat(m[2]) : null;
+}
+function ocrHasMoney(t){ return /\$\s*[\d,]+(\.\d{1,2})?|[+-]\s*\$?\s*[\d,]+\.\d{2}/.test(String(t).replace(/[＄]/g,'$')); }
+// pairs each label with the money on the same row (screenshots put the amount on the right of the label)
+function ocrField(lines, labels){
+  for(var i=0;i<lines.length;i++){
+    var L = lines[i], txt = L.text.replace(/\s+/g,'');
+    var hit = labels.some(function(lb){ return txt.indexOf(lb)>=0; });
+    if(!hit) continue;
+    if(ocrHasMoney(L.text)){ var after = L.text.replace(/^[^$+\-\d]*/,''); var v = ocrNum(after); if(v!=null) return v; }
+    if(L.box){
+      var cy = (L.box.top+L.box.bottom)/2, h = Math.max(8, L.box.bottom-L.box.top), best = null;
+      lines.forEach(function(M){
+        if(M===L || !M.box || !ocrHasMoney(M.text)) return;
+        var my = (M.box.top+M.box.bottom)/2;
+        if(Math.abs(my-cy) <= h*0.75 && M.box.left > L.box.left){ if(!best || M.box.left < best.box.left) best = M; }
+      });
+      if(best) return ocrNum(best.text);
+    }
+    for(var j=i+1;j<Math.min(lines.length, i+3);j++) if(ocrHasMoney(lines[j].text)) return ocrNum(lines[j].text);
+  }
+  return null;
+}
+function ocrYearFor(mo, day){
+  var now = new Date(), y = now.getFullYear();
+  var d = new Date(y, mo-1, day);
+  if(d.getTime() - now.getTime() > 7*86400000) y--;   // a December statement read in January
+  return y;
+}
+function ocrDate(mo, day){ return ocrYearFor(mo, day)+'-'+pad(mo)+'-'+pad(day); }
+function ocrPeriod(text){
+  var t = String(text).replace(/\s+/g,' ').replace(/[－—–~～]/g,'-');
+  var m = t.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*-\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日/);          // Uber: 10月26日 - 11月2日
+  if(m) return {from:ocrDate(+m[1], +m[2]), to:ocrDate(+m[3], +m[4])};
+  m = t.match(/(\d{1,2})\s*(\d{1,2})\s*月\s*-\s*(\d{1,2})\s*(\d{1,2})\s*月/);                        // BOLT across months: 29 12月-4 1月
+  if(m) return {from:ocrDate(+m[2], +m[1]), to:ocrDate(+m[4], +m[3])};
+  m = t.match(/(\d{1,2})\s*-\s*(\d{1,2})\s*(\d{1,2})\s*月/);                                        // BOLT: 9-15 11月
+  if(m) return {from:ocrDate(+m[3], +m[1]), to:ocrDate(+m[3], +m[2])};
+  m = t.match(/(\d{1,2})\s*月\s*(20\d\d)/);                                                         // a month view: 3月 2026
+  if(m) return {month:m[2]+'-'+pad(+m[1])};
+  return null;
+}
+function parseStatement(lines, text){
+  var all = text || lines.map(function(l){ return l.text; }).join('\n'), flat = all.replace(/\s+/g,'');
+  var out = {period:ocrPeriod(all)};
+  if(/Bolt|BOLT/.test(all) || flat.indexOf('應用內支付')>=0){
+    out.platform = 'bolt';
+    out.inApp = ocrField(lines, ['應用內支付']); out.bonus = ocrField(lines, ['活動']); out.toll = ocrField(lines, ['收費公路']);
+    out.tip = ocrField(lines, ['小費']); out.cancel = ocrField(lines, ['取消費用']); out.fee = ocrField(lines, ['Bolt服務費','服務費']);
+    out.total = ocrField(lines, ['總收入']);
+  } else if(flat.indexOf('行程費用')>=0){
+    out.platform = 'uber';
+    out.net = ocrField(lines, ['淨行程費用']); out.tip = ocrField(lines, ['小費']); out.total = ocrField(lines, ['總行程費用']); out.refund = ocrField(lines, ['退款']);
+    out.toll = out.refund;
+  } else if(flat.indexOf('顯示明細')>=0 && flat.indexOf('收入目標')>=0){
+    // BOLT's weekly overview: only the week's total, the breakdown sits behind 顯示明細
+    out.platform = 'bolt'; out.overview = true;
+    var firstMoney = lines.filter(function(l){ return ocrHasMoney(l.text); })[0];
+    out.total = firstMoney ? ocrNum(firstMoney.text) : null;
+  }
+  // a weekly statement always spans one week: a misread digit (11月 read as 1月) is put right from the start date
+  if(out.period && out.period.from && out.platform){
+    var span = Math.round((new Date(out.period.to+'T00:00:00') - new Date(out.period.from+'T00:00:00'))/86400000);
+    var want = out.platform==='uber' ? 7 : 6;
+    if(span !== want && Math.abs(span-want) > 1) out.period.to = addDays(out.period.from, want);
+  }
+  return out;
+}
+// the platform's statement week maps to the payout batch made of trips settled in that week
+function statementBatch(st){
+  if(!st || !st.platform || !st.period || !st.period.from) return null;
+  var from = st.period.from, to = st.platform==='uber' ? addDays(st.period.to, -1) : st.period.to;
+  if(to < from) to = from;
+  var hits = payoutBatches().filter(function(b){ return b.platform===st.platform && b.from>=from && b.from<=to; });
+  return hits.length===1 ? hits[0] : (hits.length ? hits.sort(function(a,b){ return b.earned-a.earned; })[0] : null);
+}
+var ocrLast = null;
+function openOcrModal(){
+  var h = '<div class="modal-title">📷 用截圖核對撥款<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.7;margin-bottom:10px">選一張截圖:<br>・BOLT:收入 → 顯示明細 → <b>每週</b>(看得到應用內支付、活動、收費公路、總收入)<br>・Uber:行程費用 → <b>某一週</b>(看得到淨行程費用、小費、總行程費用、退款)<br>辨識在手機上完成,圖片不會上傳。</div>';
+  h += '<input type="file" id="f-ocr-file" accept="image/*" style="display:none">';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="ocr-pick">選擇截圖</button></div><div id="ocr-result" style="margin-top:12px"></div>';
+  openModal(h);
+}
+function ocrRun(file){
+  var box = document.getElementById('ocr-result'); if(!box || !file) return;
+  box.innerHTML = '<div style="font-size:13px;color:var(--text-muted)">辨識中…第一次使用時,手機會先下載中文辨識模型,請稍等。</div>';
+  var reader = new FileReader();
+  reader.onload = function(){
+    var b64 = String(reader.result).split(',')[1] || '', name = 'ocr-'+Date.now()+'.img';
+    NATIVE_FS.writeFile({path:name, directory:'CACHE', data:b64}).then(function(w){
+      return ocrPlugin().processImage({path:w.uri, script:'CHINESE'}).then(function(res){
+        NATIVE_FS.deleteFile({path:name, directory:'CACHE'}).catch(function(){});
+        var lines = [];
+        (res.blocks||[]).forEach(function(b){ (b.lines||[]).forEach(function(l){ lines.push({text:l.text||'', box:l.boundingBox||null}); }); });
+        lines.sort(function(a,b){ return (a.box?a.box.top:0)-(b.box?b.box.top:0); });
+        ocrLast = parseStatement(lines, res.text||'');
+        box.innerHTML = ocrResultHtml(ocrLast);
+      });
+    }).catch(function(e){ box.innerHTML = '<div style="font-size:13px;color:var(--expense)">辨識失敗:'+esc(String(e&&e.message||e))+'。請確認有網路(第一次要下載模型),或換一張清楚的截圖。</div>'; });
+  };
+  reader.readAsDataURL(file);
+}
+function ocrResultHtml(st){
+  if(!st.platform) return '<div style="font-size:13px;color:var(--expense);line-height:1.6">看不出是哪個平台的明細。請用 BOLT「收入明細 → 每週」或 Uber「行程費用」某一週的截圖。</div>';
+  var rows = st.platform==='bolt'
+    ? [['應用內支付',st.inApp],['活動',st.bonus],['收費公路(過路費)',st.toll],['小費',st.tip],['取消費用',st.cancel],['Bolt 服務費',st.fee],['總收入',st.total]]
+    : [['淨行程費用',st.net],['小費',st.tip],['總行程費用',st.total],['退款(過路費等)',st.refund]];
+  var per = st.period ? (st.period.from ? (shortDate(st.period.from)+'–'+shortDate(st.period.to)) : (st.period.month+'(整月)')) : '沒有讀到日期';
+  var h = '<div class="card"><div style="font-weight:700;margin-bottom:4px">'+(st.platform==='bolt'?'BOLT':'Uber')+' · '+per+'</div>';
+  h += rows.filter(function(r){ return r[1]!=null; }).map(function(r){ return '<div class="list-item"><div class="li-body"><div class="li-title">'+r[0]+'</div></div><div class="li-amt num">'+fmtMoney2(r[1])+'</div></div>'; }).join('');
+  h += '</div>';
+  if(st.period && st.period.month) return h + '<div style="font-size:12.5px;color:var(--text-muted);margin-top:8px;line-height:1.6">這是整個月的明細,沒辦法對應到某一次撥款。要核對撥款請改用「每週」的截圖。</div>';
+  if(st.overview) h += '<div style="font-size:12.5px;color:var(--text-muted);margin-top:8px;line-height:1.6">這是 BOLT 的每週總覽,只看得到總額。按 BOLT 的「顯示明細」→「每週」再截圖,就能讀到收費公路(過路費)。</div>';
+  var b = statementBatch(st);
+  if(!b) return h + '<div style="font-size:12.5px;color:var(--text-muted);margin-top:8px;line-height:1.6">帳本裡找不到這一週的'+(st.platform==='bolt'?'BOLT':'Uber')+'撥款批次(這週可能沒有記到非現金單)。</div>';
+  var stTotal = st.platform==='bolt' ? st.total : ((st.total||0) + (st.refund||0));
+  var tollNow = b.toll||0, tollNew = st.toll!=null && st.toll>0 ? st.toll : 0;
+  var expAfter = b.expected - tollNow + tollNew, diff = stTotal!=null ? stTotal - expAfter : null;
+  h += '<div class="card" style="margin-top:10px"><div class="list-item"><div class="li-body"><div class="li-title">對應撥款</div><div class="li-sub">'+esc(batchTitle(b))+'</div></div></div>';
+  h += '<div class="list-item"><div class="li-body"><div class="li-title">帳本預計'+(tollNew!==tollNow?'(填入過路費後)':'')+'</div></div><div class="li-amt num">'+fmtMoney2(expAfter)+'</div></div>';
+  if(stTotal!=null) h += '<div class="list-item"><div class="li-body"><div class="li-title">平台明細</div></div><div class="li-amt num">'+fmtMoney2(stTotal)+'</div></div>';
+  if(diff!=null) h += '<div style="font-size:13px;font-weight:700;margin-top:6px;color:'+(Math.abs(diff)<1?'var(--income)':'var(--expense)')+'">'+(Math.abs(diff)<1?'✓ 跟帳本對得上':('差 '+(diff>0?'+':'')+fmtMoney2(diff)+(diff>0?':可能有趟次或活動獎勵沒記到':':可能有趟次記多了或金額打錯')))+'</div>';
+  h += '</div>';
+  if(tollNew>0 && Math.abs(tollNew-tollNow)>=0.01) h += '<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary" data-act="ocr-apply-toll:'+b.id+'">把過路費 '+fmtMoney2(tollNew)+' 填進這一批</button></div>';
+  if(st.platform==='bolt' && st.bonus>0) h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;line-height:1.6">「活動」可能包含達標後退回的抽成(帳本已經自動算進去)和平台獎勵;平台獎勵請用「🎁 活動獎勵」另外記,不會自動加,避免算兩次。</div>';
+  return h;
+}
+function ocrApplyToll(batchId){
+  if(!ocrLast || !(ocrLast.toll>0)) return;
+  var b = payoutBatches().filter(function(x){ return x.id===batchId; })[0]; if(!b) return;
+  state.tollRefunds = Object.assign({}, state.tollRefunds||{});
+  state.tollRefunds[batchId] = {amount:Math.round(ocrLast.toll*100)/100, platform:b.platform, date:b.to, src:'ocr'};
+  save(); renderAll();
+  var box = document.getElementById('ocr-result'); if(box) box.innerHTML = ocrResultHtml(ocrLast);
+  showToast('✓ 過路費 '+fmtMoney2(ocrLast.toll)+' 已填進 '+batchTitle(b), 2600);
+}
+
 // tolls paid back by platforms, dated by the last trip of their batch; they offset the E-Tag expense
 function tollRefundInRange(from,to){
   var t = 0, all = state.tollRefunds || {};
@@ -2459,7 +2602,7 @@ function renderPayoutTab(){
     return '<div class="list-item"><div class="li-body"><div class="li-title">🏦 '+esc(bk)+'</div><div class="li-sub">'+esc(byBank[bk].names.join('、'))+'</div></div><div class="li-amt num">'+fmtMoney(byBank[bk].amt)+'</div></div>';
   }).join('')+'</div></div>';
   h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-4px 0 12px;line-height:1.6">平台撥款 = 非現金單的實收(已扣它自己的手續費,含小費),再扣掉之前累積的現金單手續費(依時間順序往後扣,不夠扣就繼續累積)。錢入帳後點那一筆,輸入實際金額,系統會比對差多少。</div>';
-  h += '<div class="btn-row" style="margin-bottom:14px"><button class="btn btn-ghost" data-act="open-payout-settings">⚙️ 撥款設定(各平台撥款時間)</button></div>';
+  h += '<div class="btn-row" style="margin-bottom:14px"><button class="btn btn-ghost" data-act="open-payout-settings">⚙️ 撥款設定(各平台撥款時間)</button>'+(ocrAvailable()?'<button class="btn btn-ghost" data-act="open-ocr">📷 用截圖核對</button>':'')+'</div>';
   if(due.length) h += '<div class="section"><div class="section-title">已到撥款日,請確認有沒有入帳</div><div class="card">'+due.map(function(b){ return batchRowHtml(b); }).join('')+'</div></div>';
   if(upcoming.length) h += '<div class="section"><div class="section-title">即將撥款</div><div class="card">'+upcoming.map(function(b){
     return batchRowHtml(b, payoutCfg(b.platform).schedule==='weekly' && b.from>=thisMon);
@@ -2952,12 +3095,6 @@ function updateFareCompare(){
   var fare = +el.value || 0;
   box.innerHTML = fare>0 ? fareCompareHtml(fare, fareComparePay) : '<div style="font-size:12.5px;color:var(--text-muted);padding:6px 0">輸入車資後列出各車隊實拿</div>';
 }
-// after midnight but before the driver's day boundary, new records still belong to yesterday
-function lateNightHintHtml(){
-  var cut = state.dayCutoffHour!=null ? +state.dayCutoffHour : 5, hr = new Date().getHours();
-  if(!(cut>0 && hr < cut)) return '';
-  return '<div style="font-size:12px;color:var(--text-muted);margin:-4px 0 10px;line-height:1.6">🌙 凌晨 '+cut+' 點前記的帳算在 <b>'+todayStr().slice(5).replace('-','/')+'</b>(前一天的營業日)。要改分界時間:⚙️「基本設定」→「我的營業日分界時間」</div>';
-}
 function renderEntry(){
   var t = todayStr();
   var meta = dm(t);
@@ -2970,13 +3107,13 @@ function renderEntry(){
   var platformTotals = {};
   todayRecs.forEach(function(r){ platformTotals[r.platform]=(platformTotals[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
 
-  var h = saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudConflictHtml() + cloudStaleHtml() + metroWalletHomeHtml() + vehHomeHtml() + fontAskHtml() + lateNightHintHtml();
+  var h = saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudConflictHtml() + cloudStaleHtml() + metroWalletHomeHtml() + vehHomeHtml() + fontAskHtml();
   if(state.syncUrl && cloudAuthStatus==='bad'){
     h += '<div class="card" style="border-color:var(--expense);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 雲端密碼不對,資料沒有同步到雲端</b><br>手機裡的帳都還在。請到右上角設定確認「雲端密碼」,改好後會自動補送。</div>';
   }
   var nowCal = toDateStr(new Date());
   if(nowCal!==t){
-    h += '<div class="card" style="margin-bottom:12px;padding:10px 14px;font-size:12.5px;line-height:1.6;color:var(--text-muted)">🌙 現在已過午夜,'+pad(dayCutoffHour())+':00 以前記的帳、打的下班卡,都算在 <b style="color:var(--text)">'+t.slice(5).replace('-','/')+'</b> 這個營業日。</div>';
+    h += '<div class="card" style="margin-bottom:12px;padding:10px 14px;font-size:12.5px;line-height:1.6;color:var(--text-muted)">🌙 現在已過午夜,'+pad(dayCutoffHour())+':00 以前記的帳、打的下班卡,都算在 <b style="color:var(--text)">'+t.slice(5).replace('-','/')+'</b> 這個營業日。要改時間:⚙️「基本設定」→「我的營業日分界時間」</div>';
   }
   var B = {};
   B.stats = '<div class="section"><div class="summary-row" style="grid-template-columns:'+(uiShow('grossTile')?'1fr 1fr 1fr':'1fr 1fr')+'">'+
@@ -4594,7 +4731,7 @@ function openIncomeModal(key, editId){
     var revHint = key==='metro' ? '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">請輸入大都會 App 上這一單的實收金額,<b>不是跳表機上的金額</b>。優惠折扣大都會已經算好了,下面的派別只是記錄這一單是什麼派,不會再折一次。</div>' : '';
     h += '<div class="form-row"><label>'+revLabel+'</label><input class="num-input" id="f-revenue" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.revenue)||'')+'">'+revHint+'</div>';
     if(uiOn('tip')) h += tipFieldHtml('小費(選填)', existing);
-    if((key==='uber' || key==='bolt') && uiOn('tripToll')){
+    if(((key==='uber' && !isYellowCab()) || key==='bolt') && uiOn('tripToll')){
       h += '<div class="form-row"><label>過路費(選填,平台會跟車資一起退)</label><input class="num-input" id="f-trip-toll" type="number" min="0" step="0.01" placeholder="0" inputmode="decimal" value="'+((existing&&existing.tollRefund)||'')+'">'+
         '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">不算車資、不扣手續費,會加進那一批的預計撥款。沒空填也沒關係,可以之後在撥款頁一次填整批。</div></div>';
     }
@@ -5360,7 +5497,7 @@ var HELP = [
     ['加價金額', '乘客加價叫車的單(台灣大、大都會、YOXI、Uber 小黃),記下加價多少,分析頁統計多收多少。', 'addOn'],
     ['優惠券折抵', '(Uber 小黃)乘客用優惠券少付的錢。車資照跳表全額打,選「平台會補回」或「自己吸收」,今日現金和撥款會算對。', 'coupon'],
     ['小費、備註', '記帳時選填。', 'tip'],
-    ['過路費(Uber、BOLT)', '記車資時可以順手填這趟的過路費(選填),不算車資、不扣手續費,會加進那一批撥款,分析頁拿來抵 E-Tag 支出。沒空填就到撥款頁一次填整批。', 'tripToll'],
+    ['過路費(Uber、BOLT)', '記車資時可以順手填這趟的過路費(選填),不算車資、不扣手續費,會加進那一批撥款,分析頁拿來抵 E-Tag 支出。沒空填就到撥款頁一次填整批。Uber 小黃是跳表,過路費已經算在車資裡,所以沒有這一欄。', 'tripToll'],
     ['🧮 各車隊實收比較', '記帳頁「收入/平台」旁的按鈕:輸入車資,馬上看各車隊扣完手續費實拿多少,可選刷卡或現金。', 'fareCompare'],
     ['外幣小費', '小費旁邊選幣別(美金、日圓…),自動用國際參考匯率換成台幣,匯率可以自己改。', 'fxTip'],
     ['呼叫小黃、預約單、接電的付款方式', '呼叫小黃可選現金 / 信用卡 / 悠遊卡 / 愛心卡(信用卡扣 3%,撥款設定預設 2 個工作天,可改);預約單、接電可選現金 / 綁定支付,綁定支付的錢跟著那個車隊的撥款。', 'payment'],
@@ -5377,7 +5514,7 @@ var HELP = [
   ]],
   ['上班與工時', [
     ['上下班打卡、休息', '記帳頁「今日行車」按上班打卡 / 下班打卡,休息按休息開始 / 結束。忘了打下班卡,下次打開會問你。', 'shift'],
-    ['跑過半夜(營業日分界)', '凌晨 5 點前記的帳都算前一天,凌晨時記帳頁上方會提醒;⚙️「基本設定」→「我的營業日分界時間」可以改。'],
+    ['跑過半夜(營業日分界)', '預設凌晨 4 點前記的帳都算前一天(跟 Uber 一天的結算時間一樣),凌晨時記帳頁上方會提醒;常跑到更晚的夜班,到 ⚙️「基本設定」→「我的營業日分界時間」往後調。'],
     ['目前時薪', '今日行車顯示今日實收 ÷ 已跑工時,上班滿 30 分鐘才顯示。', 'liveRate'],
     ['今日跑車報告', '下班打卡後跳出:實收、時薪、趟數,跟前 7 天比較,可以順便備份。', 'dayReport'],
     ['休息提醒', '連續開車太久(預設 2 小時)、今天上班太久(預設 12 小時)時提醒你,只是提醒,不會幫你按休息。時間在功能開關下面改。記帳本要打開著才會跳出來。', 'restRemind'],
@@ -5407,6 +5544,7 @@ var HELP = [
     ['撥款頁', '看各平台什麼時候匯多少錢給你;下面出現紅色數字 = 有還沒對帳的批次。', 'payoutTab'],
     ['撥款設定', '撥款頁「⚙️ 撥款設定」:每個平台設每週固定一天、跑完後 N 個工作天,或依星期對照。LINE GO 選收款帳戶。'],
     ['對帳', '錢入帳後點那一批,輸入實際金額。'],
+    ['📷 用截圖核對', '(Android App)撥款頁「📷 用截圖核對」:選 BOLT「收入明細 → 每週」或 Uber「行程費用」某一週的截圖,讀出金額、對應那一批撥款,跟帳本比對差多少,過路費一鍵填入。辨識在手機上完成,圖片不上傳;第一次使用要有網路下載中文辨識模型。'],
     ['過路費退款', '平台跟車資一起退的過路費(BOLT 明細的「收費公路」、Uber 的退款):點那一批填總額,或記車資時逐趟填。會加進預計撥款,分析頁拿來抵 E-Tag 支出。'],
     ['匯入哪個帳戶', '撥款設定每個平台可以填銀行名稱(不要填帳號),撥款頁會列出今明兩天哪個帳戶要入帳多少。'],
     ['大都會錢包', '撥款設定的大都會打開「司機錢包」,在撥款頁輸入目前餘額:記帳本推算餘額,低於 500(停預約派)、0 元(停即時派)前提醒;刷卡撥款先補到水位+200 的部分會扣掉,撥款頁顯示的是實際匯到銀行的錢。用 ATM 儲值不是支出,更新餘額就好。'],
@@ -5737,7 +5875,7 @@ function openSettingsModal(){
   h += '<div><span style="font-size:11px;color:var(--text-muted)">每月</span><input class="num-input" id="f-target-monthly" type="number" min="0" value="'+(state.targets.monthly||'')+'"></div></div>';
 
   var cutoffNow = dayCutoffHour();
-  h += '<div class="form-row" style="margin-top:6px"><label>我的營業日分界時間(日報、分析用;跑過午夜時,這個時間以前都算前一天。平台撥款另外依各平台結算時間計算,不受影響)</label><select id="f-day-cutoff">'+
+  h += '<div class="form-row" style="margin-top:6px"><label>我的營業日分界時間(日報、分析用;跑過午夜時,這個時間以前都算前一天。預設凌晨 4 點,跟 Uber 一天的結算時間一樣;常跑到更晚的夜班可以往後調。平台撥款另外依各平台結算時間計算,不受影響)</label><select id="f-day-cutoff">'+
     [0,1,2,3,4,5,6,7,8].map(function(hh){ return '<option value="'+hh+'"'+(hh===cutoffNow?' selected':'')+'>'+(hh===0?'午夜 00:00(不跨夜)':('凌晨 '+pad(hh)+':00'))+'</option>'; }).join('')+
     '</select></div>';
   S.basic += h; h = '';
@@ -5798,8 +5936,9 @@ var APP_VERSION = '2026.11.12.3';
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
   ['2026.11.12.3', '🧮 新功能(到 ⚙️「顯示模式與功能開關」打開):「各車隊實收比較」輸入一個車資,馬上看各車隊扣完手續費實拿多少;「目標還要跑多久」依你目前的平均時薪,算出離今日／本月目標還要跑幾小時、幾趟,每記一筆就自動更新'],
+  ['2026.11.12.3', '📷 撥款頁「用截圖核對」(Android App):選 BOLT 每週收入明細或 Uber 每週行程費用的截圖,自動讀出金額、對應那一批撥款,過路費一鍵填入;在手機上辨識,圖片不上傳', 'app'],
   ['2026.11.12.3', '⚡ 分析頁效率指標多了每公里油錢;電動車司機記充電時填度數,還能看每公里電費、每度電可跑幾公里'],
-  ['2026.11.12.3', '📖 功能說明補上過路費退款、匯入帳戶、大都會錢包;凌晨記帳時,記帳頁會提醒這筆算在前一天'],
+  ['2026.11.12.3', '📖 功能說明補上過路費退款、匯入帳戶、大都會錢包;新安裝的營業日分界預設改為凌晨 4 點(跟 Uber 結算時間一樣),已經在用的可以到 ⚙️「基本設定」自己調'],
   ['2026.11.12.2', '🏦 台灣大車隊(多元、小黃)非現金車資的撥款預估改成 3 個工作天(台灣大車隊客服確認,遇假日順延);你自己改過的不受影響'],
   ['2026.11.12.2', '📲 記帳頁會提示可以打開「接到單了」:上車前多按一下,分析頁就看得到每趟接客花多久、多少公里,各平台比一比'],
   ['2026.11.12.1', '👛 大都會錢包推算更準:事後補記以前日期的現金單,不會重複扣錢包餘額;撥款頁的金額改成實際會匯到銀行的錢(已扣掉先補進錢包的部分),對帳不會誤判'],
@@ -6862,6 +7001,9 @@ document.addEventListener('click', function(e){
   else if(cmd==='open-metro-wallet'){ openMetroWalletModal(); }
   else if(cmd==='open-vehicle'){ openVehicleModal(); }
   else if(cmd==='open-fare-compare'){ openFareCompare(); }
+  else if(cmd==='open-ocr'){ openOcrModal(); }
+  else if(cmd==='ocr-pick'){ var fi = document.getElementById('f-ocr-file'); if(fi){ fi.value=''; fi.click(); } }
+  else if(cmd==='ocr-apply-toll'){ ocrApplyToll(arg); }
   else if(cmd==='cmp-pay'){ fareComparePay = arg==='cash' ? 'cash' : 'card'; document.querySelectorAll('[data-act^="cmp-pay:"]').forEach(function(b){ b.classList.toggle('selected', b.getAttribute('data-act')==='cmp-pay:'+fareComparePay); }); updateFareCompare(); }
   else if(cmd==='save-vehicle'){ saveVehicle(+arg||0); }
   else if(cmd==='veh-done-maint'){ openVehOdoModal(true); }
@@ -7002,6 +7144,7 @@ document.addEventListener('input', function(e){
 document.addEventListener('change', function(e){
   if(e.target.matches && e.target.matches('[data-mirror]')){ var mt = document.getElementById(e.target.getAttribute('data-mirror')); if(mt) mt.checked = e.target.checked; return; }
   if(e.target.id && e.target.id.indexOf('f-ui-')===0){ document.querySelectorAll('[data-mirror="'+e.target.id+'"]').forEach(function(m){ m.checked = e.target.checked; }); }
+  if(e.target.id==='f-ocr-file'){ if(e.target.files && e.target.files[0]) ocrRun(e.target.files[0]); return; }
   if(e.target.id==='f-tip-cur'){ var re = document.getElementById('f-tip-rate'); if(re) re.value = fxRate(e.target.value)||''; tipFxUpdate(); if(currentIncomeModalKey) updateIncomePreview(); return; }
   if(e.target.id==='f-cloud-key-show'){ var ck=document.getElementById('f-cloud-key'); if(ck) ck.type = e.target.checked ? 'text' : 'password'; return; }
   if(e.target.matches('[data-km-input]')){
