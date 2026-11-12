@@ -1921,6 +1921,11 @@ function chargeStatsInRange(from,to){
   state.expenses.forEach(function(e){ if(e.category==='charge' && e.kwh && inRange(e.date,from,to)){ kwh+=(+e.kwh||0); cost+=(+e.amount||0); } });
   return {kwh:kwh, cost:cost};
 }
+function chargeStatsInRange(from,to){
+  var kwh=0, cost=0;
+  state.expenses.forEach(function(e){ if(e.category==='charge' && inRange(e.date,from,to)){ kwh+=(+e.kwh||0); cost+=(+e.amount||0); } });
+  return {kwh:kwh, cost:cost};
+}
 function fuelStatsInRange(from,to){
   var liters=0, cost=0;
   state.expenses.forEach(function(e){ if(e.category==='fuel' && inRange(e.date,from,to)){ liters+=(+e.liters||0); cost+=(+e.amount||0); } });
@@ -2890,6 +2895,69 @@ function saveAppName(){
 }
 
 /* ---------- ENTRY TAB ---------- */
+// how long is still left to reach a target, at the hourly rate and fare per trip so far in the same period;
+// recomputed on every render, so a big fare raises the rate and shortens what is left
+function targetPaceHtml(left, from, to){
+  if(!(left>0)) return '';
+  var recs = recordsInRange(from, to), net = sumNetIncome(recs).total, hrs = totalHoursInRange(from, to);
+  var trips = recs.filter(function(r){ return !platformDef(r.platform).tipOnly && r.platform!=='bonus'; }).length;
+  var src = '';
+  if(hrs < 0.5 || trips < 1){
+    // too little today to judge: fall back to the last 30 days
+    var f2 = addDays(to, -30), r2 = recordsInRange(f2, addDays(to, -1));
+    net = sumNetIncome(r2).total; hrs = totalHoursInRange(f2, addDays(to, -1));
+    trips = r2.filter(function(r){ return !platformDef(r.platform).tipOnly && r.platform!=='bonus'; }).length; src = '近 30 天';
+  }
+  var rate = hrs >= 0.5 ? net/hrs : null, per = trips > 0 ? net/trips : null;
+  if(!rate && !per) return '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px">記幾趟、打卡之後,這裡會算出還要跑多久</div>';
+  var parts = [];
+  if(rate) parts.push('約 <b>'+fmtNum(left/rate,1)+' 小時</b>');
+  if(per) parts.push('約 <b>'+Math.ceil(left/per)+' 趟</b>');
+  return '<div style="font-size:12px;margin-top:4px;line-height:1.6">⏱️ 照'+(src||'目前')+'的'+(rate?('平均時薪 '+fmtMoney(rate)):'')+(rate&&per?'、':'')+(per?('每趟 '+fmtMoney(per)):'')+',還要跑'+parts.join('、')+'</div>';
+}
+function fareCompareHtml(fare, pay){
+  var fees = resolvedFeeRules(), rows = [];
+  visiblePlatforms().forEach(function(p){
+    var def = platformDef(p.key);
+    if(def.tipOnly || def.bonus || p.key==='bonus' || NOT_A_FLEET.indexOf(p.key)>=0) return;
+    var net;
+    if(p.key==='uber' && !isYellowCab()) net = fare*(1-((fees.uber!=null?fees.uber:25))/100);
+    else {
+      var r = {platform:p.key, revenue:fare, tip:0, fees:fees, date:todayStr(), _newPreview:true, discountFinal:true, discountTier:'原價'};
+      if(def.paymentOptions) r.payment = pay==='cash' ? '現金' : (def.paymentOptions.indexOf('信用卡')>=0 ? '信用卡' : def.paymentOptions[1]||def.paymentOptions[0]);
+      if(def.fareTypeOptions) r.fareType = def.fareTypeOptions[0];
+      if(def.subtypeOptions) r.subtype = def.subtypeOptions[0];
+      if(def.dispatchOptions) r.dispatchPct = parseFloat(def.dispatchOptions[0]);
+      net = computeNetRevenue(r);
+    }
+    rows.push({label:p.label, icon:p.icon, net:net, fee:fare-net, est:p.key==='uber' && !isYellowCab()});
+  });
+  rows.sort(function(a,b){ return b.net-a.net; });
+  return rows.map(function(x,i){
+    return '<div class="list-item"><div class="li-body"><div class="li-title">'+(i===0?'🏆 ':'')+esc(x.label)+(x.est?'(估)':'')+'</div><div class="li-sub">手續費 '+fmtMoney2(x.fee)+(fare>0?(' · '+fmtNum(x.fee/fare*100,1)+'%'):'')+'</div></div><div class="li-amt income num">'+fmtMoney2(x.net)+'</div></div>';
+  }).join('');
+}
+var fareComparePay = 'card';
+function openFareCompare(){
+  var h = '<div class="modal-title">🧮 各車隊實收比較<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div class="form-row"><label>車資金額</label><input class="num-input" id="f-cmp-fare" type="number" min="0" step="1" inputmode="numeric" placeholder="例如 300"></div>';
+  h += '<div class="form-row"><label>付款方式</label><div class="chip-row">'+[['card','刷卡／綁定'],['cash','現金']].map(function(o){ return '<button type="button" class="chip-opt'+(fareComparePay===o[0]?' selected':'')+'" data-act="cmp-pay:'+o[0]+'">'+o[1]+'</button>'; }).join('')+'</div></div>';
+  h += '<div class="card" id="cmp-list"><div style="font-size:12.5px;color:var(--text-muted);padding:6px 0">輸入車資後列出各車隊實拿</div></div>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;line-height:1.6">依你 ⚙️「平台手續費設定」計算,只列記帳頁有顯示的平台。Uber 多元是用你設定的 % 估算;BOLT 依本週趟數判斷用哪個抽成。</div>';
+  openModal(h);
+  setTimeout(function(){ var el = document.getElementById('f-cmp-fare'); if(el) el.focus(); }, 50);
+}
+function updateFareCompare(){
+  var el = document.getElementById('f-cmp-fare'), box = document.getElementById('cmp-list'); if(!el || !box) return;
+  var fare = +el.value || 0;
+  box.innerHTML = fare>0 ? fareCompareHtml(fare, fareComparePay) : '<div style="font-size:12.5px;color:var(--text-muted);padding:6px 0">輸入車資後列出各車隊實拿</div>';
+}
+// after midnight but before the driver's day boundary, new records still belong to yesterday
+function lateNightHintHtml(){
+  var cut = state.dayCutoffHour!=null ? +state.dayCutoffHour : 5, hr = new Date().getHours();
+  if(!(cut>0 && hr < cut)) return '';
+  return '<div style="font-size:12px;color:var(--text-muted);margin:-4px 0 10px;line-height:1.6">🌙 凌晨 '+cut+' 點前記的帳算在 <b>'+todayStr().slice(5).replace('-','/')+'</b>(前一天的營業日)。要改分界時間:⚙️「基本設定」→「我的營業日分界時間」</div>';
+}
 function renderEntry(){
   var t = todayStr();
   var meta = dm(t);
@@ -2902,7 +2970,7 @@ function renderEntry(){
   var platformTotals = {};
   todayRecs.forEach(function(r){ platformTotals[r.platform]=(platformTotals[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
 
-  var h = saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudConflictHtml() + cloudStaleHtml() + metroWalletHomeHtml() + vehHomeHtml() + fontAskHtml();
+  var h = saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudConflictHtml() + cloudStaleHtml() + metroWalletHomeHtml() + vehHomeHtml() + fontAskHtml() + lateNightHintHtml();
   if(state.syncUrl && cloudAuthStatus==='bad'){
     h += '<div class="card" style="border-color:var(--expense);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 雲端密碼不對,資料沒有同步到雲端</b><br>手機裡的帳都還在。請到右上角設定確認「雲端密碼」,改好後會自動補送。</div>';
   }
@@ -2934,16 +3002,28 @@ function renderEntry(){
   if(dailyTarget>0 && uiShow('todayTarget')){
     var tPct = Math.min(100, Math.round(net.total/dailyTarget*100));
     var tLeft = dailyTarget-net.total;
+    var tCalc = uiShow('targetCalc') ? targetPaceHtml(tLeft, t, t) : '';
     B.target = '<div class="section"><div class="card"><div class="progress-wrap">'+
       '<div class="progress-lbl"><span class="p">今日目標 '+fmtMoney(net.total)+' / '+fmtMoney(dailyTarget)+'</span><span class="v num">'+tPct+'%</span></div>'+
       '<div class="progress-bar"><div class="progress-fill" style="width:'+tPct+'%"></div></div>'+
-      '<div style="font-size:12px;color:var(--text-muted);margin-top:6px">'+(tLeft>0?('還差 '+fmtMoney(tLeft)):'🎉 今日目標達成')+'</div>'+
+      '<div style="font-size:12px;color:var(--text-muted);margin-top:6px">'+(tLeft>0?('還差 '+fmtMoney(tLeft)):'🎉 今日目標達成')+'</div>'+tCalc+
+      '</div></div></div>';
+  }
+  var monthlyTarget = (state.targets&&state.targets.monthly)||0;
+  if(monthlyTarget>0 && uiShow('targetCalc') && uiShow('todayTarget')){
+    var mr = monthRange(new Date(t+'T00:00:00')), mNet = sumNetIncome(recordsInRange(mr.from, t)).total, mLeft = monthlyTarget-mNet;
+    var mPct = Math.min(100, Math.round(mNet/monthlyTarget*100));
+    B.target += '<div class="section"><div class="card"><div class="progress-wrap">'+
+      '<div class="progress-lbl"><span class="p">本月目標 '+fmtMoney(mNet)+' / '+fmtMoney(monthlyTarget)+'</span><span class="v num">'+mPct+'%</span></div>'+
+      '<div class="progress-bar"><div class="progress-fill" style="width:'+mPct+'%"></div></div>'+
+      '<div style="font-size:12px;color:var(--text-muted);margin-top:6px">'+(mLeft>0?('還差 '+fmtMoney(mLeft)):'🎉 本月目標達成')+'</div>'+targetPaceHtml(mLeft, mr.from, t)+
       '</div></div></div>';
   }
 
   // on a phone the expense buttons sit far below the platforms; a shortcut on the title takes the driver there
   var expJump = !isTwoColUi() && !homeHidden('expenses') && homeOrder().indexOf('expenses') > homeOrder().indexOf('platforms');
-  var hp = '<div class="section"><div class="section-title"><span>收入/平台</span>'+(expJump ? '<button class="jump-exp" data-act="jump-expenses">＋ 記支出</button>' : '')+'</div><div class="platform-grid">';
+  var cmpBtn = uiShow('fareCompare') ? '<button class="jump-exp" data-act="open-fare-compare">🧮 各車隊比較</button>' : '';
+  var hp = '<div class="section"><div class="section-title"><span>收入/平台</span><span style="display:flex;gap:6px">'+cmpBtn+(expJump ? '<button class="jump-exp" data-act="jump-expenses">＋ 記支出</button>' : '')+'</span></div><div class="platform-grid">';
   visiblePlatforms().forEach(function(p){
     var pt = platformTotals[p.key]||0;
     hp += '<div class="platform-chip" data-act="open-income:'+p.key+'">'+
@@ -3534,6 +3614,12 @@ function renderAnalytics(){
   h += '<div class="stat-tile"><div class="lbl">每公里實收</div><div class="val income num">'+(km>0?fmtMoney2(net.total/km):'—')+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">總里程</div><div class="val num">'+fmtNum(km,1)+' km</div></div>';
   h += '<div class="stat-tile"><div class="lbl">每公升可跑</div><div class="val num">'+(fuel.liters>0?fmtNum(km/fuel.liters,2)+' km':'—')+'</div></div>';
+  if(fuel.cost>0) h += '<div class="stat-tile"><div class="lbl">每公里油錢</div><div class="val expense num">'+(km>0?fmtMoney2(fuel.cost/km):'—')+'</div></div>';
+  var chg = chargeStatsInRange(range.from, range.to);
+  if(chg.cost>0){
+    h += '<div class="stat-tile"><div class="lbl">每公里電費</div><div class="val expense num">'+(km>0?fmtMoney2(chg.cost/km):'—')+'</div></div>';
+    h += '<div class="stat-tile"><div class="lbl">每度電可跑</div><div class="val num">'+(chg.kwh>0?fmtNum(km/chg.kwh,2)+' km':'—')+'</div></div>';
+  }
   var chg = chargeStatsInRange(range.from, range.to);
   if(chg.kwh>0){
     h += '<div class="stat-tile"><div class="lbl">每度電可跑</div><div class="val num">'+(km>0?fmtNum(km/chg.kwh,2)+' km':'—')+'</div></div>';
@@ -4799,7 +4885,7 @@ function feeSettingsHtml(fr){
     inp('f-fee-linegotaxipct','分界以上抽 %','linegoTaxiPct',0.1)+inp('f-fee-linegotaxicard','刷卡/LINE Pay/悠遊卡另扣 %','linegoTaxiCard',0.1)+
     inp('f-fee-linegotaxicap','每月派遣費上限 $(0 = 沒有上限)','linegoTaxiCap',1)+'</div>'+
     '<div style="font-size:11px;color:var(--text-muted);margin:-4px 0 8px;line-height:1.5">小黃預設:車資 $199 以下每趟扣 $10,$200 以上抽 10%;非現金另扣 2.5%,付現金不扣。派遣費每月(1 號到月底)累計到 $3,000 後不再扣,非現金的 2.5% 照扣。</div>' :
-    '<div class="form-grid2">'+inp('f-fee-linegoflat','每單扣 $(沒有留空)','linegoFlat',1,true)+inp('f-fee-linego','手續費 %(含信用卡服務費 2.5%)','linego',0.1,true)+'</div>');
+    '<div class="form-grid2">'+inp('f-fee-linegoflat','每單扣 $(沒有留空)','linegoFlat',1,true)+inp('f-fee-linego','手續費 %(派遣費 17%+平台使用費 2.5%)','linego',0.1,true)+'</div>');
   h += block('uber', '<div'+(isYellowCab()?' hidden':'')+'><div class="form-grid2">'+inp('f-fee-uber','手續費 %','uber',0.1)+'</div>'+
     '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.5">Uber 多元輸入 App 顯示的實收(已扣手續費),這個 % 用來算出未扣手續費的車資,不會再扣一次。</div></div>'+
     '<div'+(isYellowCab()?'':' hidden')+'><div class="form-grid2">'+inp('f-fee-ubertaxi','優步小黃手續費 %','uberTaxi',0.1)+'</div>'+
@@ -4828,11 +4914,11 @@ function wireFeePlatToggle(){
 }
 /* ---------- 顯示模式與功能開關 ---------- */
 var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/悠遊卡/愛心卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(Uber 小黃)'],['tip','小費'],['tripToll','過路費(Uber、BOLT 記車資時順手填)'],['fxTip','外幣小費(美金、日圓…自動換算台幣)'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
-var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['liveRate','今日行車顯示目前時薪'],['restRemind','休息提醒(連續開太久、今天上班太久)'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告']];
+var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['liveRate','今日行車顯示目前時薪'],['restRemind','休息提醒(連續開太久、今天上班太久)'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告'],['fareCompare','🧮 各車隊實收比較(輸入車資看各車隊實拿多少)'],['targetCalc','目標還要跑多久(依平均時薪算還要幾小時、幾趟)']];
 var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度']];
-var UI_DEFAULT_OFF = ['shiftFix','campaign','restRemind','fxTip'];  // extras nobody sees unless they turn them on
+var UI_DEFAULT_OFF = ['shiftFix','campaign','restRemind','fxTip','fareCompare','targetCalc'];  // extras nobody sees unless they turn them on
 var UI_SIMPLE_OFF = ['liveRate','subtype','fareType','payment','discount','markup','addOn','coupon','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
-function uiOn(k){ return state.ui ? state.ui[k]!==false : UI_DEFAULT_OFF.indexOf(k)<0; }
+function uiOn(k){ return (state.ui && (k in state.ui)) ? state.ui[k]!==false : UI_DEFAULT_OFF.indexOf(k)<0; }
 // sections that only have data when another feature is on
 function uiShow(k){
   if(k==='tripEff' || k==='hotspot') return uiOn(k) && uiOn('trips');
@@ -5274,6 +5360,8 @@ var HELP = [
     ['加價金額', '乘客加價叫車的單(台灣大、大都會、YOXI、Uber 小黃),記下加價多少,分析頁統計多收多少。', 'addOn'],
     ['優惠券折抵', '(Uber 小黃)乘客用優惠券少付的錢。車資照跳表全額打,選「平台會補回」或「自己吸收」,今日現金和撥款會算對。', 'coupon'],
     ['小費、備註', '記帳時選填。', 'tip'],
+    ['過路費(Uber、BOLT)', '記車資時可以順手填這趟的過路費(選填),不算車資、不扣手續費,會加進那一批撥款,分析頁拿來抵 E-Tag 支出。沒空填就到撥款頁一次填整批。', 'tripToll'],
+    ['🧮 各車隊實收比較', '記帳頁「收入/平台」旁的按鈕:輸入車資,馬上看各車隊扣完手續費實拿多少,可選刷卡或現金。', 'fareCompare'],
     ['外幣小費', '小費旁邊選幣別(美金、日圓…),自動用國際參考匯率換成台幣,匯率可以自己改。', 'fxTip'],
     ['呼叫小黃、預約單、接電的付款方式', '呼叫小黃可選現金 / 信用卡 / 悠遊卡 / 愛心卡(信用卡扣 3%,撥款設定預設 2 個工作天,可改);預約單、接電可選現金 / 綁定支付,綁定支付的錢跟著那個車隊的撥款。', 'payment'],
     ['🎁 活動獎勵', '「收入/平台」最後一格。記車隊發的獎金,選哪個平台、什麼類型;算進實收,不算趟數,跟著那個平台撥款。'],
@@ -5289,7 +5377,7 @@ var HELP = [
   ]],
   ['上班與工時', [
     ['上下班打卡、休息', '記帳頁「今日行車」按上班打卡 / 下班打卡,休息按休息開始 / 結束。忘了打下班卡,下次打開會問你。', 'shift'],
-    ['跑過半夜', '凌晨 5 點前都算前一天,⚙️「我的營業日分界時間」可以改。'],
+    ['跑過半夜(營業日分界)', '凌晨 5 點前記的帳都算前一天,凌晨時記帳頁上方會提醒;⚙️「基本設定」→「我的營業日分界時間」可以改。'],
     ['目前時薪', '今日行車顯示今日實收 ÷ 已跑工時,上班滿 30 分鐘才顯示。', 'liveRate'],
     ['今日跑車報告', '下班打卡後跳出:實收、時薪、趟數,跟前 7 天比較,可以順便備份。', 'dayReport'],
     ['休息提醒', '連續開車太久(預設 2 小時)、今天上班太久(預設 12 小時)時提醒你,只是提醒,不會幫你按休息。時間在功能開關下面改。記帳本要打開著才會跳出來。', 'restRemind'],
@@ -5299,7 +5387,7 @@ var HELP = [
   ]],
   ['載客與熱區', [
     ['上車 / 下車', '客人上車按「上車」,下車按「下車」→ 選平台、打車資;還不知道車資可以「稍後再填」。位置只在按下那一刻記一次。', 'trips'],
-    ['接到單了', '⚙️「進階:記錄接單時間」打勾後出現,分析頁會分出等單和接駁各花多久;活動追蹤也用這個時間算趟數。'],
+    ['接到單了(前往接客)', '⚙️「隱私與分享」→「進階:記錄接單時間」打勾後出現(上下車滿 30 趟也會提示一次),分析頁會分出等單和接駁各花多久;活動追蹤也用這個時間算趟數。'],
     ['📍 上車熱區', '分析頁看你最常上車的地方,可篩白天 / 晚上 / 深夜,點 ✏️ 取名。「⏰ 現在」看過去 12 週同一個星期幾、現在前後一小時最常上車的地方。', 'hotspot'],
     ['👥 車友熱區', '同意分享上車熱區才能看附近車友都在哪裡上車,每個地點也會顯示你自己在那裡載過幾趟、平均實收多少;只分享約 1 公里一格,不含精確位置、金額;取消分享會刪除你分享過的資料。'],
     ['即時路況', '記帳頁「看即時路況」開 Google 地圖;常用地點可以新增、排序。停車或紅燈時再看。', 'traffic']
@@ -5311,12 +5399,18 @@ var HELP = [
     ['平台佔比、平台效率', '各平台賺多少、每趟平均;佔比圖右上角可切長條 / 圓餅。', 'platShare'],
     ['時段、星期、月份', '哪個時段、星期幾最好賺。', 'timeslot'],
     ['收入目標', '⚙️「收入目標」設定每天 / 每月目標,記帳頁和分析頁顯示進度。', 'todayTarget'],
+    ['目標還要跑多久', '打開後,今日／本月目標下面會依目前的平均時薪和每趟實收,算出還要跑幾小時、幾趟;每記一筆就自動更新。剛開始跑還沒資料時,用近 30 天平均。', 'targetCalc'],
+    ['每公里油錢、電費', '分析頁效率指標:記加油的金額算每公里油錢;電動車記充電時填度數,算每公里電費和每度電可跑幾公里。', 'efficiency'],
     ['📊 年度報表', '⚙️「年度報表」,可以匯出 CSV 檔,用 Excel、Numbers 或 Google 試算表都能打開。']
   ]],
   ['撥款', [
     ['撥款頁', '看各平台什麼時候匯多少錢給你;下面出現紅色數字 = 有還沒對帳的批次。', 'payoutTab'],
     ['撥款設定', '撥款頁「⚙️ 撥款設定」:每個平台設每週固定一天、跑完後 N 個工作天,或依星期對照。LINE GO 選收款帳戶。'],
-    ['對帳', '錢入帳後點那一批,輸入實際金額。']
+    ['對帳', '錢入帳後點那一批,輸入實際金額。'],
+    ['過路費退款', '平台跟車資一起退的過路費(BOLT 明細的「收費公路」、Uber 的退款):點那一批填總額,或記車資時逐趟填。會加進預計撥款,分析頁拿來抵 E-Tag 支出。'],
+    ['匯入哪個帳戶', '撥款設定每個平台可以填銀行名稱(不要填帳號),撥款頁會列出今明兩天哪個帳戶要入帳多少。'],
+    ['大都會錢包', '撥款設定的大都會打開「司機錢包」,在撥款頁輸入目前餘額:記帳本推算餘額,低於 500(停預約派)、0 元(停即時派)前提醒;刷卡撥款先補到水位+200 的部分會扣掉,撥款頁顯示的是實際匯到銀行的錢。用 ATM 儲值不是支出,更新餘額就好。'],
+    ['台灣大車隊撥款', '非現金(信用卡、綁定、企業簽單等)約 3 個工作天入帳,遇假日順延。']
   ]],
   ['備份與資料', [
     ['💾 備份', '右上角 💾 → 選 iCloud 或 Google 雲端硬碟 → 存成備份檔。數字 = 幾天沒備份,變紅色就該備份了。不要只傳到 LINE,檔案會過期。'],
@@ -5697,12 +5791,15 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.12.2';
+var APP_VERSION = '2026.11.12.3';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.12.3', '🧮 新功能(到 ⚙️「顯示模式與功能開關」打開):「各車隊實收比較」輸入一個車資,馬上看各車隊扣完手續費實拿多少;「目標還要跑多久」依你目前的平均時薪,算出離今日／本月目標還要跑幾小時、幾趟,每記一筆就自動更新'],
+  ['2026.11.12.3', '⚡ 分析頁效率指標多了每公里油錢;電動車司機記充電時填度數,還能看每公里電費、每度電可跑幾公里'],
+  ['2026.11.12.3', '📖 功能說明補上過路費退款、匯入帳戶、大都會錢包;凌晨記帳時,記帳頁會提醒這筆算在前一天'],
   ['2026.11.12.2', '🏦 台灣大車隊(多元、小黃)非現金車資的撥款預估改成 3 個工作天(台灣大車隊客服確認,遇假日順延);你自己改過的不受影響'],
   ['2026.11.12.2', '📲 記帳頁會提示可以打開「接到單了」:上車前多按一下,分析頁就看得到每趟接客花多久、多少公里,各平台比一比'],
   ['2026.11.12.1', '👛 大都會錢包推算更準:事後補記以前日期的現金單,不會重複扣錢包餘額;撥款頁的金額改成實際會匯到銀行的錢(已扣掉先補進錢包的部分),對帳不會誤判'],
@@ -6764,6 +6861,8 @@ document.addEventListener('click', function(e){
   else if(cmd==='open-payout-settings'){ openPayoutSettingsModal(); }
   else if(cmd==='open-metro-wallet'){ openMetroWalletModal(); }
   else if(cmd==='open-vehicle'){ openVehicleModal(); }
+  else if(cmd==='open-fare-compare'){ openFareCompare(); }
+  else if(cmd==='cmp-pay'){ fareComparePay = arg==='cash' ? 'cash' : 'card'; document.querySelectorAll('[data-act^="cmp-pay:"]').forEach(function(b){ b.classList.toggle('selected', b.getAttribute('data-act')==='cmp-pay:'+fareComparePay); }); updateFareCompare(); }
   else if(cmd==='save-vehicle'){ saveVehicle(+arg||0); }
   else if(cmd==='veh-done-maint'){ openVehOdoModal(true); }
   else if(cmd==='veh-odo'){ openVehOdoModal(false); }
@@ -6894,6 +6993,7 @@ document.addEventListener('click', function(e){
 });
 document.addEventListener('input', function(e){
   if(e.target.id==='f-help-q'){ filterHelp(e.target.value); return; }
+  if(e.target.id==='f-cmp-fare'){ updateFareCompare(); return; }
   if(e.target.id==='f-tip' || e.target.id==='f-tip-rate') tipFxUpdate();
   if(currentIncomeModalKey && e.target.closest && e.target.closest('#modalBody')){
     updateIncomePreview();
