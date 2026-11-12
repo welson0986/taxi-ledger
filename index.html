@@ -2328,7 +2328,8 @@ function metroWalletSim(batches){
   var startDay = toDateStr(new Date(w.balAt)), today = todayStr();
   var ev = [];
   state.records.forEach(function(r){
-    if(payKey(r)!=='metro' || (r.ts||0)<=w.balAt) return;
+    // only trips after the typed balance: a later-entered trip for an earlier day is already in that balance
+    if(payKey(r)!=='metro' || (r.ts||0)<=w.balAt || settleDateOf(r)<startDay) return;
     var f = moneyFlow(r);
     if(f.cashFee && !f.netted) ev.push({d:settleDateOf(r), o:1, amt:-f.cashFee});
   });
@@ -2344,7 +2345,8 @@ function metroWalletSim(batches){
   ev.forEach(function(e){
     if(now===null && e.d>today) now = bal;
     if(e.batch){
-      var amt = e.batch.payout ? +e.batch.payout.amount||0 : e.batch.expected;
+      // the top-up comes out of the platform's payout; what the driver confirms is what reached the bank
+      var amt = e.batch.expected;
       var top = bal<level ? Math.min(Math.max(0, amt), level+200-bal) : 0;
       e.batch.walletTopUp = top; bal += top;
     } else bal += e.amt;
@@ -2392,19 +2394,21 @@ function batchTitle(b){
   if(b.payDate) return name+' · '+shortDate(b.payDate)+'(週'+WEEKDAY_NAMES[(new Date(b.payDate+'T00:00:00').getDay()+6)%7]+')撥款';
   return name+' · '+shortDate(b.weekFrom)+' 那一週';
 }
+// what should reach the bank: the platform's payout less any part that first refills the 大都會 wallet
+function bankExpected(b){ return Math.max(0, b.expected - (b.walletTopUp>0.5 ? b.walletTopUp : 0)); }
 function batchRowHtml(b, growing){
   var diffHtml = '';
   if(b.payout){
-    var diff = (+b.payout.amount||0) - Math.round(b.expected);
+    var diff = (+b.payout.amount||0) - Math.round(bankExpected(b));
     diffHtml = '<div class="num" style="font-size:12px;color:'+(Math.abs(diff)<1?'var(--income)':'var(--expense)')+'">'+(Math.abs(diff)<1?'✓ 金額相符':('差 '+(diff>0?'+':'')+fmtMoney(diff)))+'</div>';
   }
   var sub = b.trips+' 趟'+(b.bonus?' + 活動獎勵 '+fmtMoney(b.bonus):'')+' · '+shortDate(b.from)+(b.to!==b.from?('–'+shortDate(b.to)):'')+(b.cashFees>0?(' · 扣累積現金單手續費 '+fmtMoney(b.cashFees)):'')+(b.toll>0?(' · 含過路費退款 '+fmtMoney(b.toll)):'');
   if(growing) sub += ' · 還在累計中';
-  if(b.walletTopUp>0.5) sub += ' · 先補進大都會錢包 '+fmtMoney(b.walletTopUp)+',匯到銀行約 '+fmtMoney(Math.max(0,(b.payout?+b.payout.amount||0:b.expected)-b.walletTopUp));
+  if(b.walletTopUp>0.5) sub += ' · 平台撥款 '+fmtMoney(b.expected)+',先補進大都會錢包 '+fmtMoney(b.walletTopUp);
   var bk = bankOf(b.platform); if(bk) sub += ' · 🏦 匯入 '+esc(bk);
   return '<div class="list-item" data-act="open-payout:'+b.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+esc(batchTitle(b))+'</div><div class="li-sub">'+sub+'</div></div>'+
-    '<div style="text-align:right;flex:none"><div class="num" style="font-weight:700">'+(b.payout?fmtMoney(b.payout.amount):fmtMoney(b.expected))+'</div>'+
-    (b.payout?('<div style="font-size:11px;color:var(--text-muted)">預計 '+fmtMoney(b.expected)+'</div>'):'')+diffHtml+'</div></div>';
+    '<div style="text-align:right;flex:none"><div class="num" style="font-weight:700">'+(b.payout?fmtMoney(b.payout.amount):fmtMoney(bankExpected(b)))+'</div>'+
+    (b.payout?('<div style="font-size:11px;color:var(--text-muted)">預計 '+fmtMoney(bankExpected(b))+'</div>'):(b.walletTopUp>0.5?'<div style="font-size:11px;color:var(--text-muted)">匯到銀行</div>':''))+diffHtml+'</div></div>';
 }
 function renderPayoutTab(){
   var today = todayStr();
@@ -2414,7 +2418,7 @@ function renderPayoutTab(){
   var upcoming = all.filter(function(b){ return !b.payout && b.payDate && b.payDate>today; }).sort(function(a,b){ return a.payDate<b.payDate?-1:1; });
   var unset = all.filter(function(b){ return !b.payout && !b.payDate; }).sort(function(a,b){ return a.weekFrom<b.weekFrom?1:-1; });
   var done = all.filter(function(b){ return b.payout; }).sort(function(a,b){ return (a.payDate||a.weekFrom)<(b.payDate||b.weekFrom)?1:-1; });
-  function sum(list){ var t=0; list.forEach(function(b){ t+=b.expected; }); return t; }
+  function sum(list){ var t=0; list.forEach(function(b){ t+=bankExpected(b); }); return t; }
   var thisMon = weekMonday(today);
   var h = '';
   var lateBatch = all.some(function(b){ return b.payDate && +b.payDate.slice(0,4) > HOLIDAY_LAST_YEAR; });
@@ -2435,7 +2439,7 @@ function renderPayoutTab(){
   var byBank = {}, bankOrder = [];
   due.concat(upcoming.filter(function(b){ return b.payDate<=addDays(today,1); })).forEach(function(b){
     var bk = bankOf(b.platform); if(!bk) return;
-    var amt = b.expected - (b.walletTopUp>0.5 ? b.walletTopUp : 0);
+    var amt = bankExpected(b);
     if(!byBank[bk]){ byBank[bk] = {amt:0, names:[]}; bankOrder.push(bk); }
     byBank[bk].amt += amt; var nm = platformDef(b.platform).label; if(byBank[bk].names.indexOf(nm)<0) byBank[bk].names.push(nm);
   });
@@ -2463,12 +2467,12 @@ function openPayoutModal(batchId){
     (b.cashFees>0?'<div class="list-item"><div class="li-body"><div class="li-title">扣:之前累積的現金單手續費</div></div><div class="li-amt expense num">-'+fmtMoney(b.cashFees)+'</div></div>':'')+
     (b.toll>0?'<div class="list-item"><div class="li-body"><div class="li-title">加:過路費退款</div></div><div class="li-amt income num">+'+fmtMoney(b.toll)+'</div></div>':'')+
     '<div class="list-item"><div class="li-body"><div class="li-title"><b>系統預計撥款</b></div><div class="li-sub">'+b.trips+' 趟 · '+b.from+(b.to!==b.from?(' ~ '+b.to):'')+(bankOf(b.platform)?(' · 匯入 '+esc(bankOf(b.platform))):'')+'</div></div><div class="li-amt num"><b>'+fmtMoney(b.expected)+'</b></div></div>'+
-    (b.walletTopUp>0.5?'<div class="list-item"><div class="li-body"><div class="li-title">其中先補進大都會錢包(推估)</div><div class="li-sub">錢包低於安全水位,撥款時先補到水位+200</div></div><div class="li-amt num">-'+fmtMoney(b.walletTopUp)+'</div></div>':'')+
+    (b.walletTopUp>0.5?'<div class="list-item"><div class="li-body"><div class="li-title">其中先補進大都會錢包(推估)</div><div class="li-sub">錢包低於安全水位,撥款時先補到水位+200</div></div><div class="li-amt num">-'+fmtMoney(b.walletTopUp)+'</div></div><div class="list-item"><div class="li-body"><div class="li-title"><b>預計匯到銀行</b></div></div><div class="li-amt num"><b>'+fmtMoney(bankExpected(b))+'</b></div></div>':'')+
     '</div>';
   var tr = (state.tollRefunds||{})[b.id];
   h += '<div class="form-row"><label>過路費退款(選填,這一批的總額)</label><input class="num-input" id="f-payout-toll" type="number" inputmode="decimal" min="0" step="0.01" placeholder="'+(b.tripToll>0?('逐趟已記 '+b.tripToll+',不同再填'):'看平台明細的「過路費／收費公路」')+'" value="'+(tr&&tr.amount?tr.amount:'')+'">'+
     '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">平台跟車資一起退的過路費。'+(b.tripToll>0?('記車資時已經逐趟填了 '+fmtMoney2(b.tripToll)+';明細上的總額不一樣才填這裡,填了就以這裡為準。'):'填這一批的總額就好,不用每趟記。')+'會加進預計撥款,分析頁拿來抵 E-Tag 支出,不算車資、不算趟數。</div></div>';
-  h += '<div class="form-grid2"><div class="form-row"><label>實際入帳金額</label><input class="num-input" id="f-payout-amount" type="number" inputmode="numeric" step="1" placeholder="'+Math.round(b.expected)+'" value="'+(p?p.amount:'')+'"></div>'+
+  h += '<div class="form-grid2"><div class="form-row"><label>實際入帳金額</label><input class="num-input" id="f-payout-amount" type="number" inputmode="numeric" step="1" placeholder="'+Math.round(bankExpected(b))+'" value="'+(p?p.amount:'')+'"></div>'+
     '<div class="form-row"><label>入帳日期</label><input type="date" id="f-payout-date" value="'+(p?p.receivedDate:(b.payDate&&b.payDate<=todayStr()?b.payDate:todayStr()))+'"></div></div>';
   h += '<div class="form-row"><label>備註(選填)</label><input id="f-payout-note" type="text" value="'+esc(p?(p.note||''):'')+'"></div>';
   h += '<div class="btn-row" style="gap:8px">'+(p?'<button class="btn btn-danger" style="flex:1" data-act="del-payout:'+b.id+'">取消對帳</button>':'')+'<button class="btn btn-primary" style="flex:1" data-act="save-payout:'+b.id+'">儲存</button></div>';
@@ -2493,7 +2497,7 @@ function savePayout(batchId){
   b = payoutBatches().filter(function(x){ return x.id===batchId; })[0];
   state.payouts = (state.payouts||[]).filter(function(p){ return p.batch!==batchId; });
   state.payouts.push({id:uid(), batch:batchId, platform:b?b.platform:batchId.split('|')[0], amount:+amt,
-    expectedAtSave:b?Math.round(b.expected):null, receivedDate:document.getElementById('f-payout-date').value||todayStr(),
+    expectedAtSave:b?Math.round(bankExpected(b)):null, receivedDate:document.getElementById('f-payout-date').value||todayStr(),
     note:(document.getElementById('f-payout-note').value||'').trim()});
   save(); closeModal(); renderAll();
 }
@@ -5676,12 +5680,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.11.1';
+var APP_VERSION = '2026.11.12.1';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.12.1', '👛 大都會錢包推算更準:事後補記以前日期的現金單,不會重複扣錢包餘額;撥款頁的金額改成實際會匯到銀行的錢(已扣掉先補進錢包的部分),對帳不會誤判'],
   ['2026.11.11.1', '🔧 車輛提醒:「支出」頁可以設定保養里程、驗車日、強制險/任意險/旅客責任險各自的到期日,快到時首頁提醒;目前里程會跟著每天記的里程自動增加,記加油、保養維修時可以順手填儀表板里程校正'],
   ['2026.11.11.1', '🛣️ 過路費退款:Uber、BOLT 記車資時可以順手填這趟的過路費(選填),也可以在撥款頁一次填整批;預計撥款會加上去,分析頁拿它抵 E-Tag 支出,不算車資、不算趟數'],
   ['2026.11.11.1', '🏦 撥款設定可以填每個平台「匯入哪個帳戶」(只填銀行名稱,不用帳號),撥款頁會顯示哪個帳戶要入帳多少,方便去對帳'],
