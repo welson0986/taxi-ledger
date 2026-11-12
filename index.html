@@ -231,6 +231,8 @@ body{
 .wide-ui .app{max-width:1040px}
 .wide-ui.full-ui .app{max-width:none}
 .wide-ui .modal{max-width:720px}
+.wide-ui .modal-overlay{align-items:center}
+.wide-ui .modal{border-radius:20px;max-height:calc(86vh / var(--zoom, 1))}
 .wide-ui .platform-grid,.wide-ui .expense-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
 .wide-ui.big-ui .platform-grid,.wide-ui.big-ui .expense-grid{grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}
 .wide-ui .cal-cell{aspect-ratio:auto;min-height:64px}
@@ -2054,7 +2056,7 @@ function vehInput(id, val, ph, type){
 function openVehicleModal(){
   var v = veh(), est = vehOdoEstimate(), m = v.maint || {}, ins = v.inspect || {};
   var h = '<div class="modal-title">🔧 車輛提醒<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
-  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">快到時會在首頁提醒,不填的項目就不提醒。</div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">快到時會在首頁提醒'+(notifPlugin()?',也會跳手機通知':'')+',不填的項目就不提醒。</div>';
   h += '<div class="section-title" style="margin-top:4px">保養(依里程)</div><div class="card" style="padding:10px 14px;margin-bottom:12px">';
   h += '<div class="form-row"><label>目前儀表板里程(公里)</label>'+vehInput('f-veh-odo', '', est?String(est.km):'例如 125000')+
     '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">'+(est?('推估 '+fmtNum(est.km,0)+' 公里('+est.baseDate+' 填 '+fmtNum(est.base,0)+',之後每天記的里程加 '+fmtNum(est.added,0)+')。跟儀表板不一樣才填。'):'填一次就好,之後會加上每天記的里程。下班私人用車不會算到,記加油、保養時可以順手校正。')+'</div></div>';
@@ -2077,6 +2079,7 @@ function openVehicleModal(){
   });
   h += '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.5">旅客責任險的到期日常跟強制險不同,請各自填。保費請另外在「固定成本」或支出記帳。</div></div>';
   h += '<div class="form-row"><label>日期類提前幾天提醒</label>'+vehInput('f-veh-days', v.warnDays!=null?v.warnDays:30)+'</div>';
+  if(notifPlugin()) h += '<label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.5;margin:-2px 0 12px"><input type="checkbox" id="f-veh-notify"'+(v.notify===false?'':' checked')+' style="margin-top:3px">到期前用手機通知提醒我(早上 9 點;驗車、保險在提前天數和前 3 天各一次,保養依最近每天的里程推估)</label>';
   h += '<div class="form-save"><div class="btn-row"><button class="btn btn-primary" data-act="save-vehicle:'+pols.length+'">儲存</button></div></div>';
   openModal(h);
 }
@@ -2096,8 +2099,12 @@ function saveVehicle(n){
   }
   v.policies = pols;
   v.warnDays = num('f-veh-days', 30);
+  var nt = document.getElementById('f-veh-notify'); if(nt) v.notify = !!nt.checked;
   state.vehicle = v;
   save(); closeModal(); renderAll();
+  vehNotifySync(true).then(function(r){
+    if(r && r.ok===false && v.notify!==false && vehNotifyPlan().length) showToast('手機通知沒有開,到期提醒只會出現在首頁。要開的話,到手機的「設定 → 通知」允許跑車人生', 4200);
+  });
 }
 function openVehOdoModal(forMaint){
   var est = vehOdoEstimate(), m = veh().maint || {};
@@ -2113,19 +2120,68 @@ function saveVehOdo(forMaint){
   state.vehicle = Object.assign({}, veh());
   vehSetOdo(+x, todayStr());
   if(forMaint){ var m = Object.assign({interval:5000, warn:300}, state.vehicle.maint||{}); m.next = Math.round(+x) + (+m.interval||5000); state.vehicle.maint = m; }
-  save(); closeModal(); renderAll();
+  save(); closeModal(); renderAll(); vehNotifySync(false);
   showToast(forMaint ? ('✓ 下次保養 '+fmtNum(state.vehicle.maint.next,0)+' 公里') : '✓ 里程已校正', 2400);
 }
 function vehDoneDate(kind, idx){
   var v = state.vehicle = Object.assign({}, veh());
   if(kind==='inspect' && v.inspect && v.inspect.next){
     v.inspect = Object.assign({}, v.inspect, {next:addMonthsStr(v.inspect.next, v.inspect.cycle==6?6:12)});
-    save(); renderAll(); showToast('✓ 下次驗車 '+v.inspect.next+',可以在「車輛提醒」修改', 2800);
+    save(); renderAll(); vehNotifySync(false); showToast('✓ 下次驗車 '+v.inspect.next+',可以在「車輛提醒」修改', 2800);
   } else if(kind==='policy' && v.policies && v.policies[idx] && v.policies[idx].due){
     v.policies = v.policies.slice(); var p = v.policies[idx] = Object.assign({}, v.policies[idx]);
     p.due = addMonthsStr(p.due, 12*(p.years==2?2:1));
-    save(); renderAll(); showToast('✓ '+p.name+' 下次到期 '+p.due, 2800);
+    save(); renderAll(); vehNotifySync(false); showToast('✓ '+p.name+' 下次到期 '+p.due, 2800);
   }
+}
+
+// phone notifications for the vehicle reminders (installed app only; the home card stays the main reminder).
+// Scheduled on the phone itself, nothing goes over the network. Rebuilt whenever the dates or the km change.
+var VEH_NOTIF_BASE = 7100, VEH_NOTIF_MAX = 40;
+function notifPlugin(){ try{ return isNativeApp() && window.Capacitor.Plugins && window.Capacitor.Plugins.LocalNotifications || null; }catch(e){ return null; } }
+function vehKmPerDay(){
+  var from = addDays(todayStr(), -30), sum = 0;
+  Object.keys(state.dailyMeta).forEach(function(d){ if(d>=from && d<todayStr()) sum += (+state.dailyMeta[d].km||0); });
+  return sum/30;
+}
+function vehNotifyPlan(){
+  var v = veh(); if(v.notify === false) return [];
+  var out = [], today = todayStr(), warnDays = v.warnDays!=null ? +v.warnDays : 30, late = new Date().getHours() >= 9;
+  function add(ds, title, body){ if(ds > today || (ds===today && !late)) out.push({at:ds, title:title, body:body}); }
+  function dated(due, label, what){
+    if(!due) return;
+    if(warnDays > 3) add(addDays(due, -warnDays), label+'快到了', what+' '+due+',還有 '+warnDays+' 天');
+    add(addDays(due, -3), label+'快到了', what+' '+due+',還有 3 天');
+    add(due, label+'就是今天', what+' '+due);
+  }
+  dated((v.inspect||{}).next, '🚗 驗車', '驗車日');
+  (v.policies||[]).forEach(function(p){ dated(p.due, '🛡️ '+(p.name||'保單'), '到期日'); });
+  // maintenance is by km: guess the day from the last 30 days' driving
+  var m = v.maint || {}, est = vehOdoEstimate(), rate = vehKmPerDay();
+  if(m.next>0 && est && rate>0){
+    var warn = m.warn!=null ? +m.warn : 300, days = Math.floor((m.next - warn - est.km)/rate);
+    if(days >= 1) add(addDays(today, days), '🔧 保養快到了(推估)', '照最近每天約 '+fmtNum(rate,0)+' 公里推估,快到下次保養 '+fmtNum(m.next,0)+' 公里,看一下儀表板');
+  }
+  out.sort(function(a,b){ return a.at<b.at?-1:a.at>b.at?1:0; });
+  return out.slice(0, VEH_NOTIF_MAX);
+}
+// ask = may show the permission prompt (only right after the driver saves the reminder settings)
+function vehNotifySync(ask){
+  var P = notifPlugin(); if(!P) return Promise.resolve(null);
+  var plan = vehNotifyPlan(), ids = [];
+  for(var i=0;i<VEH_NOTIF_MAX;i++) ids.push({id:VEH_NOTIF_BASE+i});
+  return P.checkPermissions().then(function(p){
+    if(p.display==='granted') return true;
+    if(!ask || !plan.length || p.display==='denied') return false;
+    return P.requestPermissions().then(function(r){ return r.display==='granted'; });
+  }).then(function(ok){
+    return P.cancel({notifications:ids}).catch(function(){}).then(function(){
+      if(!ok || !plan.length) return {ok:ok, n:0};
+      return P.schedule({notifications: plan.map(function(x, i){
+        return {id:VEH_NOTIF_BASE+i, title:x.title, body:x.body, schedule:{at:new Date(x.at+'T09:00:00'), allowWhileIdle:true}};
+      })}).then(function(){ return {ok:true, n:plan.length}; });
+    });
+  }).catch(function(){ return null; });
 }
 
 /* ---------- payouts: cash vs platform, batches, reconciliation ---------- */
@@ -2365,6 +2421,11 @@ function ocrPeriod(text){
     else for(var i=1;i<tail.length;i++) if(tail.charAt(i)!=='0') tries.push([tail.slice(0,i), tail.slice(i)]);
     var ok = tries.map(function(x){ return {day:+x[0], mo:+x[1]}; }).filter(function(x){ return x.mo>=1 && x.mo<=12 && x.day>=1 && x.day<=31; });
     if(m[1]) ok = ok.filter(function(x){ return x.day >= +m[1]; }).concat(ok.filter(function(x){ return x.day < +m[1]; }));
+    else if(ok.length > 1){
+      // no first day to go by ("-111月" = 1 11月 or 11 1月): take the week that ended closest to today
+      var now = new Date(todayStr()+'T00:00:00').getTime();
+      ok.sort(function(a, b){ return Math.abs(new Date(ocrDate(a.mo, a.day)+'T00:00:00') - now) - Math.abs(new Date(ocrDate(b.mo, b.day)+'T00:00:00') - now); });
+    }
     if(ok.length){
       var to = ocrDate(ok[0].mo, ok[0].day);
       return {from: m[1] && +m[1] <= ok[0].day ? ocrDate(ok[0].mo, +m[1]) : addDays(to, -6), to: to};
@@ -5940,12 +6001,15 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.12.4';
+var APP_VERSION = '2026.11.12.6';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.12.6', '🔔 車輛提醒會跳手機通知了(App 版):驗車、保險到期前和前 3 天早上 9 點通知,保養依最近每天的里程推估;不要的話到「車輛提醒」取消勾選', 'app'],
+  ['2026.11.12.5', '📱 平板上的輸入視窗改成置中顯示,手比較好按'],
+  ['2026.11.12.5', '📷 截圖辨識優化:日期讀不完整、有兩種可能時,自動選離今天最近的那一週', 'app'],
   ['2026.11.12.4', '📷 截圖辨識優化:BOLT 每週收入明細的日期就算沒讀完整,也能對到那一週的撥款', 'app'],
   ['2026.11.12.3', '🧮 新功能(到 ⚙️「顯示模式與功能開關」打開):「各車隊實收比較」輸入一個車資,馬上看各車隊扣完手續費實拿多少;「目標還要跑多久」依你目前的平均時薪,算出離今日／本月目標還要跑幾小時、幾趟,每記一筆就自動更新'],
   ['2026.11.12.3', '📷 撥款頁「用截圖核對」(Android App):選 BOLT 每週收入明細或 Uber 每週行程費用的截圖,自動讀出金額、對應那一批撥款,過路費一鍵填入;在手機上辨識,圖片不上傳', 'app'],
@@ -7239,6 +7303,7 @@ var _staleShiftDate = findStaleOpenShiftDate();
 if(_staleShiftDate){ openStaleShiftModal(_staleShiftDate); }
 else if(!state.uiMode && !hasMeaningfulData()){ state.seenVersion = APP_VERSION; openModeChooser(); }
 else { if(!state.uiMode){ state.uiMode = uiModeOf(state.ui||{}); saveQuiet(); } var _missingKmDate = findMissingKmDate(); if(_missingKmDate) openMissingKmModal(_missingKmDate); else if(!maybeShowWhatsNew()) maybeAskShareHot(); }
+if(vehOn()) setTimeout(function(){ vehNotifySync(false); }, 2500);
 }
 /* ---------- the installed app's own copy of the ledger ----------
    Inside the app the phone may clear the web view's storage on its own (iOS can), so the ledger is also
