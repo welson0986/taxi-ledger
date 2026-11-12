@@ -2357,8 +2357,19 @@ function ocrPeriod(text){
   if(m) return {from:ocrDate(+m[1], +m[2]), to:ocrDate(+m[3], +m[4])};
   m = t.match(/(\d{1,2})\s*(\d{1,2})\s*月\s*-\s*(\d{1,2})\s*(\d{1,2})\s*月/);                        // BOLT across months: 29 12月-4 1月
   if(m) return {from:ocrDate(+m[2], +m[1]), to:ocrDate(+m[4], +m[3])};
-  m = t.match(/(\d{1,2})\s*-\s*(\d{1,2})\s*(\d{1,2})\s*月/);                                        // BOLT: 9-15 11月
-  if(m) return {from:ocrDate(+m[3], +m[1]), to:ocrDate(+m[3], +m[2])};
+  m = t.match(/(\d{1,2})?\s*-\s*(\d{1,2}\s+\d{1,2}|\d{2,4})\s*月/);                             // BOLT: 9-15 11月
+  if(m){
+    // the OCR can drop the space ("1-712月") or the first day ("-712月"): split the digits into day + month
+    var tail = m[2].trim(), tries = [];
+    if(/\s/.test(tail)) tries.push(tail.split(/\s+/));
+    else for(var i=1;i<tail.length;i++) if(tail.charAt(i)!=='0') tries.push([tail.slice(0,i), tail.slice(i)]);
+    var ok = tries.map(function(x){ return {day:+x[0], mo:+x[1]}; }).filter(function(x){ return x.mo>=1 && x.mo<=12 && x.day>=1 && x.day<=31; });
+    if(m[1]) ok = ok.filter(function(x){ return x.day >= +m[1]; }).concat(ok.filter(function(x){ return x.day < +m[1]; }));
+    if(ok.length){
+      var to = ocrDate(ok[0].mo, ok[0].day);
+      return {from: m[1] && +m[1] <= ok[0].day ? ocrDate(ok[0].mo, +m[1]) : addDays(to, -6), to: to};
+    }
+  }
   m = t.match(/(\d{1,2})\s*月\s*(20\d\d)/);                                                         // a month view: 3月 2026
   if(m) return {month:m[2]+'-'+pad(+m[1])};
   return null;
@@ -5929,12 +5940,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.12.3';
+var APP_VERSION = '2026.11.12.4';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.12.4', '📷 截圖辨識優化:BOLT 每週收入明細的日期就算沒讀完整,也能對到那一週的撥款', 'app'],
   ['2026.11.12.3', '🧮 新功能(到 ⚙️「顯示模式與功能開關」打開):「各車隊實收比較」輸入一個車資,馬上看各車隊扣完手續費實拿多少;「目標還要跑多久」依你目前的平均時薪,算出離今日／本月目標還要跑幾小時、幾趟,每記一筆就自動更新'],
   ['2026.11.12.3', '📷 撥款頁「用截圖核對」(Android App):選 BOLT 每週收入明細或 Uber 每週行程費用的截圖,自動讀出金額、對應那一批撥款,過路費一鍵填入;在手機上辨識,圖片不上傳', 'app'],
   ['2026.11.12.3', '⚡ 分析頁效率指標多了每公里油錢;電動車司機記充電時填度數,還能看每公里電費、每度電可跑幾公里'],
