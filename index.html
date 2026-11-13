@@ -2358,7 +2358,9 @@ function payoutLedgerCompute(){
     var recs = byPlat[pk].map(function(r){ return {r:r, sd:settleDateOf(r)}; }).sort(function(a,b){ return a.sd<b.sd?-1:(a.sd>b.sd?1:(a.r.ts||0)-(b.r.ts||0)); });
     var owed = 0;
     recs.forEach(function(x){
-      var r = x.r, f = moneyFlow(r);
+      var r = x.r;
+      if(r.paperSlip) return;
+      var f = moneyFlow(r);
       if(f.cashFee && f.netted) owed += f.cashFee;
       if(!f.noncash) return;
       var b = payoutBatchOf(r); if(!b) return;
@@ -2392,6 +2394,18 @@ function payoutLedgerCompute(){
   return {batches:batches, owed:owedByPlatform, wallet:wallet};
 }
 function payoutBatches(){ return payoutLedger().batches; }
+function paperSlipPending(){ return state.records.filter(function(r){ return r.paperSlip && !r.paperCashed; }).sort(function(a,b){ return a.date<b.date?-1:(a.date>b.date?1:0); }); }
+function paperSlipCardHtml(){
+  var list = paperSlipPending(); if(!list.length) return '';
+  var tot = list.reduce(function(a, r){ return a + computeNetRevenue(r) + (+r.tip||0); }, 0);
+  var h = '<div class="card" style="margin-bottom:12px;padding:12px 14px"><div style="font-size:14px;font-weight:700">📄 紙本簽單待兌現 '+list.length+' 張 · '+fmtMoney(tot)+'</div>'+
+    '<div style="font-size:12px;color:var(--text-muted);margin:2px 0 6px">拿回車隊換到現金後,按「已兌現」。</div>';
+  list.forEach(function(r){
+    h += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--border);font-size:13px"><span style="flex:1">'+(+r.date.slice(5,7))+'/'+(+r.date.slice(8,10))+' '+esc(platformDef(r.platform).label)+'</span>'+
+      '<span class="num">'+fmtMoney(computeNetRevenue(r)+(+r.tip||0))+'</span><button class="btn btn-ghost" style="flex:none;padding:6px 10px" data-act="paper-cashed:'+esc(String(r.id))+'">已兌現</button></div>';
+  });
+  return h + '</div>';
+}
 /* ---------- 截圖核對：BOLT 每週收入明細、Uber 每週行程費用（App 版，手機上辨識，圖片不上傳） ---------- */
 function ocrPlugin(){ try{ return isNativeApp() && window.Capacitor.Plugins && window.Capacitor.Plugins.TextRecognition || null; }catch(e){ return null; } }
 function ocrAvailable(){ return !!(ocrPlugin() && NATIVE_FS && window.Capacitor.getPlatform && window.Capacitor.getPlatform()==='android'); }
@@ -2667,7 +2681,7 @@ function renderPayoutTab(){
   var done = all.filter(function(b){ return b.payout; }).sort(function(a,b){ return (a.payDate||a.weekFrom)<(b.payDate||b.weekFrom)?1:-1; });
   function sum(list){ var t=0; list.forEach(function(b){ t+=bankExpected(b); }); return t; }
   var thisMon = weekMonday(today);
-  var h = '';
+  var h = paperSlipCardHtml();
   var lateBatch = all.some(function(b){ return b.payDate && +b.payDate.slice(0,4) > HOLIDAY_LAST_YEAR; });
   if(lateBatch || today >= HOLIDAY_LAST_YEAR+'-11-01'){
     h += '<div class="card" style="margin-bottom:12px;padding:10px 14px;font-size:12.5px;line-height:1.6;border-color:var(--accent)"><b style="color:var(--accent)">📅 國定假日表只建到 '+HOLIDAY_LAST_YEAR+' 年</b><br>'+(HOLIDAY_LAST_YEAR+1)+' 年的撥款日遇到連假可能算錯,請通知製作者更新記帳本。</div>';
@@ -3252,7 +3266,7 @@ function renderEntry(){
   var platformTotals = {};
   todayRecs.forEach(function(r){ platformTotals[r.platform]=(platformTotals[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
 
-  var h = saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudConflictHtml() + cloudStaleHtml() + metroWalletHomeHtml() + vehHomeHtml() + fontAskHtml();
+  var h = saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudConflictHtml() + cloudStaleHtml() + metroWalletHomeHtml() + vehHomeHtml() + summaryHomeHtml() + fontAskHtml();
   if(state.syncUrl && cloudAuthStatus==='bad'){
     h += '<div class="card" style="border-color:var(--expense);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 雲端密碼不對,資料沒有同步到雲端</b><br>手機裡的帳都還在。請到右上角設定確認「雲端密碼」,改好後會自動補送。</div>';
   }
@@ -3456,25 +3470,37 @@ function renderHistory(){
 
   var netByDay = {};
   state.records.forEach(function(r){ if(monthKeyOf(r.date)===y+'-'+pad(mo+1)) netByDay[r.date]=(netByDay[r.date]||0)+computeNetRevenue(r)+(+r.tip||0); });
+  var incByDay = {};
+  state.records.forEach(function(r){ if(monthKeyOf(r.date)===y+'-'+pad(mo+1)) incByDay[r.date]=(incByDay[r.date]||0)+computeNetRevenue(r)+(+r.tip||0); });
   state.expenses.forEach(function(e){ if(monthKeyOf(e.date)===y+'-'+pad(mo+1)) netByDay[e.date]=(netByDay[e.date]||0)-(+e.amount||0); });
+  var calShow = state.calShow==='hours'||state.calShow==='rate' ? state.calShow : 'net';
 
   var h='';
   h += '<div class="month-nav"><button data-act="month:-1">‹</button><div class="m-title">'+y+' 年 '+(mo+1)+' 月</div><button data-act="month:1">›</button></div>';
+  h += '<div class="segmented" style="margin:0 0 8px">'+[['net','結餘'],['hours','工時'],['rate','時薪']].map(function(x){ return '<button class="'+(calShow===x[0]?'active':'')+'" data-act="cal-show:'+x[0]+'">'+x[1]+'</button>'; }).join('')+'</div>';
   h += '<div class="card"><div class="cal-grid">';
   DOW.forEach(function(d){ h+='<div class="cal-dow">'+d+'</div>'; });
   for(var i=0;i<startOffset;i++) h += '<div class="cal-cell empty"></div>';
   for(var d=1; d<=daysInMonth; d++){
     var ds = y+'-'+pad(mo+1)+'-'+pad(d);
-    var net = netByDay[ds];
+    var net = netByDay[ds], cellTxt = '', cellSaid = '';
+    if(calShow==='net'){ if(net) cellTxt = (net>0?'+':'')+calAmount(net); }
+    else {
+      var dh = totalHoursInRange(ds, ds), inc = incByDay[ds]||0;
+      if(calShow==='hours'){ if(dh>0){ cellTxt = (Math.round(dh*10)/10)+'h'; cellSaid = ',工時 '+(Math.round(dh*10)/10)+' 小時'; } }
+      else if(dh>=0.5 && inc>0){ cellTxt = calAmount(inc/dh); cellSaid = ',時薪 '+Math.round(inc/dh)+' 元'; }
+      net = cellTxt ? 1 : 0;
+    }
     var cls = 'cal-cell';
     if(net>0) cls+=' pos'; else if(net<0) cls+=' neg';
     if(ds===t) cls+=' today';
     if(ds===selectedDay) cls+=' selected';
     if(TW_HOLIDAYS[ds]) cls+=' holiday';
-    var said = (mo+1)+' 月 '+d+' 日'+(net ? ',結餘 '+(net<0?'負 ':'')+Math.abs(Math.round(net)).toLocaleString('zh-Hant-TW')+' 元' : '')+(TW_HOLIDAYS[ds]?',假日':'')+(ds===selectedDay?',已選取':'');
-    h += '<div class="'+cls+'" data-act="select-day:'+ds+'" aria-label="'+esc(said)+'"><span class="d">'+d+'</span>'+(net?('<span class="n">'+(net>0?'+':'')+calAmount(net)+'</span>'):'')+'</div>';
+    var said = (mo+1)+' 月 '+d+' 日'+(calShow==='net' ? (net ? ',結餘 '+(net<0?'負 ':'')+Math.abs(Math.round(net)).toLocaleString('zh-Hant-TW')+' 元' : '') : cellSaid)+(TW_HOLIDAYS[ds]?',假日':'')+(ds===selectedDay?',已選取':'');
+    h += '<div class="'+cls+'" data-act="select-day:'+ds+'" aria-label="'+esc(said)+'"><span class="d">'+d+'</span>'+(cellTxt?('<span class="n">'+cellTxt+'</span>'):'')+'</div>';
   }
   h += '</div></div>';
+  if(calShow!=='net') h += '<div style="font-size:11px;color:var(--text-muted);margin:4px 2px 0">'+(calShow==='hours' ? '工時＝當天上下班打卡的時數(扣掉休息)' : '時薪＝當天實收 ÷ 工時;沒有打卡的日子不會顯示')+'</div>';
 
   var hBlocks = holidayBlocksInMonth(y, mo);
   if(hBlocks.length){
@@ -3830,6 +3856,7 @@ function renderAnalytics(){
     '<button class="'+(analyticsPeriod==='custom'?'active':'')+'" data-act="period:custom">自訂區間'+vipMk+'</button>'+
     '<button class="'+(analyticsPeriod==='all'?'active':'')+'" data-act="period:all">全部'+vipMk+'</button>'+
     '</div></div>';
+  if(summaryAvailable()) h += '<div class="btn-row" style="margin:-4px 0 12px"><button class="btn btn-ghost" data-act="open-summary">📊 每週／每月經營摘要'+(vipGated()?' 👑':'')+'</button></div>';
 
   if(analyticsPeriod==='day'){
     h += '<div class="month-nav" style="margin-top:-4px"><button data-act="day:-1">‹</button><div class="m-title"><input type="date" id="dayPicker" value="'+analyticsDay+'" style="background:none;border:none;color:inherit;font:inherit;font-weight:700;text-align:center;width:100%"></div><button data-act="day:1">›</button></div>';
@@ -4145,7 +4172,7 @@ function betaOn(){ return APP_CHANNEL === 'beta'; }
 var VIP_GATE = false;
 var VIP_FEATURES = [
   ['📈', '長期間分析', '分析頁「本年／自訂區間／全部」,看整年、任意期間的收入、時薪、成本'],
-  ['🗓️', '定期經營摘要', '每週、每月自動整理,和上一期比較(準備中)'],
+  ['🗓️', '定期經營摘要', '每週、每月自動整理,時薪跟你自己前幾週、去年同期比'],
   ['📄', 'PDF 經營報告', '有質感的經營報告,可以存檔、分享(準備中)'],
   ['⭐', '可保存的分析組合', '常看的條件存起來,點一下就打開(準備中)'],
   ['🔥', '人潮情報', '演唱會、展覽、比賽散場時間與地點(準備中)']
@@ -4168,6 +4195,125 @@ function openVipIntro(feature, period){
     h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">VIP 訂閱即將推出。</div>';
   }
   openModal(h);
+}
+/* ---------- 定期經營摘要 (VIP; only in 跑車人生 測試版 while it is tried out) ---------- */
+// 交通部《計程車營運狀況調查》2025 年調查(2026-10-30 公布),全國專職司機。Shown as plain numbers in the month
+// summary only, next to the driver's own fares (not 實收: the survey counts fares before platform fees), never as a grade.
+// The survey runs every 2 years: the 2027 one comes out around 2028-10.
+var OFFICIAL_TAXI_REF = {year:2025, monthGross:55788, dailyHours:9.0};
+function summaryAvailable(){ return betaOn(); }
+var sumView = {kind:'week', offset:1};
+var WEEKDAY_ZH = ['日','一','二','三','四','五','六'];
+function mdStr(ds){ return (+ds.slice(5,7))+'/'+(+ds.slice(8,10)); }
+function summaryPeriod(kind, offset){
+  var t = todayStr();
+  if(kind==='week'){ var from = addDays(weekStartOf(t), -7*offset); return {kind:'week', from:from, to:addDays(from, 6)}; }
+  var d = new Date(t+'T00:00:00'), r = monthRange(new Date(d.getFullYear(), d.getMonth()-offset, 1)); r.kind = 'month'; return r;
+}
+function monthOf(ds, back){ return monthRange(new Date(+ds.slice(0,4), +ds.slice(5,7)-1-back, 1)); }
+function summaryTitle(p){
+  if(p.kind==='month') return p.from.slice(0,4)+' 年 '+(+p.from.slice(5,7))+' 月經營摘要';
+  return (p.from===summaryPeriod('week',1).from ? '上週' : '')+'經營摘要('+mdStr(p.from)+'–'+mdStr(p.to)+')';
+}
+function summaryStats(from, to){
+  var m = periodMetrics(from, to), hours = totalHoursInRange(from, to), days = workingDayListInRange(from, to), best = null;
+  days.forEach(function(d){ var n = sumNetIncome(recordsInRange(d, d)).total, h = totalHoursInRange(d, d); if(!best || n>best.net) best = {date:d, net:n, hours:h}; });
+  return {net:m.net, profit:m.profit, exp:m.net-m.profit, trips:m.trips, hours:hours, days:days.length, best:best,
+    gross:sumIncome(recordsInRange(from, to)).total, rate: hours>=1 ? m.net/hours : null};
+}
+// enough hours to stand for "how this driver usually does"
+function rateOf(st){ return st && st.hours>=5 ? st.rate : null; }
+function buildSummary(p){
+  var s = summaryStats(p.from, p.to);
+  if(!(s.net>0)) return null;
+  var base, prev, ly;
+  if(p.kind==='week'){
+    base = summaryStats(addDays(p.from, -28), addDays(p.from, -1));
+    prev = summaryStats(addDays(p.from, -7), addDays(p.from, -1));
+    ly = summaryStats(addDays(p.from, -364), addDays(p.to, -364));
+  } else {
+    var b3 = monthOf(p.from, 3), p1 = monthOf(p.from, 1), l = monthOf(p.from, 12);
+    base = summaryStats(b3.from, addDays(p.from, -1)); prev = summaryStats(p1.from, p1.to); ly = summaryStats(l.from, l.to);
+  }
+  var tg = state.targets||{}, target = p.kind==='week' ? (+tg.weekly||0) : (+tg.monthly||0);
+  var verdict = null, br = rateOf(base);
+  if(s.rate!=null && br){
+    var diff = s.rate/br - 1;
+    verdict = {diff:diff, mood: diff>=0.05 ? 'good' : diff<=-0.05 ? 'low' : 'same'};
+  }
+  return {p:p, s:s, base:base, prev:prev, ly:ly, target:target, verdict:verdict, baseLabel: p.kind==='week' ? '前 4 週平均' : '前 3 個月平均'};
+}
+function pctTxt(diff){ var v = Math.round(diff*100); return (v>0?'+':'')+v+'%'; }
+function deltaSpan(cur, base){
+  if(cur==null || !base) return '';
+  var d = cur/base - 1, c = d>=0.005 ? 'var(--income)' : d<=-0.005 ? 'var(--expense)' : 'var(--text-muted)';
+  return ' <span style="color:'+c+';font-weight:700">'+pctTxt(d)+'</span>';
+}
+function verdictLine(S){
+  if(!S.verdict) return '<div style="color:var(--text-muted)">前面的工時紀錄還不夠,下次就能跟你自己的平常水準比較。</div>';
+  var v = S.verdict, abs = Math.abs(Math.round(v.diff*100));
+  if(v.mood==='good') return '<div style="color:var(--income);font-weight:700">👍 時薪比你'+S.baseLabel+'高 '+abs+'%</div>';
+  if(v.mood==='low') return '<div style="color:var(--expense);font-weight:700">🤔 時薪比你'+S.baseLabel+'低 '+abs+'%</div>';
+  return '<div style="font-weight:700">👌 時薪跟你'+S.baseLabel+'差不多('+pctTxt(v.diff)+')</div>';
+}
+function summaryHtml(S){
+  var s = S.s, p = S.p, row = function(k, v){ return '<div style="display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px"><span style="color:var(--text-muted)">'+k+'</span><span class="num" style="text-align:right">'+v+'</span></div>'; };
+  var h = '<div class="summary-row" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:12px">'+
+    '<div class="stat-tile"><div class="lbl">實收</div><div class="val income num">'+fmtMoney(s.net)+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">時薪</div><div class="val num">'+(s.rate!=null?fmtMoney(s.rate):'—')+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">工時</div><div class="val num" style="font-size:15px">'+s.days+' 天<br>'+(Math.round(s.hours*10)/10)+' 小時</div></div></div>';
+  h += '<div class="card" style="padding:12px 14px;margin-bottom:12px;font-size:14px;line-height:1.6">'+verdictLine(S)+'</div>';
+  var lines = '';
+  var br = rateOf(S.base), lr = rateOf(S.ly);
+  if(s.rate!=null && br) lines += row('時薪 vs '+S.baseLabel, fmtMoney(s.rate)+' / '+fmtMoney(br)+deltaSpan(s.rate, br));
+  if(s.rate!=null && lr) lines += row('時薪 vs 去年同期', fmtMoney(s.rate)+' / '+fmtMoney(lr)+deltaSpan(s.rate, lr));
+  if(S.prev.net>0) lines += row('實收 vs '+(p.kind==='week'?'前一週':'前一個月'), fmtMoney(s.net)+' / '+fmtMoney(S.prev.net)+deltaSpan(s.net, S.prev.net));
+  if(S.target>0) lines += row((p.kind==='week'?'每週':'每月')+'目標', Math.round(s.net/S.target*100)+'%('+fmtMoney(s.net)+' / '+fmtMoney(S.target)+')');
+  lines += row('淨利(扣支出與固定成本)', '<span style="color:'+(s.profit>=0?'var(--income)':'var(--expense)')+'">'+fmtMoney(s.profit)+'</span>');
+  if(s.trips) lines += row('趟數', s.trips+' 趟');
+  if(s.best && s.best.net>0) lines += row('最賺的一天', '週'+WEEKDAY_ZH[new Date(s.best.date+'T00:00:00').getDay()]+' '+mdStr(s.best.date)+' '+fmtMoney(s.best.net)+(s.best.hours>=1?'(時薪 '+fmtMoney(s.best.net/s.best.hours)+')':''));
+  h += '<div style="margin-bottom:12px">'+lines+'</div>';
+  if(p.kind==='month'){
+    h += '<div class="card" style="padding:10px 14px;margin-bottom:12px;font-size:12.5px;line-height:1.7">'+
+      '<b>📋 官方參考</b>(交通部 '+OFFICIAL_TAXI_REF.year+' 年調查,全國專職司機)<br>'+
+      '每月總車資平均 '+fmtMoney(OFFICIAL_TAXI_REF.monthGross)+'、每天營業 '+OFFICIAL_TAXI_REF.dailyHours+' 小時<br>'+
+      '你這個月總車資 '+fmtMoney(s.gross)+(s.days?'、平均每天 '+(Math.round(s.hours/s.days*10)/10)+' 小時':'')+
+      '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">官方平均含傳統小黃與多元,未扣平台費。</div></div>';
+  }
+  h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.6">時薪＝實收 ÷ 上班時數(含空車找客、等單,扣掉休息)。只跟你自己比,不跟別人比。</div>';
+  return h;
+}
+function openSummary(kind, offset){
+  if(!isVip()){ openVipIntro('定期經營摘要'); return; }
+  sumView = {kind:kind||sumView.kind, offset:Math.max(1, offset||1)};
+  var p = summaryPeriod(sumView.kind, sumView.offset), S = buildSummary(p);
+  var seen = state.summarySeen = state.summarySeen || {};
+  if(sumView.offset===1 && seen[p.kind]!==p.from){ seen[p.kind] = p.from; save(); }
+  var h = '<div class="modal-title">📊 '+summaryTitle(p)+'<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div class="segmented" style="margin-bottom:10px"><button class="'+(p.kind==='week'?'active':'')+'" data-act="sum-kind:week">每週</button><button class="'+(p.kind==='month'?'active':'')+'" data-act="sum-kind:month">每月</button></div>';
+  var maxOff = p.kind==='week' ? 52 : 24;
+  h += '<div class="month-nav" style="margin-bottom:10px"><button data-act="sum-nav:1"'+(sumView.offset>=maxOff?' disabled':'')+'>‹</button><div class="m-title" style="font-size:13.5px">'+mdStr(p.from)+' – '+mdStr(p.to)+'</div><button data-act="sum-nav:-1"'+(sumView.offset<=1?' disabled':'')+'>›</button></div>';
+  h += S ? summaryHtml(S) : '<div style="padding:24px 0;text-align:center;color:var(--text-muted);font-size:13px">這段期間沒有記帳。</div>';
+  openModal(h);
+}
+// home: once a week (and in the first week of a month for the month) a short card points to the new summary
+function summaryHomeHtml(){
+  if(!summaryAvailable()) return '';
+  var seen = state.summarySeen || {}, t = todayStr(), pick = null;
+  var mp = summaryPeriod('month', 1);
+  if(+t.slice(8,10)<=7 && seen.month!==mp.from) pick = mp;
+  if(!pick){ var wp = summaryPeriod('week', 1); if(seen.week!==wp.from) pick = wp; }
+  if(!pick) return '';
+  var name = pick.kind==='month' ? (+pick.from.slice(5,7))+' 月經營摘要' : '上週經營摘要';
+  if(!isVip()){
+    return '<div class="card" style="margin-bottom:12px;padding:12px 14px;display:flex;gap:10px;align-items:center"><div style="flex:1;font-size:13px;line-height:1.5"><b>📊 '+name+'出爐了 👑</b><div style="font-size:12px;color:var(--text-muted)">VIP 每週、每月自動幫你整理</div></div>'+
+      '<button class="btn btn-ghost" style="flex:none" data-act="open-summary-home:'+pick.kind+'">看看</button><button class="btn btn-ghost" style="flex:none;padding:6px 10px" data-act="summary-dismiss:'+pick.kind+'" aria-label="關閉">✕</button></div>';
+  }
+  var S = buildSummary(pick);
+  if(!S){ return ''; }
+  var sub = S.s.rate!=null ? '時薪 '+fmtMoney(S.s.rate)+(S.verdict ? (S.verdict.mood==='good' ? ' 👍 比平常高 '+Math.abs(Math.round(S.verdict.diff*100))+'%' : S.verdict.mood==='low' ? ' 🤔 比平常低 '+Math.abs(Math.round(S.verdict.diff*100))+'%' : ' 👌 跟平常差不多') : '') : '實收 '+fmtMoney(S.s.net);
+  return '<div class="card" style="margin-bottom:12px;padding:12px 14px;display:flex;gap:10px;align-items:center"><div style="flex:1;font-size:13px;line-height:1.5"><b>📊 '+name+'出爐了</b><div style="font-size:12.5px;color:var(--text-muted)">'+sub+'</div></div>'+
+    '<button class="btn btn-primary" style="flex:none" data-act="open-summary-home:'+pick.kind+'">看摘要</button><button class="btn btn-ghost" style="flex:none;padding:6px 10px" data-act="summary-dismiss:'+pick.kind+'" aria-label="關閉">✕</button></div>';
 }
 function vipTestHtml(){
   return '<div class="card" style="margin-top:14px;padding:12px 14px;border-style:dashed"><label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer">'+
@@ -4805,6 +4951,7 @@ function requestCloseModal(){
   return true;
 }
 function closeModal(){ settingsSnap = null; pendingIncomeTripId = null; document.getElementById('modalRoot').innerHTML=''; syncSystemBars();
+  if(obResume!=null){ var obNext = obResume; obResume = null; setTimeout(function(){ if(document.getElementById('modalRoot').innerHTML) obResume = obNext; else openOnboardExtra(obNext); }, 200); }
   var app = document.querySelector('.app'); if(app) app.removeAttribute('aria-hidden');
   renderAll();
   // the page was just redrawn, so the opener may be a new element doing the same thing
@@ -4852,7 +4999,10 @@ function buildIncomeForm(key, existing){
   if(def.paymentOptions){
     var payDefault = (!uiOn('payment') && state.uiPayDefault==='card' && def.paymentOptions.indexOf('信用卡')>=0) ? '信用卡' : def.paymentOptions[0];
     var curPayment = (existing&&existing.payment)||payDefault;
-    h += off('payment', '<div class="form-row" id="sec-meterExtra"'+(meterLike?'':' hidden')+'><label>付款方式</label>'+chipRowHtml('payment', def.paymentOptions, curPayment)+'</div>');
+    // a paper enterprise slip is cashed at the fleet's office, not paid with the fleet's transfer
+    var paperRow = (uiOn('paperSlip') && def.paymentOptions.indexOf('企業簽單')>=0) ?
+      '<label id="sec-paper-slip" style="display:flex;gap:8px;align-items:center;margin-top:8px;font-size:13px;cursor:pointer"'+(curPayment==='企業簽單'?'':' hidden')+'><input type="checkbox" id="f-paper-slip" style="width:18px;height:18px"'+(existing&&existing.paperSlip?' checked':'')+'>📄 紙本簽單(要拿回車隊換現金,不算進撥款)</label>' : '';
+    h += off('payment', '<div class="form-row" id="sec-meterExtra"'+(meterLike?'':' hidden')+'><label>付款方式</label>'+chipRowHtml('payment', def.paymentOptions, curPayment)+paperRow+'</div>');
     if(def.enterpriseDiscountOptions){
       h += off(uiOn('payment')?'discount':'payment', '<div class="form-row" id="sec-yoxi-enterprise-discount"'+(curPayment==='企業簽單'?'':' hidden')+'><label>優惠折數</label>'+chipRowHtml('enterpriseDiscount', def.enterpriseDiscountOptions, (existing&&existing.enterpriseDiscount)||def.enterpriseDiscountOptions[0])+'</div>');
     }
@@ -4997,6 +5147,9 @@ function saveIncome(key, editId){
   var meterLike = !def.fareTypeOptions || rec.fareType==='跳表' || rec.fareType==='固定價';
   if(def.paymentOptions && meterLike) rec.payment = grab('chip-payment'); else if(def.paymentOptions) rec.payment = undefined;
   if(def.enterpriseDiscountOptions && rec.payment==='企業簽單') rec.enterpriseDiscount = grab('chip-enterpriseDiscount'); else if(def.enterpriseDiscountOptions) rec.enterpriseDiscount = undefined;
+  var paperEl = document.getElementById('f-paper-slip');
+  if(rec.payment!=='企業簽單'){ rec.paperSlip = undefined; rec.paperCashed = undefined; }
+  else if(paperEl){ if(paperEl.checked) rec.paperSlip = true; else { rec.paperSlip = undefined; rec.paperCashed = undefined; } }
   if(def.hasStationFee && rec.fareType==='據點叫車'){ var sf=grab('f-station-fee'); rec.stationFee = (sf!=null && sf!=='') ? +sf : undefined; } else if(def.hasStationFee) rec.stationFee = undefined;
   if(def.estimateTypeOptions && rec.fareType==='預估車資') rec.estimateType = grab('chip-estimateType'); else if(def.estimateTypeOptions) rec.estimateType = undefined;
   var ma = grab('f-markup-amount'); if(ma!=null) rec.markupAmount = ma!=='' ? +ma : undefined;
@@ -5185,6 +5338,7 @@ function feeSettingsHtml(fr){
     return '<div data-fee-plat="'+key+'"'+(p.hidden?' hidden':'')+'><div style="font-size:12.5px;font-weight:700;margin:6px 0 4px">'+iconHtml(p.icon)+' '+esc(p.label)+'</div>'+inner+'</div>';
   }
   var h = '<div class="form-row"><label>平台手續費設定</label></div>';
+  h += '<div id="fee-change-note" role="status" hidden style="font-size:12px;line-height:1.6;margin:-4px 0 8px;padding:8px 10px;border-radius:10px;background:var(--accent-soft)">💡 改了手續費:之後記的新帳用新費率,以前的帳維持當時的費率,不會被改。按「儲存設定」後,也可以選從某一天起套用。</div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin:-4px 0 6px;line-height:1.6">悠遊卡、愛心卡預設扣 3%(整趟跳表金額,愛心卡政府補助的部分也算),各車隊合約不同,請改成你的。</div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin:-4px 0 6px;line-height:1.6">每家分「每單扣 $」和「抽 %」兩種,用哪種填哪種,<b>沒有的可以直接留空或填 0</b>(兩種都有就都填)。月費或行政費的部分請記在「支出」頁的固定成本。隱藏的平台不會顯示在這裡。</div>';
   h += block('tdc', '<div class="form-grid2">'+inp('f-fee-tdcflat','每單扣 $(沒有留空)','tdcFlat',1,true)+inp('f-fee-tdc','手續費 %(沒有留空)','tdc',0.1,true)+
@@ -5233,7 +5387,7 @@ function wireFeePlatToggle(){
   });
 }
 /* ---------- 顯示模式與功能開關 ---------- */
-var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/悠遊卡/愛心卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(Uber 小黃)'],['tip','小費'],['tripToll','過路費(Uber、BOLT 記車資時順手填)'],['fxTip','外幣小費(美金、日圓…自動換算台幣)'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
+var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/悠遊卡/愛心卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['paperSlip','紙本簽單(企業簽單是紙本,要拿回車隊換現金)'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(Uber 小黃)'],['tip','小費'],['tripToll','過路費(Uber、BOLT 記車資時順手填)'],['fxTip','外幣小費(美金、日圓…自動換算台幣)'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
 var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['liveRate','今日行車顯示目前時薪'],['restRemind','休息提醒(連續開太久、今天上班太久)'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告'],['fareCompare','🧮 各車隊實收比較(輸入車資看各車隊實拿多少)'],['targetCalc','目標還要跑多久(依平均時薪算還要幾小時、幾趟)']];
 var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度']];
 var UI_DEFAULT_OFF = ['shiftFix','campaign','restRemind','fxTip','fareCompare','targetCalc'];  // extras nobody sees unless they turn them on
@@ -5910,9 +6064,33 @@ function openModeChooser(){
   h += '<button style="'+big+'" data-act="ui-choose:full"><b style="font-size:15px">🔵 完整分析</b><br><span style="font-size:12px;color:var(--text-muted)">記車種、付款方式、上下車時間,分析時薪、熱區、載客率。</span></button>';
   openModal(h);
 }
+var OB_TOTAL = 6;
 function onboardStep(n, title){
-  return '<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:2px">第 '+n+' / 3 步</div><div class="modal-title">'+title+'</div>';
+  return '<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:2px">第 '+n+' / '+OB_TOTAL+' 步'+(n>3?'(選填)':'')+'</div><div class="modal-title">'+title+'</div>';
 }
+// every step can be skipped, and the whole guide can be left at any step
+function onboardSkipHtml(skipAct){
+  return '<div style="display:flex;justify-content:space-between;gap:10px;margin-top:12px;font-size:12.5px">'+
+    (skipAct ? '<button type="button" class="btn btn-ghost" style="flex:1" data-act="'+skipAct+'">跳過這步</button>' : '')+
+    '<button type="button" class="btn btn-ghost" style="flex:1" data-act="ob-done">後面先不用了,開始記帳</button></div>';
+}
+// steps 4-6: each opens the real settings; when that sheet closes the guide goes on to the next step
+var OB_EXTRA = [
+  ['fees', '每家平台抽多少?', '記帳時會自動扣手續費,算出實收。已經先填好各車隊常見的費率,跟你的合約不一樣再改。', '💰 設定手續費'],
+  ['payout', '車隊什麼時候撥款?', '「撥款」頁會算出每家哪天入帳、入多少,方便對帳。已經先填好各車隊公布的撥款日,收款帳戶可以在這裡選。', '🏦 設定撥款'],
+  ['target', '要不要設收入目標?', '設定每天、每月想賺多少,記帳頁會顯示進度、還差多少。', '🎯 設定目標']
+];
+var obResume = null;
+function openOnboardExtra(i){
+  if(i>=OB_EXTRA.length){ finishOnboard(); return; }
+  var x = OB_EXTRA[i];
+  var h = onboardStep(4+i, x[1]);
+  h += '<div style="font-size:13px;line-height:1.7;margin-bottom:14px">'+x[2]+'</div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="ob-x-go:'+i+'">'+x[3]+'</button></div>';
+  h += onboardSkipHtml('ob-x:'+(i+1));
+  openModal(h);
+}
+function finishOnboard(){ obResume = null; state.onboarded = true; state.fontAsked = true; save(); closeModal(); renderAll(); }
 function openOnboardCar(){
   var big = 'display:block;width:100%;text-align:left;padding:14px 16px;margin-bottom:10px;border-radius:14px;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-family:inherit;cursor:pointer;line-height:1.6';
   var h = onboardStep(1, '你開的是哪種車?');
@@ -5920,6 +6098,7 @@ function openOnboardCar(){
   h += '<button style="'+big+'" data-act="ob-car:yellow"><b style="font-size:15px">小黃(一般計程車)</b><br><span style="font-size:12px;color:var(--text-muted)">跳表計費,也接 Uber 小黃、呼叫小黃、路招</span></button>';
   h += '<button style="'+big+'" data-act="ob-car:rental"><b style="font-size:15px">R 牌租賃車</b><br><span style="font-size:12px;color:var(--text-muted)">靠行車行派單、平台接單</span></button>';
   h += '<div style="font-size:11.5px;color:var(--text-muted)">之後可以在 ⚙️「我的車」改。</div>';
+  h += onboardSkipHtml('ob-car-skip');
   openModal(h);
 }
 // fleets and ways of getting passengers the driver can switch off at the start
@@ -5951,6 +6130,7 @@ function openOnboardPlats(){
   h += '<div id="ob-plat-msg" role="alert" style="font-size:13px;font-weight:700;color:var(--expense);margin:-4px 0 10px"></div>';
   h += '<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">之後可以在 ⚙️「平台管理」加回、排序,或新增自訂平台。</div>';
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="ob-plats">下一步</button></div>';
+  h += onboardSkipHtml('ob-plats-skip');
   openModal(h);
 }
 function openOnboardFont(){
@@ -5959,7 +6139,8 @@ function openOnboardFont(){
   var h = onboardStep(3, '字會不會太小?');
   h += '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 10px;line-height:1.6">點一下馬上換,選看得最清楚的。之後可以在 ⚙️「字體大小」改。</div><div style="display:flex;gap:6px;margin-bottom:14px">';
   FONT_SCALES.forEach(function(x, i){ h += '<button data-act="ob-font:'+x[0]+'" style="'+b+';font-size:'+(13+i*2)+'px'+(x[0]===cur?';border:2px solid var(--accent-strong);background:var(--accent-soft)':'')+'">'+x[0]+'</button>'; });
-  h += '</div><div class="btn-row"><button class="btn btn-primary" data-act="ob-done">完成,開始記帳</button></div>';
+  h += '</div><div class="btn-row"><button class="btn btn-primary" data-act="ob-x:0">下一步</button></div>';
+  h += onboardSkipHtml('');
   openModal(h);
 }
 /* ---------- icon picker: tap an icon box to choose instead of typing an emoji ---------- */
@@ -5994,6 +6175,7 @@ function openSettingsModal(){
   var fr = state.feeRules;
   var h = '<div class="modal-title">設定<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
   h += '<div class="btn-row" style="margin-bottom:12px"><button class="btn" data-act="open-help">📖 功能說明:每個功能在哪裡、怎麼用</button></div>';
+  h += '<div class="btn-row" style="margin:-4px 0 12px"><button class="btn btn-ghost" data-act="ob-rerun">🧭 重新跑一次設定引導</button></div>';
   var hdr = h, S = {};
   S.basic = uiSettingsHtml('basic');
   S.features = uiSettingsHtml('features') + (betaOn() ? vipTestHtml() : '');
@@ -6112,12 +6294,14 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.13.2';
+var APP_VERSION = '2026.11.13.4';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.13.4', '📅 歷史頁的日曆可以切換顯示「結餘／工時／時薪」,一眼看出哪幾天跑很久卻賺不多'],
+  ['2026.11.13.4', '📄 企業簽單可以勾「紙本簽單」:不算進車隊撥款,改列在撥款頁「待兌現」,拿去車隊換到現金再按「已兌現」(用不到可以在 ⚙️ 功能開關關掉)'],
   ['2026.11.13.1', '⚡ 修正:分析頁電動車的「每度電可跑」重複顯示;「平均每度電價」改成只算有填度數的充電,不再偏高'],
   ['2026.11.13.1', '🏦 撥款日早上 9 點會跳手機通知,列出各帳戶預計入帳多少(App 版;不要的話到「撥款設定」最下面取消勾選)', 'app'],
   ['2026.11.12.7', '🔔 修正:開啟車輛提醒通知時,不會再跳到手機的「鬧鐘和提醒」設定頁', 'app'],
@@ -7003,6 +7187,11 @@ document.addEventListener('click', function(e){
   else if(cmd==='day'){ var dObj=new Date(analyticsDay+'T00:00:00'); dObj.setDate(dObj.getDate()+(+arg)); analyticsDay=toDateStr(dObj); renderAll(); }
   else if(cmd==='select-day'){ selectedDay=arg; renderAll(); }
   else if(cmd==='period'){ if(VIP_PERIODS[arg] && !isVip()){ openVipIntro('長期間分析', arg); return; } analyticsPeriod=arg; renderAll(); }
+  else if(cmd==='open-summary'){ openSummary(sumView.kind, 1); }
+  else if(cmd==='open-summary-home'){ openSummary(arg, 1); }
+  else if(cmd==='summary-dismiss'){ var sp = summaryPeriod(arg, 1); state.summarySeen = state.summarySeen || {}; state.summarySeen[arg] = sp.from; save(); renderAll(); }
+  else if(cmd==='sum-kind'){ openSummary(arg, 1); }
+  else if(cmd==='sum-nav'){ openSummary(sumView.kind, sumView.offset + (+arg)); }
   else if(cmd==='vip-test-on'){ state.vipTest = true; save(); closeModal(); if(vipPendingPeriod) analyticsPeriod = vipPendingPeriod; vipPendingPeriod = null; renderAll(); showToast('👑 已開啟 VIP 測試'); }
   else if(cmd==='year'){ uiMonth.setFullYear(uiMonth.getFullYear()+(+arg)); renderAll(); }
   else if(cmd==='hot-slot'){ hotspotSlot=arg; renderAll(); }
@@ -7291,8 +7480,22 @@ document.addEventListener('click', function(e){
     save(); renderAll(); openOnboardFont();
   }
   else if(cmd==='ob-font'){ setFontScale(arg, true); renderAll(); openOnboardFont(); }
-  else if(cmd==='ob-done'){ state.onboarded = true; state.fontAsked = true; save(); closeModal(); renderAll();
+  else if(cmd==='ob-done'){ finishOnboard(); }
+  else if(cmd==='ob-car-skip'){ openOnboardPlats(); }
+  else if(cmd==='ob-plats-skip'){ save(); renderAll(); openOnboardFont(); }
+  else if(cmd==='ob-x'){ openOnboardExtra(+arg); }
+  else if(cmd==='ob-x-go'){
+    var oi = +arg, ox = OB_EXTRA[oi];
+    if(ox[0]==='payout') openPayoutSettingsModal();
+    else { settingsOpenSec = ox[0]==='fees' ? 'platforms' : 'basic'; openSettingsModal(); }
+    obResume = oi+1;
   }
+  else if(cmd==='ob-rerun'){ obPlatsChosen = true; openOnboardCar(); }
+  else if(cmd==='paper-cashed'){
+    var pr = state.records.filter(function(r){ return String(r.id)===arg; })[0];
+    if(pr){ pr.paperCashed = todayStr(); save(); renderAll(); showToast('📄 已兌現 '+fmtMoney(computeNetRevenue(pr)+(+pr.tip||0))); }
+  }
+  else if(cmd==='cal-show'){ state.calShow = arg; saveQuiet(); renderAll(); }
   else if(cmd==='chip'){
     var gv0 = arg.indexOf(':');
     var groupId = gv0>=0 ? arg.slice(0,gv0) : arg;
@@ -7323,6 +7526,8 @@ document.addEventListener('click', function(e){
     if(groupId==='payment'){
       var discEl = document.getElementById('sec-yoxi-enterprise-discount');
       if(discEl) discEl.hidden = (value!=='企業簽單');
+      var paperEl = document.getElementById('sec-paper-slip');
+      if(paperEl) paperEl.hidden = (value!=='企業簽單');
     }
     updateIncomePreview();
   }
@@ -7337,6 +7542,7 @@ document.addEventListener('input', function(e){
   }
 });
 document.addEventListener('change', function(e){
+  if(e.target.id && e.target.id.indexOf('f-fee-')===0 && e.target.id!=='f-fee-apply-from'){ var fcn = document.getElementById('fee-change-note'); if(fcn) fcn.hidden = false; }
   if(e.target.matches && e.target.matches('[data-mirror]')){ var mt = document.getElementById(e.target.getAttribute('data-mirror')); if(mt) mt.checked = e.target.checked; return; }
   if(e.target.id && e.target.id.indexOf('f-ui-')===0){ document.querySelectorAll('[data-mirror="'+e.target.id+'"]').forEach(function(m){ m.checked = e.target.checked; }); }
   if(e.target.id==='f-vip-test'){ state.vipTest = e.target.checked; save(); renderAll(); showToast(e.target.checked ? '👑 已開啟 VIP 測試' : '已切回免費版'); return; }
