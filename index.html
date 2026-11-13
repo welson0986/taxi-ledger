@@ -4690,11 +4690,11 @@ function cloudStaleHtml(){
 }
 var NEW_HOME = 'https://app.realway.com.tw/';
 function moveNoticeHtml(){
-  if(location.hostname!=='welson0986.github.io') return '';
+  if(location.hostname!=='welson0986.github.io' || (state.moveNoticeHideUntil||0)>Date.now()) return '';
   return '<div class="card" style="border-color:var(--accent);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.7"><b style="color:var(--accent)">🚚 記帳本搬新家了</b><br>'+
     '新網址:<a href="'+NEW_HOME+'" target="_blank" rel="noopener" style="color:var(--accent);font-weight:700">app.realway.com.tw</a>。帳存在這個瀏覽器裡,不會自己跟過去,請照順序搬:<br>'+
-    '① 按下面「存成備份檔」 ② 打開新網址 ③ 選「我有備份檔,把帳搬過來」匯入。<br>搬好後記得把新網址加到主畫面。這個舊網址暫時還能用。'+
-    '<div style="margin-top:8px"><button class="btn btn-primary" data-act="export-file">💾 存成備份檔</button></div></div>';
+    '① 按下面「存成備份檔」 ② 打開新網址 ③ 選「我有備份檔,把帳搬過來」匯入。<br>搬好後記得把新網址加到主畫面。<br><b>不急著搬也可以</b>:這裡照常能用,等 App 上架後,直接從這裡把帳搬進 App 就好。'+
+    '<div class="btn-row" style="margin-top:8px;gap:8px"><button class="btn btn-primary" style="flex:1" data-act="export-file">💾 存成備份檔</button><button class="btn btn-ghost" style="flex:1" data-act="move-notice-later">先不搬</button></div></div>';
 }
 function backupReminderHtml(){
   if(!backupReminderDue()) return '';
@@ -7436,6 +7436,7 @@ document.addEventListener('click', function(e){
   else if(cmd==='open-import'){ openImportModal(); }
   // straight to the file picker (still inside the tap, which the picker requires); the restore sheet stays behind it
   else if(cmd==='open-import-pick'){ openImportModal(); var pickEl = document.getElementById('importFile'); if(pickEl) pickEl.click(); }
+  else if(cmd==='move-notice-later'){ state.moveNoticeHideUntil = Date.now()+30*86400000; saveQuiet(); renderAll(); showToast('好的,30 天後再提醒'); }
   else if(cmd==='move-from-web'){
     var mh = '<div class="modal-title">用備份檔把帳搬過來<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
     mh += '<div style="font-size:13.5px;line-height:1.8">'+
