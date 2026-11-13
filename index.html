@@ -3266,7 +3266,7 @@ function renderEntry(){
   var platformTotals = {};
   todayRecs.forEach(function(r){ platformTotals[r.platform]=(platformTotals[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
 
-  var h = saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudConflictHtml() + cloudStaleHtml() + metroWalletHomeHtml() + vehHomeHtml() + summaryHomeHtml() + fontAskHtml();
+  var h = moveNoticeHtml() + saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudConflictHtml() + cloudStaleHtml() + metroWalletHomeHtml() + vehHomeHtml() + summaryHomeHtml() + fontAskHtml();
   if(state.syncUrl && cloudAuthStatus==='bad'){
     h += '<div class="card" style="border-color:var(--expense);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 雲端密碼不對,資料沒有同步到雲端</b><br>手機裡的帳都還在。請到右上角設定確認「雲端密碼」,改好後會自動補送。</div>';
   }
@@ -4326,7 +4326,7 @@ function detectAppChannel(){
 }
 function nativeTools(){ try{ var p = isNativeApp() && window.Capacitor.Plugins && window.Capacitor.Plugins.TaxiNative; return p && p.buildInfo ? p : null; }catch(e){ return null; } }
 function detectAppEnv(){
-  if(!isNativeApp()) return Promise.resolve(location.hostname==='welson0986.github.io' ? 'prod' : 'test');
+  if(!isNativeApp()) return Promise.resolve((location.hostname==='welson0986.github.io' || location.hostname==='app.realway.com.tw') ? 'prod' : 'test');
   var nt = nativeTools();
   if(!nt) return Promise.resolve('test');
   return nt.buildInfo().then(function(i){ return i && i.dataEnv==='prod' ? 'prod' : 'test'; }, function(){ return 'test'; });
@@ -4687,6 +4687,14 @@ function cloudStaleHtml(){
   return '<div class="card" style="border-color:var(--expense);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6">'+
     '<b style="color:var(--expense)">☁️ 雲端已經 '+days+' 天沒有同步成功</b><br>這幾天記的帳還沒送到雲端。請確認有網路、到 ⚙️ 看「雲端同步」;先存一份備份檔比較保險。'+
     '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" style="flex:2" data-act="export-file">立即存成備份檔</button><button class="btn btn-ghost" style="flex:1" data-act="backup-snooze">明天再提醒</button></div></div>';
+}
+var NEW_HOME = 'https://app.realway.com.tw/';
+function moveNoticeHtml(){
+  if(location.hostname!=='welson0986.github.io') return '';
+  return '<div class="card" style="border-color:var(--accent);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.7"><b style="color:var(--accent)">🚚 記帳本搬新家了</b><br>'+
+    '新網址:<a href="'+NEW_HOME+'" target="_blank" rel="noopener" style="color:var(--accent);font-weight:700">app.realway.com.tw</a>。帳存在這個瀏覽器裡,不會自己跟過去,請照順序搬:<br>'+
+    '① 按下面「存成備份檔」 ② 打開新網址 ③ 選「我有備份檔,把帳搬過來」匯入。<br>搬好後記得把新網址加到主畫面。這個舊網址暫時還能用。'+
+    '<div style="margin-top:8px"><button class="btn btn-primary" data-act="export-file">💾 存成備份檔</button></div></div>';
 }
 function backupReminderHtml(){
   if(!backupReminderDue()) return '';
@@ -6060,7 +6068,7 @@ function openModeChooser(){
   var h = '<div class="modal-title">歡迎使用 🚕</div>';
   h += '<div style="font-size:13px;line-height:1.7;margin-bottom:12px">你想怎麼開始?記帳方式之後隨時可以在右上角 ⚙️ 改。</div>';
   h += '<button style="'+big+'" data-act="ui-choose:simple"><b style="font-size:15px">🟢 簡單記帳</b><br><span style="font-size:12px;color:var(--text-muted)">只記每個平台跑了多少錢。點平台 → 打金額 → 儲存,其他都不用選。</span></button>';
-  if(isNativeApp()) h += '<button style="'+big+';border-color:var(--accent)" data-act="move-from-web"><b style="font-size:15px">📲 我有備份檔,把帳搬過來</b><br><span style="font-size:12px;color:var(--text-muted)">換手機,或從網頁版搬過來都可以,一分鐘搬完。帳、設定、模式都會一起過來。</span></button>';
+  if(isNativeApp() || location.hostname==='app.realway.com.tw') h += '<button style="'+big+';border-color:var(--accent)" data-act="move-from-web"><b style="font-size:15px">📲 我有備份檔,把帳搬過來</b><br><span style="font-size:12px;color:var(--text-muted)">換手機,或從網頁版搬過來都可以,一分鐘搬完。帳、設定、模式都會一起過來。</span></button>';
   h += '<button style="'+big+'" data-act="ui-choose:full"><b style="font-size:15px">🔵 完整分析</b><br><span style="font-size:12px;color:var(--text-muted)">記車種、付款方式、上下車時間,分析時薪、熱區、載客率。</span></button>';
   openModal(h);
 }
@@ -6294,7 +6302,7 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.13.4';
+var APP_VERSION = '2026.11.13.5';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
@@ -6442,7 +6450,7 @@ function aboutHtml(){
   h += '<details class="lic" style="margin:-6px 0 12px"><summary tabindex="0" style="'+link+';cursor:pointer;font-size:12.5px">📜 第三方授權全文</summary>'+THIRD_PARTY_LICENSES.map(function(x){ return '<div style="font-weight:700;font-size:12.5px;margin:10px 0 4px">'+esc(x[0])+'</div>'+'<pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;line-height:1.5;color:var(--text-muted);background:rgba(127,127,127,.10);padding:8px 10px;border-radius:8px;margin:0;font-family:ui-monospace,Menlo,Consolas,monospace">'+esc(x[1])+'</pre>'; }).join('')+'</details>';
   h += para('🔒 你的帳由你掌握', '帳本預設存在你的手機,我們不預設取得;選擇分享車友熱區時,才會送出約 1 公里的格點、時段和趟數;備份檔和雲端同步放在哪裡由你選擇(雲端同步存在你自己的 Google 帳號)。<br>為了保護你的資料,建議手機設定螢幕鎖,並定期備份。');
   h += para('📊 不具名使用人數統計', '為了知道有多少司機在用,記帳本每天會送出一次不具名資料:一組隨機編號、日期、版本、簡單/完整模式、手機系統(iPhone/安卓)、是否從主畫面打開。<br>不包含任何金額、平台、位置或個人資料,製作者也無法從編號知道你是誰。不想參與,可以在上面「不具名使用人數統計」取消勾選。');
-  h += para('📄 隱私權政策', '完整說明記帳本會處理哪些資料、存在哪裡、保存多久:<br><a style="'+link+'" target="_blank" rel="noopener" href="https://welson0986.github.io/taxi-ledger/privacy.html">查看隱私權政策 ›</a>');
+  h += para('📄 隱私權政策', '完整說明記帳本會處理哪些資料、存在哪裡、保存多久:<br><a style="'+link+'" target="_blank" rel="noopener" href="https://app.realway.com.tw/privacy.html">查看隱私權政策 ›</a>');
   h += para('📍 車友熱區', '同意分享的人,記帳本每天會送出前一天的「約 1 公里一格的上車區域、時段、趟數」,不含精確位置、金額、平台。至少 3 位車友都上過車的地方才會顯示給有分享的人看,看不到任何人的個人紀錄。可以隨時在上面取消分享。');
   // the mail opens with the version and phone type filled in, nothing from the ledger
   var mailto = 'mailto:support@realway.com.tw?subject='+encodeURIComponent('跑車人生 建議與問題回報')+
