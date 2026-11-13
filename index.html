@@ -4689,7 +4689,10 @@ function cloudStaleHtml(){
     '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" style="flex:2" data-act="export-file">立即存成備份檔</button><button class="btn btn-ghost" style="flex:1" data-act="backup-snooze">明天再提醒</button></div></div>';
 }
 var NEW_HOME = 'https://app.realway.com.tw/';
+var MOVE_NOTICE_ON = false;
 function moveNoticeHtml(){
+  // off until the app is out: drivers move once, straight from here into the app (turn on at launch)
+  if(!MOVE_NOTICE_ON) return '';
   if(location.hostname!=='welson0986.github.io' || (state.moveNoticeHideUntil||0)>Date.now()) return '';
   return '<div class="card" style="border-color:var(--accent);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.7"><b style="color:var(--accent)">🚚 記帳本搬新家了</b><br>'+
     '新網址:<a href="'+NEW_HOME+'" target="_blank" rel="noopener" style="color:var(--accent);font-weight:700">app.realway.com.tw</a>。帳存在這個瀏覽器裡,不會自己跟過去,請照順序搬:<br>'+
