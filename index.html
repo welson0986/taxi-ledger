@@ -705,7 +705,10 @@ function platformDef(key){
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function pad(n){ return n<10?'0'+n:''+n; }
 function toDateStr(d){ return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
-function dayCutoffHour(){ return (typeof state!=='undefined' && state && state.dayCutoffHour!=null) ? +state.dayCutoffHour : 4; }
+// A new ledger starts with the calendar day (midnight, see defaultState). A ledger without the setting was made while
+// the day still changed at LEGACY_DAY_CUTOFF, and keeps that: see fillMissing.
+var LEGACY_DAY_CUTOFF = 4;
+function dayCutoffHour(){ return (typeof state!=='undefined' && state && state.dayCutoffHour!=null) ? +state.dayCutoffHour : LEGACY_DAY_CUTOFF; }
 function businessDayOf(ts){
   var d = new Date(ts);
   if(d.getHours() < dayCutoffHour()) d.setDate(d.getDate()-1);
@@ -783,20 +786,27 @@ function defaultState(){
     customPlatforms:[],
     platformOrder:PLATFORM_DEFS.map(function(p){return p.key;}),
     syncUrl:'',
-    dayCutoffHour:4,
+    dayCutoffHour:0,
     payoutSettings:{},
     payouts:[],
     activeTrip:null,
     pendingTrips:[]
   };
 }
+// a ledger read from storage, a file or the cloud gets the parts it does not have yet. Only a brand-new ledger takes
+// the new default for where a day ends; an existing one keeps the hour its entries were dated with.
+function fillMissing(s){
+  if(!('dayCutoffHour' in s) || s.dayCutoffHour==null) s.dayCutoffHour = LEGACY_DAY_CUTOFF;
+  var d = defaultState();
+  for(var k in d){ if(!(k in s)) s[k] = d[k]; }
+  return s;
+}
 var IDB_MIGRATED_FLAG = 'taxi_ledger_idb';
 // After moving to IndexedDB, localStorage keeps a frozen copy from the move; reading it alone would show stale data
 var storageStale = false;
 var corruptRaw = null;  // ledger text that failed to load; kept aside so the blank ledger never overwrites it
 function nativeUse(pick){
-  var ps = pick.ps, dn = defaultState();
-  for(var kn in dn){ if(!(kn in ps)) ps[kn] = dn[kn]; }
+  var ps = fillMissing(pick.ps);
   __BOOT.nativeSlot = pick.cand.slot; __BOOT.rev = Math.max(pick.rev, +__BOOT.rev||0); __BOOT.fromFile = true;
   return ps;
 }
@@ -842,10 +852,7 @@ function load(){
       try{ if(raw && localStorage.getItem(IDB_MIGRATED_FLAG)) storageStale = true; }catch(e){}
     }
     if(!raw) return defaultState();
-    var s = unpackState(JSON.parse(raw));
-    var d = defaultState();
-    for(var k in d){ if(!(k in s)) s[k]=d[k]; }
-    return s;
+    return fillMissing(unpackState(JSON.parse(raw)));
   }catch(e){ if(raw) corruptRaw = raw; return defaultState(); }
 }
 var FEE_DEFAULTS = {tdcFlat:0,metroPct:0,yoxiFlat:0,linegoFlat:0,tdc:15,yoxiCash:10,yoxiCreditExtra:2,linego:19.5,metroFlat:25,metroCredit:3,metroEnterprise:6,uber:25,uberTaxi:15,hailyellowCredit:3,tdcTicket:3,tdcCard:0,linegoTaxiTier:200,linegoTaxiFlat:10,linegoTaxiPct:10,linegoTaxiCard:2.5,linegoTaxiCap:3000,metroTicket:3,hailyellowTicket:3,boltFlat:20,boltPct:10,boltThreshold:15,boltThresholdEnabled:true};
@@ -973,8 +980,7 @@ function reloadFromStore(afterConflict){
   function useFresh(stored, raw){
       var fresh;
       try{ fresh = unpackState(JSON.parse(raw)); }catch(e){ lastKnownRev = Math.max(lastKnownRev, stored); return; }
-      var d = defaultState();
-      for(var k in d){ if(!(k in fresh)) fresh[k] = d[k]; }
+      fillMissing(fresh);
       state = fresh;
       lastKnownRev = Math.max(stored, +fresh.rev||0);
       if(typeof renderAll==='function') renderAll();
@@ -3266,7 +3272,7 @@ function renderEntry(){
   var platformTotals = {};
   todayRecs.forEach(function(r){ platformTotals[r.platform]=(platformTotals[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
 
-  var h = moveNoticeHtml() + saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudConflictHtml() + cloudStaleHtml() + metroWalletHomeHtml() + vehHomeHtml() + summaryHomeHtml() + fontAskHtml();
+  var h = moveNoticeHtml() + saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudConflictHtml() + cloudStaleHtml() + metroWalletHomeHtml() + vehHomeHtml() + summaryHomeHtml() + fontAskHtml() + uberCutHintHtml();
   if(state.syncUrl && cloudAuthStatus==='bad'){
     h += '<div class="card" style="border-color:var(--expense);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 雲端密碼不對,資料沒有同步到雲端</b><br>手機裡的帳都還在。請到右上角設定確認「雲端密碼」,改好後會自動補送。</div>';
   }
@@ -3640,7 +3646,8 @@ function comparisonRanges(range){
   else { prev={from:addDays(cur.from,-(len+1)),to:addDays(cur.from,-1)}; label='前一段同長度期間'; }
   return {cur:cur, prev:prev, label:label};
 }
-function periodMetrics(from,to){
+function periodMetrics(from,to,f){
+  if(f){ var fa = anMetrics(from, to, f); return {net:fa.net, profit:null, trips:fa.trips, hourly:fa.hourly, perKm:fa.perKm}; }
   var recs = recordsInRange(from,to);
   var net = sumNetIncome(recs).total;
   var exp = sumExpense(expensesInRange(from,to))+fixedTotalForRange(from,to)-tollRefundInRange(from,to);
@@ -3679,15 +3686,17 @@ function compareDelta(x, y, fmt, label){
   var pct = (x-y)/y*100;
   return {t:(pct>=0?'▲ ':'▼ ')+Math.abs(pct).toFixed(1)+'%', c:pct>=0?up:down};
 }
-function comparisonHtml(range){
+// f: the analysis filter in force (see anActive); both periods are then narrowed the same way, and only what a
+// filter can still tell is compared (no profit; per km only when whole days are picked)
+function comparisonHtml(range, f){
   var cr = comparisonRanges(range);
-  if(!cr) return '';
-  var a = periodMetrics(cr.cur.from, cr.cur.to), b;
+  if(!cr || (f && analyticsPeriod==='day')) return '';
+  var a = periodMetrics(cr.cur.from, cr.cur.to, f), b;
   if(analyticsPeriod==='day'){
     var avg = recentDaysAverage(cr.cur.from);
     if(!avg) return '';
     b = avg.m; cr.label = '前 '+avg.days.length+' 個工作日平均'; cr.prev = {from:avg.days[0], to:avg.days[avg.days.length-1]};
-  } else b = periodMetrics(cr.prev.from, cr.prev.to);
+  } else b = periodMetrics(cr.prev.from, cr.prev.to, f);
   function row(name, x, y, fmt){
     var d = compareDelta(x, y, fmt, cr.label);
     return '<div class="list-item"><div class="li-body"><div class="li-title">'+name+'</div><div class="li-sub">'+cr.label+' '+(y!=null?fmt(y):'—')+'</div></div><div style="text-align:right"><div class="num" style="font-weight:700">'+(x!=null?fmt(x):'—')+'</div><div class="num" style="font-size:12px;font-weight:700;color:'+d.c+'">'+d.t+'</div>'+(d.s?'<div class="num" style="font-size:11.5px;color:'+d.c+'">'+d.s+'</div>':'')+'</div></div>';
@@ -3696,10 +3705,11 @@ function comparisonHtml(range){
   h += row('實收', a.net, b.net, fmtMoney);
   // fixed costs here are counted for the days in each range (so a month in progress compares fairly), unlike the
   // period card above, which counts the whole month
-  h += row(range.to>todayStr() ? '淨利(固定成本攤到今天)' : '淨利(固定成本按天攤)', a.profit, b.profit, fmtMoney);
+  if(!f) h += row(range.to>todayStr() ? '淨利(固定成本攤到今天)' : '淨利(固定成本按天攤)', a.profit, b.profit, fmtMoney);
   h += row('趟數', a.trips, b.trips, function(v){ return v+' 趟'; });
-  h += row('實際時薪', a.hourly, b.hourly, fmtMoney2);
-  h += row('每公里實收', a.perKm, b.perKm, fmtMoney2);
+  h += row(f && !anDayOnly(f) ? '含空檔時薪' : '實際時薪', a.hourly, b.hourly, fmtMoney2);
+  if(!f || anDayOnly(f)) h += row('每公里實收', a.perKm, b.perKm, fmtMoney2);
+  if(f) h += '<div style="font-size:11px;color:var(--text-muted);padding-top:8px;line-height:1.5">兩段期間都套用同一組篩選條件。</div>';
   h += '</div></div>';
   return h;
 }
@@ -3814,6 +3824,212 @@ function patternsHtml(recs){
   h += '</div>';
   return h;
 }
+/* ---------- 分析篩選與可保存的分析組合 (VIP; only in 跑車人生 測試版 while it is tried out) ---------- */
+// A filter narrows the chosen period by platform, weekday (of the business day) and time of day; a saved one is a
+// preset in state.analysisPresets = [{id, name, period, from?, to?, plats:[], wdays:[], hFrom, hTo}].
+// Work hours are kept as one total per day, so they cannot be split by platform or time of day. With those filters
+// the hourly rate is 含空檔時薪: the take-home of the fares timed with 上車/下車 ÷ (their ride time + the empty time
+// before each). A weekday-only filter still divides by the punched hours of those days. Expenses and fixed costs
+// are never split, so cost and profit are hidden while a filter is on.
+var AN_WD = ['一','二','三','四','五','六','日'], AN_PRESET_MAX = 12;
+var AN_PERIOD_ZH = {day:'本日', week:'本週', month:'本月', year:'本年', custom:'自訂區間', all:'全部'};
+function anBlank(){ return {plats:[], wdays:[], hFrom:null, hTo:null}; }
+var anFilter = anBlank(), anFilterOpen = false, anPresetId = null;
+function anAvailable(){ return betaOn(); }
+function anHasTime(f){ return f.hFrom!=null && f.hTo!=null && f.hFrom!==f.hTo; }
+function anIsSet(f){ return !!(f.plats.length || f.wdays.length || anHasTime(f)); }
+function anActive(){ return (anAvailable() && isVip() && anIsSet(anFilter)) ? anFilter : null; }
+// only weekdays picked: whole days, so the punched hours and the day's km still apply
+function anDayOnly(f){ return !f.plats.length && !anHasTime(f); }
+function anDayOk(f, dateStr){ return !f.wdays.length || f.wdays.indexOf((new Date(dateStr+'T00:00:00').getDay()+6)%7)>=0; }
+// when a fare happened: 上車 if the trip was timed, otherwise when it was entered (not when entered on a later day)
+function anRecTs(r){
+  if(r.pickup && r.pickup.ts) return r.pickup.ts;
+  return (r.ts && businessDayOf(r.ts)===r.date) ? r.ts : null;
+}
+function anHourOk(f, ts){
+  var h = new Date(ts).getHours();
+  return f.hFrom<f.hTo ? (h>=f.hFrom && h<f.hTo) : (h>=f.hFrom || h<f.hTo);
+}
+// With a time of day that crosses midnight (22 to 3) the hours after midnight belong to the evening they started on,
+// wherever the driver's own day ends: 週五 means Friday 22:00 to Saturday 03:00. Otherwise the weekday is the one of
+// the business day.
+function anWdOk(f, dateStr, ts){
+  if(!f.wdays.length) return true;
+  if(!(anHasTime(f) && f.hFrom>f.hTo) || ts==null) return anDayOk(f, dateStr);
+  var d = new Date(ts); if(d.getHours()<f.hTo) d.setDate(d.getDate()-1);
+  return f.wdays.indexOf((d.getDay()+6)%7)>=0;
+}
+function anMatch(f, r){
+  if(f.plats.length && f.plats.indexOf(r.platform)<0 && !(r.platform==='bonus' && r.bonusPlatform && f.plats.indexOf(r.bonusPlatform)>=0)) return false;
+  if(!anHasTime(f)) return anDayOk(f, r.date);
+  if(platformDef(r.platform).tipOnly) return false;  // the tip box and bonuses are not a fare at a time of day
+  var ts = anRecTs(r);
+  return ts!=null && anHourOk(f, ts) && anWdOk(f, r.date, ts);
+}
+// a timed trip (see timedTripsByDay) of business day d; one whose fare is not entered yet has no platform
+function anTripOk(f, o, d){
+  if(o.rec) return anMatch(f, o.rec);
+  if(f.plats.length) return false;
+  return anHasTime(f) ? (anHourOk(f, o.pickup.ts) && anWdOk(f, d, o.pickup.ts)) : anDayOk(f, d);
+}
+// 含空檔時薪. Each matching timed fare counts its ride plus the empty time since the previous drop-off, whatever
+// platform that one was and also across the change of day (over EMPTY_GAP_CAP_MIN it was a break). After a break,
+// and for the first fare of a shift, the approach counts when 接到單了 was pressed. Under half an hour in total says
+// too little to show a rate.
+function anTripRate(from, to, f){
+  var days = timedTripsByDay(addDays(from, -1), to), all = [], net = 0, min = 0, n = 0;
+  Object.keys(days).forEach(function(d){ days[d].forEach(function(o){ all.push({o:o, d:d}); }); });
+  all.sort(function(a, b){ return a.o.pickup.ts-b.o.pickup.ts; });
+  all.forEach(function(x, i){
+    var o = x.o;
+    if(x.d<from || !o.rec || !anMatch(f, o.rec)) return;
+    var m = tripMin(o.pickup, o.dropoff); if(m<0) return;
+    var g = i>0 ? (o.pickup.ts - all[i-1].o.dropoff.ts)/60000 : -1;
+    if(g<0 || g>EMPTY_GAP_CAP_MIN) g = (o.accept && o.accept.ts<=o.pickup.ts) ? (o.pickup.ts - o.accept.ts)/60000 : 0;
+    if(g<0 || g>EMPTY_GAP_CAP_MIN) g = 0;
+    net += computeNetRevenue(o.rec)+(+o.rec.tip||0); min += m+g; n++;
+  });
+  return {net:net, hours:min/60, n:n, rate: min>=30 ? net/(min/60) : null};
+}
+function anDayTotals(from, to, f){
+  var hours = 0, brk = 0, km = 0, today = todayStr();
+  Object.keys(state.dailyMeta).forEach(function(d){
+    if(!inRange(d, from, to) || !anDayOk(f, d)) return;
+    var m = state.dailyMeta[d], wm = m.workedMs!=null ? m.workedMs : (m.hours ? m.hours*3600000 : 0), bm = m.breakMs||0;
+    if(d===today && m.segmentStart) wm += Date.now()-m.segmentStart;
+    if(d===today && m.onBreak && m.breakStart) bm += Date.now()-m.breakStart;
+    hours += wm/3600000; brk += bm/3600000; km += (+m.km||0);
+  });
+  return {hours:hours, brk:brk, km:km};
+}
+function anMetrics(from, to, f){
+  var recs = recordsInRange(from, to).filter(function(r){ return anMatch(f, r); });
+  var net = sumNetIncome(recs).total;
+  var o = {recs:recs, net:net, trips:recs.filter(function(r){ return !platformDef(r.platform).tipOnly; }).length, dayOnly:anDayOnly(f), hourly:null, perKm:null, timed:0};
+  if(o.dayOnly){
+    var t = anDayTotals(from, to, f);
+    o.hours = t.hours; o.brk = t.brk; o.km = t.km;
+    o.hourly = t.hours>0 ? net/t.hours : null; o.perKm = t.km>0 ? net/t.km : null;
+  } else {
+    var tr = anTripRate(from, to, f);
+    o.hours = tr.hours; o.timed = tr.n; o.hourly = tr.rate;
+  }
+  return o;
+}
+// fares the time-of-day filter had to leave out because nothing says when they happened
+function anUntimedCount(from, to, f){
+  if(!anHasTime(f)) return 0;
+  var g = {plats:f.plats, wdays:f.wdays, hFrom:null, hTo:null};
+  return recordsInRange(from, to).filter(function(r){ return !platformDef(r.platform).tipOnly && anRecTs(r)==null && anMatch(g, r); }).length;
+}
+function anDesc(f){
+  var p = [];
+  if(f.plats && f.plats.length) p.push(f.plats.map(function(k){ return platformDef(k).label; }).join('＋'));
+  if(f.wdays && f.wdays.length) p.push('週'+f.wdays.slice().sort().map(function(i){ return AN_WD[i]; }).join('、'));
+  if(anHasTime(f)) p.push(pad(f.hFrom)+':00–'+pad(f.hTo)+':00');
+  return p.join(' · ');
+}
+function anKey(f){ return (f.plats||[]).slice().sort().join(',')+'|'+(f.wdays||[]).slice().sort().join(',')+'|'+(anHasTime(f) ? f.hFrom+'-'+f.hTo : ''); }
+// this preset is what the page shows now: applied, and neither the conditions nor the period were changed since
+function anPresetOn(p){ return anPresetId===p.id && anKey(p)===anKey(anFilter) && (!AN_PERIOD_ZH[p.period] || p.period===analyticsPeriod); }
+function anDefaultName(f){
+  var p = [];
+  if(f.wdays.length) p.push('週'+f.wdays.slice().sort().map(function(i){ return AN_WD[i]; }).join(''));
+  if(anHasTime(f)) p.push(pad(f.hFrom)+'–'+pad(f.hTo)+'點');
+  if(f.plats.length) p.push(f.plats.map(function(k){ return platformDef(k).label; }).join('＋'));
+  return p.join(' ').slice(0,20);
+}
+function anPresetDesc(p){
+  var per = AN_PERIOD_ZH[p.period] || '';
+  if(p.period==='custom' && p.from && p.to) per = p.from+' ~ '+p.to;
+  return (per ? per+' · ' : '')+anDesc({plats:p.plats||[], wdays:p.wdays||[], hFrom:p.hFrom, hTo:p.hTo});
+}
+function anBarHtml(){
+  var vip = isVip(), f = anFilter, on = vip && anIsSet(f), open = vip && anFilterOpen, list = vip ? (state.analysisPresets||[]) : [];
+  var hourSel = function(id, val){
+    var s = '<select id="'+id+'"><option value="">不限</option>';
+    for(var i=0;i<24;i++) s += '<option value="'+i+'"'+(val===i?' selected':'')+'>'+pad(i)+':00</option>';
+    return s+'</select>';
+  };
+  var h = '<div class="section" id="anBar"><div class="chip-row" style="align-items:center">';
+  h += '<button type="button" class="chip-opt'+(open?' selected':'')+'" data-act="anf-toggle" aria-expanded="'+open+'">🔎 篩選'+(vipGated()?' 👑':'')+(vip ? (open?' ▴':' ▾') : '')+'</button>';
+  list.forEach(function(p){
+    var sel = on && anPresetOn(p);
+    h += '<button type="button" class="chip-opt'+(sel?' selected':'')+'" data-act="anp-apply:'+p.id+'" aria-pressed="'+sel+'">⭐ '+esc(p.name)+'</button>';
+  });
+  if(list.length) h += '<button type="button" class="chip-opt" data-act="anp-manage">管理</button>';
+  h += '</div>';
+  // only while the panel is closed: appearing above the open panel would push its chips down under the finger
+  if(on && !open) h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:12.5px;margin-top:8px;line-height:1.5"><span>篩選中:<b>'+esc(anDesc(f))+'</b></span><a data-act="anf-clear" role="button" tabindex="0" style="color:var(--accent);cursor:pointer;flex:none">清除篩選</a></div>';
+  if(open){
+    var keys = visiblePlatforms().map(function(p){ return p.key; });
+    f.plats.forEach(function(k){ if(keys.indexOf(k)<0) keys.push(k); });
+    h += '<div class="card" style="margin-top:8px;padding:12px 14px">';
+    h += '<div class="form-row"><label>平台(可多選,都不選＝全部)</label><div class="chip-row">'+keys.map(function(k){
+      return '<button type="button" class="chip-opt'+(f.plats.indexOf(k)>=0?' selected':'')+'" data-act="anf-plat:'+esc(k)+'" aria-pressed="'+(f.plats.indexOf(k)>=0)+'">'+esc(platformDef(k).label)+'</button>';
+    }).join('')+'</div></div>';
+    // the weekday is the one of the business day, which follows the driver's own 營業日分界時間 (0 = the calendar day)
+    h += '<div class="form-row"><label>星期(可多選'+(dayCutoffHour()>0 ? ';照你設定的營業日,凌晨 '+dayCutoffHour()+' 點前的單算前一天' : '')+')</label><div class="chip-row">'+AN_WD.map(function(w,i){
+      return '<button type="button" class="chip-opt'+(f.wdays.indexOf(i)>=0?' selected':'')+'" data-act="anf-wd:'+i+'" aria-pressed="'+(f.wdays.indexOf(i)>=0)+'">週'+w+'</button>';
+    }).join('')+'</div></div>';
+    h += '<div class="form-row"><label>時段(可以跨午夜,例如從 22:00 到 03:00)</label><div class="form-grid2"><div><label for="anf-from">從</label>'+hourSel('anf-from', f.hFrom)+'</div><div><label for="anf-to">到</label>'+hourSel('anf-to', f.hTo)+'</div></div>';
+    if((f.hFrom!=null || f.hTo!=null) && !anHasTime(f)) h += '<div style="font-size:11.5px;color:var(--expense);margin-top:6px">「從」和「到」都要選,而且不能一樣,時段才會生效。</div>';
+    else if(anHasTime(f) && f.hFrom>f.hTo) h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;line-height:1.5">跨午夜的時段算同一個晚上:選週五＝週五 '+pad(f.hFrom)+':00 到週六 '+pad(f.hTo)+':00。</div>';
+    h += '</div>';
+    h += '<div class="btn-row"><button class="btn btn-ghost" data-act="anf-clear">清除篩選</button><button class="btn btn-primary" data-act="anp-save">⭐ 存成組合</button></div>';
+    h += '</div>';
+  }
+  return h+'</div>';
+}
+// shown in place of the cost and profit tiles: what the numbers below do and do not cover
+function anNoteHtml(f, fm, range){
+  var un = anUntimedCount(range.from, range.to, f), t = [];
+  t.push(fm.dayOnly ? '只算這幾個星期的收入;工時、里程用這幾天的打卡和里程。支出和固定成本不拆到星期,所以不顯示成本和淨利。'
+    : '只算符合條件的收入。支出、固定成本、打卡工時、里程分不到平台或時段,所以不顯示成本、淨利和每公里的數字。');
+  if(anHasTime(f)) t.push('時段依上車時間,沒有按「上車」的用記帳時間'+(un ? ';有 '+un+' 筆是事後補記、不知道幾點,沒有列入' : '')+'。小費、活動獎勵不是單趟,篩時段時不列入。'+(f.hFrom>f.hTo && f.wdays.length ? '跨午夜的時段算同一個晚上,午夜後那段算前一天的星期。' : ''));
+  if(!fm.dayOnly) t.push('含空檔時薪＝有按上下車的 '+fm.timed+' 趟(符合條件的共 '+fm.trips+' 趟)的實收 ÷(載客時間＋上一趟下車到這趟上車的空檔)。空檔超過 '+EMPTY_GAP_CAP_MIN+' 分鐘當成休息不算;上班後第一趟前面的等單時間算不到,所以會比打卡算的時薪略高。');
+  return '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;line-height:1.6">🔎 '+t.join('<br>')+'</div>';
+}
+function anSavePreset(){
+  if(!isVip()){ openVipIntro('可保存的分析組合'); return; }
+  var f = anFilter, list = state.analysisPresets || [];
+  if(!anIsSet(f)){ alert('先選好平台、星期或時段,再存成組合。'); return; }
+  if(list.length>=AN_PRESET_MAX){ alert('最多存 '+AN_PRESET_MAX+' 個組合,請先按「管理」刪掉用不到的。'); return; }
+  var name = prompt('幫這個組合取個名字(最多 20 個字)', anDefaultName(f));
+  if(name==null) return;
+  name = name.trim().slice(0,20); if(!name) return;
+  var p = {id:uid(), name:name, period:analyticsPeriod, plats:f.plats.slice(), wdays:f.wdays.slice(), hFrom:anHasTime(f)?f.hFrom:null, hTo:anHasTime(f)?f.hTo:null};
+  if(analyticsPeriod==='custom'){ p.from = customFrom<=customTo?customFrom:customTo; p.to = customFrom<=customTo?customTo:customFrom; }
+  state.analysisPresets = list.concat([p]);
+  anPresetId = p.id; anFilterOpen = false;
+  save(); renderAll(); showToast('⭐ 已存成組合「'+name+'」');
+}
+// tapping the preset that is already on turns the filter off again
+function anApplyPreset(id){
+  if(!isVip()){ openVipIntro('可保存的分析組合'); return; }
+  var p = (state.analysisPresets||[]).filter(function(x){ return x.id===id; })[0]; if(!p) return;
+  if(anPresetOn(p)){ anFilter = anBlank(); anPresetId = null; renderAll(); return; }
+  anFilter = {plats:(p.plats||[]).slice(), wdays:(p.wdays||[]).slice(), hFrom:p.hFrom!=null?+p.hFrom:null, hTo:p.hTo!=null?+p.hTo:null};
+  if(AN_PERIOD_ZH[p.period]){
+    analyticsPeriod = p.period;
+    if(p.period==='custom' && p.from && p.to){ customFrom = p.from; customTo = p.to; }
+  }
+  anPresetId = id; renderAll();
+}
+function openAnPresets(){
+  var list = state.analysisPresets || [], bs = 'width:auto;padding:6px 10px;white-space:nowrap';
+  var h = '<div class="modal-title">⭐ 分析組合<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  if(!list.length) h += '<div style="padding:20px 0;text-align:center;color:var(--text-muted);font-size:13px">還沒有組合。在分析頁按「🔎 篩選」選好條件,再按「⭐ 存成組合」。</div>';
+  else h += '<div class="card">'+list.map(function(p, i){
+    return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(p.name)+'</div><div class="li-sub">'+esc(anPresetDesc(p))+'</div></div>'+
+      '<div style="display:flex;gap:6px;flex:none">'+(i>0?'<button class="btn btn-ghost" style="'+bs+'" data-act="anp-up:'+p.id+'" aria-label="往前移">↑</button>':'')+(i<list.length-1?'<button class="btn btn-ghost" style="'+bs+'" data-act="anp-down:'+p.id+'" aria-label="往後移">↓</button>':'')+
+      '<button class="btn btn-ghost" style="'+bs+'" data-act="anp-rename:'+p.id+'" aria-label="改名">✏️</button>'+
+      '<button class="btn btn-ghost" style="'+bs+';color:var(--expense)" data-act="anp-del:'+p.id+'">刪除</button></div></div>';
+  }).join('')+'</div>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:10px;line-height:1.6">組合會記住期間(本週、本月、全部…)和篩選條件;在分析頁點一下就套用,再點一次取消。要改條件,套用後調整,再存成新的組合。</div>';
+  openModal(h);
+}
 function renderAnalytics(){
   if(VIP_PERIODS[analyticsPeriod] && !isVip()) analyticsPeriod = 'month';
   var range;
@@ -3824,7 +4040,8 @@ function renderAnalytics(){
   else if(analyticsPeriod==='all'){ range={from:dataFirstDate()||todayStr(), to:todayStr()}; }
   else { range = customFrom<=customTo ? {from:customFrom,to:customTo} : {from:customTo,to:customFrom}; }
 
-  var recs = recordsInRange(range.from, range.to);
+  var F = anActive(), fm = F ? anMetrics(range.from, range.to, F) : null;
+  var recs = F ? fm.recs : recordsInRange(range.from, range.to);
   var exps = expensesInRange(range.from, range.to);
   var gross = sumIncome(recs);
   var net = sumNetIncome(recs);
@@ -3839,6 +4056,15 @@ function renderAnalytics(){
   var breakHours = totalBreakHoursInRange(range.from, range.to);
   var fuel = fuelStatsInRange(range.from, range.to);
   var workDays = workingDaysInRange(range.from, range.to);
+  if(F){
+    if(fm.dayOnly){
+      km = fm.km; hours = fm.hours; breakHours = fm.brk;
+      workDays = workingDayListInRange(range.from, range.to).filter(function(d){ return anDayOk(F, d); }).length;
+    } else {
+      var fDays = {}; recs.forEach(function(r){ fDays[r.date] = true; });
+      workDays = Object.keys(fDays).length;
+    }
+  }
 
   var byPlatform = {};
   recs.forEach(function(r){ byPlatform[r.platform]=(byPlatform[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
@@ -3872,6 +4098,7 @@ function renderAnalytics(){
   } else if(analyticsPeriod==='all'){
     h += '<div style="text-align:center;font-size:12.5px;color:var(--text-muted);margin:-4px 0 12px">全部資料:'+range.from+' ~ '+range.to+'</div>';
   }
+  if(anAvailable()) h += anBarHtml();
 
   h += '<div class="section"><div class="summary-row" style="grid-template-columns:'+(uiShow('grossFees')?'1fr 1fr 1fr':'1fr')+'">';
   if(uiShow('grossFees')){
@@ -3880,8 +4107,14 @@ function renderAnalytics(){
   }
   h += '<div class="stat-tile"><div class="lbl">實收</div><div class="val income num">'+fmtMoney(net.total)+'</div></div>';
   h += '</div>';
-  if(uiShow('grossFees') && recordsInRange(range.from, range.to).some(isUberNetRec)) h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">含 Uber 多元:它的車資和手續費是用你設定的 % 從實收反推的估算值。</div>';
+  if(uiShow('grossFees') && recs.some(isUberNetRec)) h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">含 Uber 多元:它的車資和手續費是用你設定的 % 從實收反推的估算值。</div>';
   h += '</div>';
+  if(F){
+    h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
+    h += '<div class="stat-tile"><div class="lbl">趟數</div><div class="val num">'+fm.trips+' 趟</div></div>';
+    h += '<div class="stat-tile"><div class="lbl">'+(fm.dayOnly?'實際時薪(已扣休息)':'含空檔時薪')+'</div><div class="val num">'+(fm.hourly!=null?fmtMoney2(fm.hourly):'—')+'</div></div>';
+    h += '</div>'+anNoteHtml(F, fm, range)+'</div>';
+  } else {
   h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
   h += '<div class="stat-tile"><div class="lbl">總支出(含固定攤提)</div><div class="val expense num">'+fmtMoney(totalExp)+'</div></div>';
   // while the period is still running this card already takes the whole period's fixed costs, so it differs from the
@@ -3894,14 +4127,16 @@ function renderAnalytics(){
     h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;line-height:1.6">🛣️ 過路費:'+(etag>0 ? ('E-Tag 支出 '+fmtMoney2(etag)+' − 平台退款 '+fmtMoney2(tollRef)+' = 實際花 '+fmtMoney2(etag-tollRef)) : ('平台退款 '+fmtMoney2(tollRef)+'。這段期間沒有記 E-Tag 支出,過路費退款會讓淨利略高;建議每月收到 E-Tag 帳單時記一筆總額'))+'。總支出已扣掉退款。</div>';
   }
   h += '</div>';
-  if(uiShow('compare')) h += comparisonHtml(range);
+  }
+  if(uiShow('compare')) h += comparisonHtml(range, F);
 
+  var wholeDays = !F || fm.dayOnly;  // the punched hours and the day's km still apply
   if(uiShow('overview')){
   h += '<div class="section"><div class="section-title">本期概況</div><div class="card"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
-  h += '<div class="stat-tile"><div class="lbl">營業天數</div><div class="val num">'+workDays+' 天</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">'+(wholeDays?'營業天數':'有符合紀錄的天數')+'</div><div class="val num">'+workDays+' 天</div></div>';
   h += '<div class="stat-tile"><div class="lbl">平均日實收</div><div class="val income num">'+(workDays>0?fmtMoney(net.total/workDays):'—')+'</div></div>';
-  if(uiShow('shift')) h += '<div class="stat-tile"><div class="lbl">平均每日工時</div><div class="val num">'+(workDays>0?fmtNum(hours/workDays,2)+' 小時':'—')+'</div></div>';
-  if(uiShow('shift')) h += '<div class="stat-tile"><div class="lbl">平均每日休息時間</div><div class="val num">'+(workDays>0?fmtNum(breakHours/workDays,2)+' 小時':'—')+'</div></div>';
+  if(uiShow('shift') && wholeDays) h += '<div class="stat-tile"><div class="lbl">平均每日工時</div><div class="val num">'+(workDays>0?fmtNum(hours/workDays,2)+' 小時':'—')+'</div></div>';
+  if(uiShow('shift') && wholeDays) h += '<div class="stat-tile"><div class="lbl">平均每日休息時間</div><div class="val num">'+(workDays>0?fmtNum(breakHours/workDays,2)+' 小時':'—')+'</div></div>';
   var campRecs = recs.filter(function(r){ return r.tripBonus>0 || (r.platform==='bonus' && r.campaignId); });
   if(campRecs.length){
     var campAmt = campRecs.reduce(function(a,r){ return a + (r.platform==='bonus' ? (+r.revenue||0) : (+r.tripBonus||0)); }, 0);
@@ -3918,11 +4153,18 @@ function renderAnalytics(){
 
   if(uiShow('efficiency')){
   h += '<div class="section"><div class="section-title">效率指標</div><div class="card"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
+  if(!wholeDays){
+  h += '<div class="stat-tile"><div class="lbl">含空檔時薪</div><div class="val num">'+(fm.hourly!=null?fmtMoney2(fm.hourly):'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">載客＋空檔時間</div><div class="val num">'+fmtNum(fm.hours,2)+' 小時</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">有上下車時間的趟數</div><div class="val num">'+fm.timed+' / '+fm.trips+' 趟</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">平均每趟實收</div><div class="val income num">'+(fm.trips>0?fmtMoney2(net.total/fm.trips):'—')+'</div></div>';
+  } else {
   h += '<div class="stat-tile"><div class="lbl">實際時薪(已扣休息)</div><div class="val num">'+(hours>0?fmtMoney2(net.total/hours):'—')+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">總工時</div><div class="val num">'+fmtNum(hours,2)+' 小時</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">每公里成本</div><div class="val expense num">'+(km>0?fmtMoney2(totalExp/km):'—')+'</div></div>';
+  if(!F) h += '<div class="stat-tile"><div class="lbl">每公里成本</div><div class="val expense num">'+(km>0?fmtMoney2(totalExp/km):'—')+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">每公里實收</div><div class="val income num">'+(km>0?fmtMoney2(net.total/km):'—')+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">總里程</div><div class="val num">'+fmtNum(km,1)+' km</div></div>';
+  if(!F){
   h += '<div class="stat-tile"><div class="lbl">每公升可跑</div><div class="val num">'+(fuel.liters>0?fmtNum(km/fuel.liters,2)+' km':'—')+'</div></div>';
   if(fuel.cost>0) h += '<div class="stat-tile"><div class="lbl">每公里油錢</div><div class="val expense num">'+(km>0?fmtMoney2(fuel.cost/km):'—')+'</div></div>';
   var chg = chargeStatsInRange(range.from, range.to);
@@ -3931,11 +4173,13 @@ function renderAnalytics(){
     h += '<div class="stat-tile"><div class="lbl">每度電可跑</div><div class="val num">'+(km>0?fmtNum(km/chg.kwh,2)+' km':'—')+'</div></div>';
     h += '<div class="stat-tile"><div class="lbl">平均每度電價</div><div class="val num">'+fmtMoney2(chg.costKwh/chg.kwh)+'</div></div>';
   }
+  }
   h += '<div class="stat-tile"><div class="lbl">總休息時間</div><div class="val num">'+fmtNum(breakHours,2)+' 小時</div></div>';
+  }
   h += '</div></div></div>';
   }
 
-  if(uiShow('health')){
+  if(uiShow('health') && !F){
   var ts = toiletStatsInRange(range.from, range.to);
   h += '<div class="section"><div class="section-title">🚻 健康:上廁所</div><div class="card">';
   if(!ts.days){
@@ -3958,7 +4202,7 @@ function renderAnalytics(){
     h += '</div></div>';
   }
   if(uiShow('platEff')) h += platformEfficiencyHtml(recs);
-  if(uiShow('tripEff') || uiShow('hotspot')) h += tripInsightsHtml(range);
+  if(uiShow('tripEff') || uiShow('hotspot')) h += tripInsightsHtml(range, F);
 
   if(sub.length && uiShow('detail')){
     lastSubBreakdown = sub;
@@ -3972,7 +4216,7 @@ function renderAnalytics(){
 
   var tg = state.targets;
   var targetVal = analyticsPeriod==='day'?tg.daily : analyticsPeriod==='week'?tg.weekly : analyticsPeriod==='month'?tg.monthly : 0;
-  if(targetVal>0 && uiShow('target')){
+  if(targetVal>0 && uiShow('target') && !F){
     var pct = Math.min(100, Math.round(net.total/targetVal*100));
     h += '<div class="section"><div class="section-title">目標進度(依實收計算)</div><div class="card"><div class="progress-wrap">'+
       '<div class="progress-lbl"><span class="p">'+fmtMoney(net.total)+' / '+fmtMoney(targetVal)+'</span><span class="v num">'+pct+'%</span></div>'+
@@ -4039,11 +4283,14 @@ function timedTripsByDay(from, to){
   Object.keys(days).forEach(function(d){ days[d].sort(function(a,b){ return a.pickup.ts-b.pickup.ts; }); });
   return days;
 }
-function tripInsightsHtml(range){
+// f: the analysis filter in force. Only the trips it keeps are counted, but the empty time before each is still
+// measured from the previous drop-off of that day, whichever trip that was.
+function tripInsightsHtml(range, f){
   var days = timedTripsByDay(range.from, range.to);
   var dayKeys = Object.keys(days).sort();
-  if(!dayKeys.length){
-    return uiShow('tripEff') ? '<div class="section"><div class="section-title">🚕 載客效率(上下車紀錄)</div><div class="card"><div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">這段期間還沒有上下車紀錄。載客時按記帳頁的「上車」「下車」,這裡就會算出載客率、空車時間、搭車長短和上車熱區。</div></div></div>' : '';
+  var kept = !f || dayKeys.some(function(d){ return days[d].some(function(o){ return anTripOk(f, o, d); }); });
+  if(!dayKeys.length || !kept){
+    return uiShow('tripEff') ? '<div class="section"><div class="section-title">🚕 載客效率(上下車紀錄)</div><div class="card"><div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">'+(dayKeys.length ? '符合篩選條件的趟次都沒有上下車紀錄。' : '這段期間還沒有上下車紀錄。')+'載客時按記帳頁的「上車」「下車」,這裡就會算出載客率、空車時間、搭車長短和上車熱區。</div></div></div>' : '';
   }
   var n=0, occMin=0, gaps=[], plat={}, buckets=[0,0,0], kmBuckets=[0,0,0], kmSum=0, kmN=0;
   var accN=0, waitN=0, waitSum=0, approachSum=0, apKmSum=0, apKmN=0, accPlat={};
@@ -4051,6 +4298,7 @@ function tripInsightsHtml(range){
   dayKeys.forEach(function(d){
     var list = days[d], dayOcc = 0;
     list.forEach(function(o,i){
+      if(f && !anTripOk(f, o, d)) return;
       var m = tripMin(o.pickup,o.dropoff); if(m<0) return;
       n++; occMin += m; dayOcc += m;
       var rm = Math.round(m); buckets[rm<=15?0:(rm<=34?1:2)]++;
@@ -4083,14 +4331,15 @@ function tripInsightsHtml(range){
     var dayRecs = state.records.filter(function(r){ return r.date===d && !platformDef(r.platform).tipOnly; });
     var allTimed = dayRecs.length>0 && dayRecs.every(function(r){ return r.tripId && r.pickup && r.dropoff; });
     var wh = totalHoursInRange(d,d);
-    if(allTimed && wh>0){ fullOcc += dayOcc; fullWork += wh*60; fullDays++; }
+    // a share of the punched hours only means something for whole days
+    if(allTimed && wh>0 && (!f || (anDayOnly(f) && anDayOk(f, d)))){ fullOcc += dayOcc; fullWork += wh*60; fullDays++; }
   });
   var avgGap = gaps.length ? gaps.reduce(function(a,b){return a+b;},0)/gaps.length : null;
   var h = '<div class="section"><div class="section-title">🚕 載客效率(上下車紀錄)</div><div class="card">';
   h += '<div class="summary-row" style="grid-template-columns:1fr 1fr">';
   h += '<div class="stat-tile"><div class="lbl">載客率</div><div class="val num">'+(fullWork>0?fmtNum(fullOcc/fullWork*100,1)+'%':'—')+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">平均空檔時間</div><div class="val num">'+(avgGap!=null?fmtNum(avgGap,1)+' 分':'—')+'</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">平均每趟載客</div><div class="val num">'+fmtNum(occMin/n,1)+' 分</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">平均每趟載客</div><div class="val num">'+(n?fmtNum(occMin/n,1)+' 分':'—')+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">有紀錄的趟數</div><div class="val num">'+n+' 趟</div></div>';
   h += '</div>';
   var bc = ['var(--accent)','var(--income)','#4472C4'];
@@ -4114,8 +4363,15 @@ function tripInsightsHtml(range){
     h += apl2.map(function(p){ return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(p.label)+'</div><div class="li-sub">'+p.apN+' 趟</div></div><div class="li-amt num" style="font-size:13px">等單 '+(p.wtN?fmtNum(p.wt/p.wtN,1):'—')+' · 接駁 '+fmtNum(p.ap/p.apN,1)+' 分</div></div>'; }).join('');
   }
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">載客率=載客時間÷工時,只算整天每趟都有按上下車的日子('+fullDays+' 天)。空檔時間=上一趟下車到下一趟上車(包含等單、開去上車點、等客人),超過 '+EMPTY_GAP_CAP_MIN+' 分鐘的視為休息不列入,每天第一趟也不算。距離是上下車兩點的直線距離,上下車都有抓到位置的趟次才算。</div>';
+  if(f && !anDayOnly(f)) h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">🔎 篩選平台或時段時不算載客率(打卡工時分不出來);其他數字只算符合條件的趟次。</div>';
   h += '</div></div>';
-  return (uiShow('tripEff') ? h : '') + (uiShow('hotspot') ? hotspotHtml(days, dayKeys) : '');
+  var hotDays = days, hotKeys = dayKeys;
+  if(f){
+    hotDays = {};
+    dayKeys.forEach(function(d){ var l = days[d].filter(function(o){ return anTripOk(f, o, d); }); if(l.length) hotDays[d] = l; });
+    hotKeys = Object.keys(hotDays).sort();
+  }
+  return (uiShow('tripEff') ? h : '') + (uiShow('hotspot') ? hotspotHtml(hotDays, hotKeys) : '');
 }
 var hotspotSlot = 'all';
 /* ---------- 車友熱區:opt-in sharing of ~1 km pickup cells, shown back only where 3+ drivers overlap ---------- */
@@ -4174,7 +4430,7 @@ var VIP_FEATURES = [
   ['📈', '長期間分析', '分析頁「本年／自訂區間／全部」,看整年、任意期間的收入、時薪、成本'],
   ['🗓️', '定期經營摘要', '每週、每月自動整理,時薪跟你自己前幾週、去年同期比'],
   ['📄', 'PDF 經營報告', '有質感的經營報告,可以存檔、分享(準備中)'],
-  ['⭐', '可保存的分析組合', '常看的條件存起來,點一下就打開(準備中)'],
+  ['⭐', '可保存的分析組合', '分析頁篩選平台、星期、時段,常看的條件存起來,點一下就打開'],
   ['🔥', '人潮情報', '演唱會、展覽、比賽散場時間與地點(準備中)']
 ];
 var VIP_PERIODS = {year:1, custom:1, all:1};
@@ -5473,6 +5729,18 @@ function setFontScale(label, trying){
   if(!trying) state.fontAsked = true;
   save(); applyFontScale(); applyLayoutWidth();
 }
+// Uber closes a day of fares at 04:00. A driver with Uber whose own day changes at another hour is told once, and can
+// switch with one tap; either answer is remembered (state.uberCutHint).
+var UBER_DAY_CUTOFF = 4;
+function uberShown(){ return visiblePlatforms().some(function(p){ return p.key==='uber'; }); }
+function uberCutHintHtml(){
+  if(state.uberCutHint || !state.onboarded || !uberShown() || dayCutoffHour()===UBER_DAY_CUTOFF) return '';
+  var b = 'flex:1;padding:9px 6px;border-radius:10px;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-weight:700;font-size:13px;cursor:pointer;font-family:inherit';
+  return '<div class="card" id="uberCutHint" style="margin-bottom:12px;padding:12px 14px"><div style="font-size:14px;font-weight:700;margin-bottom:6px">🚗 跑 Uber 的提醒</div>'+
+    '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;margin-bottom:10px">Uber 一天的車資結算是<b style="color:var(--text)">凌晨 04:00 到隔天 03:59</b>。記帳本現在是 '+pad(dayCutoffHour())+':00 換日,所以半夜跑的單,記帳本和 Uber App 的「每日收入」會算在不同天。想對得起來,可以把營業日分界改成凌晨 04:00(只影響之後記的帳)。</div>'+
+    '<div style="display:flex;gap:8px"><button data-act="uber-cut:set" style="'+b+';border-color:var(--accent-strong);background:var(--accent-soft)">改成凌晨 04:00</button><button data-act="uber-cut:keep" style="'+b+'">維持 '+pad(dayCutoffHour())+':00</button></div>'+
+    '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px">之後可以在 ⚙️「基本設定」→「我的營業日分界時間」改</div></div>';
+}
 function fontAskHtml(){
   if(state.fontAsked) return '';
   var b = 'flex:1;padding:9px 0;border-radius:10px;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-weight:700;cursor:pointer;font-family:inherit';
@@ -5862,7 +6130,7 @@ var HELP = [
   ]],
   ['上班與工時', [
     ['上下班打卡、休息', '記帳頁「今日行車」按上班打卡 / 下班打卡,休息按休息開始 / 結束。忘了打下班卡,下次打開會問你。', 'shift'],
-    ['跑過半夜(營業日分界)', '預設凌晨 4 點前記的帳都算前一天(跟 Uber 一天的結算時間一樣),凌晨時記帳頁上方會提醒;常跑到更晚的夜班,到 ⚙️「基本設定」→「我的營業日分界時間」往後調。'],
+    ['跑過半夜(營業日分界)', '新安裝預設午夜 00:00 換日(照日曆算)。常跑過半夜的,到 ⚙️「基本設定」→「我的營業日分界時間」往後調,那個時間以前記的帳都算前一天,凌晨時記帳頁上方會提醒。Uber 一天的車資結算是凌晨 04:00 到隔天 03:59,想跟 Uber App 的每日收入對得起來就選凌晨 04:00。'],
     ['目前時薪', '今日行車顯示今日實收 ÷ 已跑工時,上班滿 30 分鐘才顯示。', 'liveRate'],
     ['今日跑車報告', '下班打卡後跳出:實收、時薪、趟數,跟前 7 天比較,可以順便備份。', 'dayReport'],
     ['休息提醒', '連續開車太久(預設 2 小時)、今天上班太久(預設 12 小時)時提醒你,只是提醒,不會幫你按休息。時間在功能開關下面改。記帳本要打開著才會跳出來。', 'restRemind'],
@@ -6251,7 +6519,8 @@ function openSettingsModal(){
   h += '<div><span style="font-size:11px;color:var(--text-muted)">每月</span><input class="num-input" id="f-target-monthly" type="number" min="0" value="'+(state.targets.monthly||'')+'"></div></div>';
 
   var cutoffNow = dayCutoffHour();
-  h += '<div class="form-row" style="margin-top:6px"><label>我的營業日分界時間(日報、分析用;跑過午夜時,這個時間以前都算前一天。預設凌晨 4 點,跟 Uber 一天的結算時間一樣;常跑到更晚的夜班可以往後調。平台撥款另外依各平台結算時間計算,不受影響)</label><select id="f-day-cutoff">'+
+  h += '<div class="form-row" style="margin-top:6px"><label>我的營業日分界時間(日報、分析用;跑過午夜時,這個時間以前都算前一天。新安裝預設午夜 00:00,照日曆算;常跑過半夜的可以往後調。平台撥款另外依各平台結算時間計算,不受影響)</label>'+
+    (uberShown() ? '<div style="font-size:11.5px;color:var(--text-muted);margin:-2px 0 6px;line-height:1.6">🚗 跑 Uber 的提醒:Uber 一天的車資結算是凌晨 04:00 到隔天 03:59。想跟 Uber App 的每日收入對得起來,選「凌晨 04:00」。</div>' : '')+'<select id="f-day-cutoff">'+
     [0,1,2,3,4,5,6,7,8].map(function(hh){ return '<option value="'+hh+'"'+(hh===cutoffNow?' selected':'')+'>'+(hh===0?'午夜 00:00(不跨夜)':('凌晨 '+pad(hh)+':00'))+'</option>'; }).join('')+
     '</select></div>';
   S.basic += h; h = '';
@@ -6305,12 +6574,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.13.5';
+var APP_VERSION = '2026.11.13.8';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.13.8', '🌙 新安裝的營業日分界預設改成午夜 00:00(照日曆算),已經在用的不會變。跑 Uber 的車友:Uber 一天的車資結算是凌晨 04:00 到隔天 03:59,想跟 Uber App 的每日收入對得起來,到 ⚙️「基本設定」→「我的營業日分界時間」選凌晨 04:00'],
   ['2026.11.13.4', '📅 歷史頁的日曆可以切換顯示「結餘／工時／時薪」,一眼看出哪幾天跑很久卻賺不多'],
   ['2026.11.13.4', '📄 企業簽單可以勾「紙本簽單」:不算進車隊撥款,改列在撥款頁「待兌現」,拿去車隊換到現金再按「已兌現」(用不到可以在 ⚙️ 功能開關關掉)'],
   ['2026.11.13.1', '⚡ 修正:分析頁電動車的「每度電可跑」重複顯示;「平均每度電價」改成只算有填度數的充電,不再偏高'],
@@ -6323,7 +6593,7 @@ var WHATS_NEW = [
   ['2026.11.12.3', '🧮 新功能(到 ⚙️「顯示模式與功能開關」打開):「各車隊實收比較」輸入一個車資,馬上看各車隊扣完手續費實拿多少;「目標還要跑多久」依你目前的平均時薪,算出離今日／本月目標還要跑幾小時、幾趟,每記一筆就自動更新'],
   ['2026.11.12.3', '📷 撥款頁「用截圖核對」(Android App):選 BOLT 每週收入明細或 Uber 每週行程費用的截圖,自動讀出金額、對應那一批撥款,過路費一鍵填入;在手機上辨識,圖片不上傳', 'app'],
   ['2026.11.12.3', '⚡ 分析頁效率指標多了每公里油錢;電動車司機記充電時填度數,還能看每公里電費、每度電可跑幾公里'],
-  ['2026.11.12.3', '📖 功能說明補上過路費退款、匯入帳戶、大都會錢包;新安裝的營業日分界預設改為凌晨 4 點(跟 Uber 結算時間一樣),已經在用的可以到 ⚙️「基本設定」自己調'],
+  ['2026.11.12.3', '📖 功能說明補上過路費退款、匯入帳戶、大都會錢包;營業日分界可以到 ⚙️「基本設定」自己調'],
   ['2026.11.12.2', '🏦 台灣大車隊(多元、小黃)非現金車資的撥款預估改成 3 個工作天(台灣大車隊客服確認,遇假日順延);你自己改過的不受影響'],
   ['2026.11.12.2', '📲 記帳頁會提示可以打開「接到單了」:上車前多按一下,分析頁就看得到每趟接客花多久、多少公里,各平台比一比'],
   ['2026.11.12.1', '👛 大都會錢包推算更準:事後補記以前日期的現金單,不會重複扣錢包餘額;撥款頁的金額改成實際會匯到銀行的錢(已扣掉先補進錢包的部分),對帳不會誤判'],
@@ -6701,6 +6971,7 @@ function ledgerProblem(p, strictDates){
     ((p.tollRefunds!=null && (typeof p.tollRefunds!=='object' || Array.isArray(p.tollRefunds))) ? '「過路費退款」的格式不對' : objValues(p.tollRefunds||{}, '過路費退款')) ||
     ((p.metroWallet!=null && (typeof p.metroWallet!=='object' || Array.isArray(p.metroWallet))) ? '「大都會錢包」的格式不對' : '') ||
     ((p.vehicle!=null && (typeof p.vehicle!=='object' || Array.isArray(p.vehicle) || (p.vehicle.policies!=null && !Array.isArray(p.vehicle.policies)))) ? '「車輛提醒」的格式不對' : '') ||
+    ((p.analysisPresets!=null && !Array.isArray(p.analysisPresets)) ? '「分析組合」的格式不對' : objList(p.analysisPresets||[], '分析組合')) ||
     numValues(p.feeRules||{}, '手續費設定') || numValues(p.targets||{}, '目標') ||
     ((p.activeTrip!=null && !isObj(p.activeTrip)) ? '「載客中的行程」格式不對' : '');
 }
@@ -6715,8 +6986,7 @@ function replaceLedger(parsed, undoLabel, okMsg){
   replacingLedger = true;
   keepUndoCopy(undoLabel, function(kept){
     if(!kept){ replacingLedger = false; alert('沒辦法先把目前的帳另外保留一份(手機空間可能不夠),所以這次沒有還原。\n\n目前的帳沒有任何改變。'); return; }
-    var d = defaultState();
-    for(var k in d){ if(!(k in parsed)) parsed[k] = d[k]; }
+    fillMissing(parsed);
     DEVICE_KEYS.forEach(function(k){ if(k in state) parsed[k] = state[k]; else delete parsed[k]; });
     parsed.fmt = LEDGER_FMT;
     var prev = state, prevStale = storageStale, prevFailed = saveFailed, prevAlerted = saveFailAlerted;
@@ -7198,6 +7468,39 @@ document.addEventListener('click', function(e){
   else if(cmd==='day'){ var dObj=new Date(analyticsDay+'T00:00:00'); dObj.setDate(dObj.getDate()+(+arg)); analyticsDay=toDateStr(dObj); renderAll(); }
   else if(cmd==='select-day'){ selectedDay=arg; renderAll(); }
   else if(cmd==='period'){ if(VIP_PERIODS[arg] && !isVip()){ openVipIntro('長期間分析', arg); return; } analyticsPeriod=arg; renderAll(); }
+  else if(cmd==='anf-toggle'){ if(!isVip()){ anFilterOpen = true; openVipIntro('可保存的分析組合'); return; } anFilterOpen = !anFilterOpen; renderAll(); }
+  else if(cmd==='anf-plat' || cmd==='anf-wd'){
+    if(!isVip()) return;
+    var afList = cmd==='anf-plat' ? anFilter.plats : anFilter.wdays, afVal = cmd==='anf-plat' ? arg : +arg, afAt = afList.indexOf(afVal);
+    if(afAt>=0) afList.splice(afAt, 1); else afList.push(afVal);
+    anPresetId = null; renderAll();
+  }
+  else if(cmd==='anf-clear'){ anFilter = anBlank(); anPresetId = null; renderAll(); }
+  else if(cmd==='anp-save'){ anSavePreset(); }
+  else if(cmd==='anp-apply'){ anApplyPreset(arg); }
+  else if(cmd==='anp-manage'){ openAnPresets(); }
+  else if(cmd==='anp-up' || cmd==='anp-down'){
+    var apList = state.analysisPresets || [], apAt = -1;
+    apList.forEach(function(x, i){ if(x.id===arg) apAt = i; });
+    var apTo = apAt + (cmd==='anp-up' ? -1 : 1);
+    if(apAt>=0 && apTo>=0 && apTo<apList.length){ var apTmp = apList[apAt]; apList[apAt] = apList[apTo]; apList[apTo] = apTmp; save(); renderAll(); openAnPresets(); }
+  }
+  else if(cmd==='anp-rename'){
+    var arP = (state.analysisPresets||[]).filter(function(x){ return x.id===arg; })[0]; if(!arP) return;
+    var arName = prompt('組合的名字(最多 20 個字)', arP.name);
+    if(arName==null) return;
+    arName = arName.trim().slice(0,20); if(!arName) return;
+    arP.name = arName; save(); renderAll(); openAnPresets();
+  }
+  else if(cmd==='anp-del'){
+    var adP = (state.analysisPresets||[]).filter(function(x){ return x.id===arg; })[0];
+    if(adP && confirm('刪除組合「'+adP.name+'」?(只刪掉這組條件,不會刪到任何帳)')){
+      state.analysisPresets = state.analysisPresets.filter(function(x){ return x.id!==arg; });
+      if(anPresetId===arg) anPresetId = null;
+      save(); renderAll();
+      if(state.analysisPresets.length) openAnPresets(); else closeModal();
+    }
+  }
   else if(cmd==='open-summary'){ openSummary(sumView.kind, 1); }
   else if(cmd==='open-summary-home'){ openSummary(arg, 1); }
   else if(cmd==='summary-dismiss'){ var sp = summaryPeriod(arg, 1); state.summarySeen = state.summarySeen || {}; state.summarySeen[arg] = sp.from; save(); renderAll(); }
@@ -7254,6 +7557,11 @@ document.addEventListener('click', function(e){
   }
   else if(cmd==='font-pick'){ setFontScale(arg, true); renderAll(); }
   else if(cmd==='font-ask-off'){ state.fontAsked = true; save(); renderAll(); }
+  else if(cmd==='uber-cut'){
+    if(arg==='set') state.dayCutoffHour = UBER_DAY_CUTOFF;
+    state.uberCutHint = true; save(); renderAll();
+    showToast(arg==='set' ? '已改成凌晨 04:00 換日' : '好,維持 '+pad(dayCutoffHour())+':00 換日');
+  }
   else if(cmd==='save-appname'){ saveAppName(); }
   else if(cmd==='open-settings'){ openSettingsModal(); }
   else if(cmd==='open-newplatform'){ openNewPlatformModal(); }
@@ -7558,6 +7866,7 @@ document.addEventListener('change', function(e){
   if(e.target.matches && e.target.matches('[data-mirror]')){ var mt = document.getElementById(e.target.getAttribute('data-mirror')); if(mt) mt.checked = e.target.checked; return; }
   if(e.target.id && e.target.id.indexOf('f-ui-')===0){ document.querySelectorAll('[data-mirror="'+e.target.id+'"]').forEach(function(m){ m.checked = e.target.checked; }); }
   if(e.target.id==='f-vip-test'){ state.vipTest = e.target.checked; save(); renderAll(); showToast(e.target.checked ? '👑 已開啟 VIP 測試' : '已切回免費版'); return; }
+  if(e.target.id==='anf-from' || e.target.id==='anf-to'){ anFilter[e.target.id==='anf-from' ? 'hFrom' : 'hTo'] = e.target.value==='' ? null : +e.target.value; anPresetId = null; renderAll(); return; }
   if(e.target.id==='f-ocr-file'){ if(e.target.files && e.target.files[0]) ocrRun(e.target.files[0]); return; }
   if(e.target.id==='f-tip-cur'){ var re = document.getElementById('f-tip-rate'); if(re) re.value = fxRate(e.target.value)||''; tipFxUpdate(); if(currentIncomeModalKey) updateIncomePreview(); return; }
   if(e.target.id==='f-cloud-key-show'){ var ck=document.getElementById('f-cloud-key'); if(ck) ck.type = e.target.checked ? 'text' : 'password'; return; }
