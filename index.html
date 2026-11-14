@@ -3956,7 +3956,8 @@ function anPresetDesc(p){
   return (per ? per+' · ' : '')+anDesc({plats:p.plats||[], wdays:p.wdays||[], hFrom:p.hFrom, hTo:p.hTo});
 }
 function anBarHtml(){
-  var vip = isVip(), f = anFilter, on = vip && anIsSet(f), open = vip && anFilterOpen, list = vip ? (state.analysisPresets||[]) : [];
+  // without VIP (never bought, or it ended) the saved presets stay listed, locked: nothing a driver saved disappears
+  var vip = isVip(), f = anFilter, on = vip && anIsSet(f), open = vip && anFilterOpen, list = state.analysisPresets||[];
   var hourSel = function(id, val){
     var s = '<select id="'+id+'"><option value="">不限</option>';
     for(var i=0;i<24;i++) s += '<option value="'+i+'"'+(val===i?' selected':'')+'>'+pad(i)+':00</option>';
@@ -3966,10 +3967,11 @@ function anBarHtml(){
   h += '<button type="button" class="chip-opt'+(open?' selected':'')+'" data-act="anf-toggle" aria-expanded="'+open+'">🔎 篩選'+(vipGated()?' 👑':'')+(vip ? (open?' ▴':' ▾') : '')+'</button>';
   list.forEach(function(p){
     var sel = on && anPresetOn(p);
-    h += '<button type="button" class="chip-opt'+(sel?' selected':'')+'" data-act="anp-apply:'+p.id+'" aria-pressed="'+sel+'">⭐ '+esc(p.name)+'</button>';
+    h += '<button type="button" class="chip-opt'+(sel?' selected':'')+'" data-act="anp-apply:'+p.id+'" aria-pressed="'+sel+'"'+(vip?'':' style="opacity:.55"')+'>'+(vip?'⭐ ':'🔒 ')+esc(p.name)+'</button>';
   });
   if(list.length) h += '<button type="button" class="chip-opt" data-act="anp-manage">管理</button>';
   h += '</div>';
+  if(list.length && !vip) h += '<div id="anLockNote" style="font-size:12px;color:var(--text-muted);margin-top:8px;line-height:1.5">🔒 '+vipLockNote()+'。存過的組合都還在。</div>';
   // only while the panel is closed: appearing above the open panel would push its chips down under the finger
   if(on && !open) h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:12.5px;margin-top:8px;line-height:1.5"><span>篩選中:<b>'+esc(anDesc(f))+'</b></span><a data-act="anf-clear" role="button" tabindex="0" style="color:var(--accent);cursor:pointer;flex:none">清除篩選</a></div>';
   if(open){
@@ -4030,6 +4032,7 @@ function anApplyPreset(id){
 function openAnPresets(){
   var list = state.analysisPresets || [], bs = 'width:auto;padding:6px 10px;white-space:nowrap';
   var h = '<div class="modal-title">⭐ 分析組合<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  if(list.length && !isVip()) h += '<div class="card" style="padding:10px 14px;margin-bottom:10px;font-size:12.5px;line-height:1.6">🔒 '+vipLockNote()+'。組合都保留著,這裡還是可以改名、排序、刪除。</div>';
   if(!list.length) h += '<div style="padding:20px 0;text-align:center;color:var(--text-muted);font-size:13px">還沒有組合。在分析頁按「🔎 篩選」選好條件,再按「⭐ 存成組合」。</div>';
   else h += '<div class="card">'+list.map(function(p, i){
     return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(p.name)+'</div><div class="li-sub">'+esc(anPresetDesc(p))+'</div></div>'+
@@ -4446,22 +4449,330 @@ var VIP_FEATURES = [
 ];
 var VIP_PERIODS = {year:1, custom:1, all:1};
 function vipGated(){ return VIP_GATE || betaOn(); }
-function isVip(){ return !vipGated() || !!state.vipTest; }
-var vipPendingPeriod = null;
+// The 「VIP 測試」 switch lives in the ledger, so it travels in backups: it only counts in 跑車人生 測試版.
+function isVip(){ return !vipGated() || vipVerdict().vip || (betaOn() && !!state.vipTest); }
+
+/* ---------- VIP 權益層 ----------
+   Three layers. A PROVIDER says what the store says (today a stand-in; later the Qonversion adapter). THIS LAYER
+   keeps the provider's last answer on this phone and decides how long it may be trusted without a connection.
+   isVip() asks only this layer.
+
+   What a provider must offer — every function returns a promise; a failure rejects with {code, message}, code being
+   'network' (could not reach it), 'unavailable' (nothing can be bought here) or 'failed' (the store said no):
+     name                  a short fixed word; the kept answer is only believed by the provider that gave it
+     init()                resolves when ready. Being offline is not a failure.
+     getUserId()           the provider's own anonymous id (a string; '' when there is none)
+     getProducts()         [{id, plan:'month'|'year', priceText, price, currency}] — prices come from the store, never from here
+     getEntitlement()      {status, plan, expiresAt, willRenew, checkedAt?}
+                             status     'none' | 'active' | 'grace' | 'expired' | 'revoked'
+                             plan       'month' | 'year' | 'lifetime' | null
+                             expiresAt  ms, or null (lifetime, none)
+                             willRenew  false once the driver cancelled, or for lifetime
+                             checkedAt  ms when the store last confirmed it; left out = now
+     purchase(productId)   {result:'purchased'|'cancelled'|'pending', entitlement?}
+     restore()             {found:true|false, entitlement}
+     onChange(cb)          cb(entitlement) whenever the provider learns of a change (renewal, refund, another device)
+
+   The kept answer sits in this phone's localStorage only: not in the ledger, so never in a backup file or the cloud
+   copy, and a backup that says "VIP" is not believed. Nothing from the ledger is ever handed to a provider. */
+var VIP_OFFLINE_DAYS = 30;                  // how long the last confirmed answer is trusted without a connection
+var VIP_RECHECK_MS = 6*3600000;             // coming back to the app asks again after this long (at once after a failed try)
+var VIP_CACHE_KEY = 'taxi_vip_ent';
+var VIP_TERMS_URL = 'https://app.realway.com.tw/terms.html';
+var VIP_PRIVACY_URL = 'https://app.realway.com.tw/privacy.html';
+var VIP_STATUS = {none:1, active:1, grace:1, expired:1, revoked:1};
+var VIP_PLAN_ZH = {month:'月訂', year:'年訂', lifetime:'終身'};
+var VIP_DAY = 86400000;
+function vipErr(code, message){ return {code:code, message:message||''}; }
+// The app with no provider wired in, and the website (VIP is sold in the app only): never VIP, nothing to buy.
+var VipNone = {
+  name: 'none',
+  init: function(){ return Promise.resolve(); },
+  getUserId: function(){ return Promise.resolve(''); },
+  getProducts: function(){ return Promise.reject(vipErr('unavailable')); },
+  getEntitlement: function(){ return Promise.resolve({status:'none', plan:null, expiresAt:null, willRenew:false}); },
+  purchase: function(){ return Promise.reject(vipErr('unavailable')); },
+  restore: function(){ return Promise.reject(vipErr('unavailable')); },
+  onChange: function(){}
+};
+// The stand-in for a store, for 跑車人生 測試版 only: it plays the part chosen in ⚙️「VIP 情境模擬」. No money moves.
+// scene = what the "store" would answer; buy = how the next purchase ends. Both are kept in this phone only.
+var VIP_MOCK_SCENES = [
+  ['none', '未購買'], ['month', '月訂有效'], ['year', '年訂有效'], ['lifetime', '終身(贈送)'],
+  ['grace', '寬限期(扣款失敗,商店重試中)'], ['expired', '已到期'], ['revoked', '已退款／撤銷'],
+  ['offline_ok', '離線,上次確認還在 '+VIP_OFFLINE_DAYS+' 天內'], ['offline_stale', '離線,超過 '+VIP_OFFLINE_DAYS+' 天沒確認'], ['down', '服務商連不上,從沒確認過']
+];
+var VIP_MOCK_BUYS = [['ok', '購買成功'], ['cancel', '按了取消'], ['fail', '購買失敗'], ['pending', '付款待確認'], ['network', '購買時斷線']];
+var VipMock = (function(){
+  var KEY = 'taxi_vip_mock', listeners = [];
+  function load(){ var m = null; try{ m = JSON.parse(localStorage.getItem(KEY)||'null'); }catch(e){} m = m || {}; if(!m.scene){ m.scene = 'none'; m.at = Date.now(); } if(!m.buy) m.buy = 'ok'; return m; }
+  function keep(m){ try{ localStorage.setItem(KEY, JSON.stringify(m)); }catch(e){} }
+  function offline(m){ return m.scene==='offline_ok' || m.scene==='offline_stale' || m.scene==='down'; }
+  function entOf(m){
+    var t = m.at || Date.now(), s = m.scene;
+    if(s==='month') return {status:'active', plan:'month', expiresAt:t+30*VIP_DAY, willRenew:true};
+    if(s==='year') return {status:'active', plan:'year', expiresAt:t+365*VIP_DAY, willRenew:true};
+    if(s==='lifetime') return {status:'active', plan:'lifetime', expiresAt:null, willRenew:false};
+    if(s==='grace') return {status:'grace', plan:'month', expiresAt:t-2*VIP_DAY, willRenew:true};
+    if(s==='expired') return {status:'expired', plan:'month', expiresAt:t-3*VIP_DAY, willRenew:false};
+    if(s==='revoked') return {status:'revoked', plan:'year', expiresAt:t, willRenew:false};
+    return {status:'none', plan:null, expiresAt:null, willRenew:false};
+  }
+  // answers a little later, like a real store; fn may throw a {code} to fail
+  function later(fn){ return new Promise(function(res, rej){ setTimeout(function(){ try{ res(fn()); }catch(e){ rej(e); } }, api.delay); }); }
+  function online(m){ if(offline(m)) throw vipErr('network'); }
+  var PRODUCTS = [{id:'mock_vip_year', plan:'year', priceText:'NT$390', price:390, currency:'TWD'}, {id:'mock_vip_month', plan:'month', priceText:'NT$39', price:39, currency:'TWD'}];
+  var api = {
+    name: 'mock', delay: 120,
+    init: function(){ return Promise.resolve(); },
+    getUserId: function(){ var m = load(); if(!m.uid){ m.uid = 'MOCK_'+uid().toUpperCase(); keep(m); } return Promise.resolve(m.uid); },
+    getProducts: function(){ return later(function(){ online(load()); return PRODUCTS.slice(); }); },
+    getEntitlement: function(){ return later(function(){ var m = load(); online(m); return entOf(m); }); },
+    purchase: function(productId){
+      return later(function(){
+        var m = load(), p = PRODUCTS.filter(function(x){ return x.id===productId; })[0];
+        if(offline(m) || m.buy==='network') throw vipErr('network');
+        if(!p || m.buy==='fail') throw vipErr('failed', '付款沒有成功');
+        if(m.buy==='cancel') return {result:'cancelled'};
+        if(m.buy==='pending') return {result:'pending'};
+        m.scene = p.plan; m.at = Date.now(); keep(m);
+        var e = entOf(m); listeners.forEach(function(cb){ cb(e); });
+        return {result:'purchased', entitlement:e};
+      });
+    },
+    restore: function(){ return later(function(){ var m = load(); online(m); var e = entOf(m); return {found:e.status==='active' || e.status==='grace', entitlement:e}; }); },
+    onChange: function(cb){ listeners.push(cb); },
+    // the knobs of the 情境模擬 panel (not part of what a provider offers)
+    state: function(){ return load(); },
+    setScene: function(s){ var m = load(); m.scene = s; m.at = Date.now(); keep(m); },
+    setBuy: function(b){ var m = load(); m.buy = b; keep(m); }
+  };
+  return api;
+})();
+// The real adapter goes here once the developer accounts exist: in the installed app only, never on the website.
+var VIP_REAL_PROVIDER = null;
+function vipProvider(){ return VIP_REAL_PROVIDER || (betaOn() ? VipMock : VipNone); }
+function vipCanBuy(){ return vipProvider() !== VipNone; }
+var vipEnt = {provider:null, cache:null, error:null, userId:'', ready:null, checking:null, lastTry:0, gen:0};
+function vipCacheLoad(name){
+  try{ var c = JSON.parse(localStorage.getItem(VIP_CACHE_KEY)||'null'); return (c && c.src===name && VIP_STATUS[c.status] && c.checkedAt) ? c : null; }catch(e){ return null; }
+}
+function vipCacheKeep(){ try{ if(vipEnt.cache) localStorage.setItem(VIP_CACHE_KEY, JSON.stringify(vipEnt.cache)); else localStorage.removeItem(VIP_CACHE_KEY); }catch(e){} }
+// follows the provider in use (the channel is only known a moment after start, and 測試版 can be switched on the website)
+function vipAttach(){
+  var p = vipProvider();
+  if(vipEnt.provider===p) return p;
+  var gen = ++vipEnt.gen;
+  vipEnt.provider = p; vipEnt.cache = vipCacheLoad(p.name); vipEnt.error = null; vipEnt.userId = ''; vipEnt.checking = null; vipEnt.lastTry = 0;
+  vipProducts = null; vipProductsErr = ''; vipBusy = ''; vipMsg = '';
+  if(!p._wired){ p._wired = true; p.onChange(function(e){ if(vipEnt.provider===p) vipAccept(e); }); }
+  vipEnt.ready = p.init().then(function(){}, function(){});
+  vipEnt.ready.then(function(){ return p.getUserId(); }).then(function(id){ if(vipEnt.gen===gen) vipEnt.userId = id||''; }, function(){});
+  vipRefresh();
+  return p;
+}
+// asks the provider now. One failed try never takes VIP away: the kept answer stays, only the note "could not check" is set.
+function vipRefresh(){
+  var p = vipAttach(), gen = vipEnt.gen;
+  if(vipEnt.checking) return vipEnt.checking;
+  vipEnt.lastTry = Date.now();
+  var job = vipEnt.ready.then(function(){ return p.getEntitlement(); }).then(function(e){
+    if(vipEnt.gen!==gen) return;
+    vipEnt.checking = null; vipAccept(e);
+  }, function(err){
+    if(vipEnt.gen!==gen) return;
+    var before = vipKey();
+    vipEnt.checking = null; vipEnt.error = (err && err.code) || 'network';
+    vipChanged(before);
+  });
+  vipEnt.checking = job;
+  return job;
+}
+function vipAccept(e){
+  if(!e || !VIP_STATUS[e.status]) return;
+  var before = vipKey();
+  vipEnt.cache = {src:vipEnt.provider.name, status:e.status, plan:e.plan||null, expiresAt:e.expiresAt||null, willRenew:!!e.willRenew, checkedAt:e.checkedAt||Date.now()};
+  vipEnt.error = null; vipCacheKeep();
+  vipChanged(before);
+}
+// The verdict isVip() goes by. kind:
+//   'active'   confirmed (also while the first check of this start is still on its way)
+//   'offline'  could not check just now, the kept answer is still within VIP_OFFLINE_DAYS
+//   'none' 'expired' 'revoked'   what the store said
+//   'stale'    the kept answer is too old (or the phone's clock was set back before it): locked until a check works
+//   'unknown'  never confirmed and the provider cannot be reached
+function vipVerdict(now){
+  vipAttach(); now = now || Date.now();
+  var c = vipEnt.cache;
+  if(!c) return {vip:false, kind:vipEnt.error ? 'unknown' : 'none', ent:null};
+  if(c.status!=='active' && c.status!=='grace') return {vip:false, kind:c.status, ent:c};
+  // a subscription the driver cancelled ends on its date even with no connection; one that renews is given the benefit of the doubt
+  if(c.expiresAt && now>c.expiresAt && !c.willRenew) return {vip:false, kind:'expired', ent:c};
+  if(now < c.checkedAt-VIP_DAY || now > c.checkedAt+VIP_OFFLINE_DAYS*VIP_DAY) return {vip:false, kind:'stale', ent:c};
+  return {vip:true, kind:vipEnt.error ? 'offline' : 'active', ent:c};
+}
+function vipKey(){ var v = vipVerdict(), c = v.ent; return v.kind+'|'+((c && v.kind!=='none') ? c.status+'|'+c.plan+'|'+c.expiresAt+'|'+c.willRenew : ''); }
+function vipChanged(before){
+  if(vipKey()===before) return;
+  if(vipGated()) renderAll();
+  var now = document.getElementById('vipNow'); if(now) now.textContent = vipStatusText();
+  if(document.getElementById('vipPaywall')) openVipIntro(vipPaywallFeature, vipPendingPeriod);
+}
+function vipDate(ms){ return toDateStr(new Date(ms)).replace(/-/g, '/'); }
+function vipStatusText(){
+  var v = vipVerdict(), c = v.ent;
+  if(v.vip){
+    var t = 'VIP 有效 · '+(VIP_PLAN_ZH[c.plan]||'');
+    if(c.status==='grace') t += ' · 扣款失敗,商店重試中';
+    else if(c.expiresAt) t += c.willRenew ? ' · '+vipDate(c.expiresAt)+' 續訂' : ' · 到 '+vipDate(c.expiresAt)+' 為止';
+    if(v.kind==='offline') t += ' · 離線中,上次確認 '+vipDate(c.checkedAt);
+    return t;
+  }
+  if(v.kind==='expired') return 'VIP 已到期'+(c.expiresAt ? '('+vipDate(c.expiresAt)+')' : '');
+  if(v.kind==='revoked') return 'VIP 已取消(退款或撤銷)';
+  if(v.kind==='stale') return '太久沒連上網路,暫時無法確認 VIP';
+  if(v.kind==='unknown') return '現在連不上,無法確認 VIP';
+  return '免費版';
+}
+// why a saved thing cannot be used right now (the thing itself is kept)
+function vipLockNote(){
+  var k = vipVerdict().kind;
+  return k==='expired' ? 'VIP 到期,無法套用' : k==='revoked' ? 'VIP 已取消,無法套用' : (k==='stale' || k==='unknown') ? '暫時無法確認 VIP,無法套用' : 'VIP 才能套用';
+}
+function vipStore(){
+  return /iPhone|iPad|iPod/.test(navigator.userAgent) ? {name:'App Store', manage:'https://apps.apple.com/account/subscriptions'} : {name:'Google Play', manage:'https://play.google.com/store/account/subscriptions'};
+}
+document.addEventListener('visibilitychange', function(){
+  if(document.visibilityState!=='visible' || !vipEnt.provider || !vipGated()) return;
+  if(Date.now()-vipEnt.lastTry > (vipEnt.error ? 60000 : VIP_RECHECK_MS)) vipRefresh();
+});
+
+/* ---------- VIP 付費畫面 ---------- */
+// One sheet for every way in: a locked feature, ⚙️, an ended subscription. The website (and an app with no provider)
+// only explains the features: nothing is sold there, and nothing points to buying anywhere else.
+var vipPendingPeriod = null, vipPaywallFeature = '', vipBusy = '', vipMsg = '', vipProducts = null, vipProductsErr = '';
+function vipLoadProducts(){
+  var p = vipAttach(), gen = vipEnt.gen;
+  vipProducts = null; vipProductsErr = '';
+  p.getProducts().then(function(list){ if(vipEnt.gen===gen){ vipProducts = list||[]; vipBuyBoxFill(); } },
+    function(err){ if(vipEnt.gen===gen){ vipProductsErr = (err && err.code) || 'network'; vipBuyBoxFill(); } });
+}
+function vipBuyBoxHtml(){
+  if(vipProductsErr) return '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;margin-bottom:8px">現在連不上商店,讀不到方案和價格。</div><div class="btn-row"><button class="btn btn-ghost" data-act="vip-products">再試一次</button></div>';
+  if(!vipProducts) return '<div style="font-size:12.5px;color:var(--text-muted);padding:10px 0;text-align:center">讀取方案中…</div>';
+  var per = {year:'年', month:'月'}, list = vipProducts.filter(function(x){ return per[x.plan]; });
+  if(!list.length) return '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">目前沒有可以購買的方案。</div>';
+  return list.map(function(x, i){
+    return '<div class="btn-row" style="margin-bottom:8px"><button class="btn '+(i===0?'btn-primary':'btn-ghost')+'" data-act="vip-buy:'+esc(x.id)+'"'+(vipBusy?' disabled':'')+'>'+
+      (vipBusy===x.id ? '處理中…' : VIP_PLAN_ZH[x.plan]+' '+esc(x.priceText)+'／'+per[x.plan])+'</button></div>';
+  }).join('');
+}
+function vipBuyBoxFill(){
+  var box = document.getElementById('vipBuyBox'); if(box) box.innerHTML = vipBuyBoxHtml();
+  var m = document.getElementById('vipMsg'); if(m){ m.textContent = vipMsg; m.hidden = !vipMsg; }
+  var r = document.querySelector('#vipPaywall [data-act="vip-restore"]'); if(r){ r.disabled = !!vipBusy; r.textContent = vipBusy==='restore' ? '查詢中…' : '恢復購買'; }
+}
 function openVipIntro(feature, period){
-  vipPendingPeriod = period || null;
-  var h = '<div class="modal-title">👑 VIP 功能<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
-  h += '<div style="font-size:14px;line-height:1.7;margin-bottom:12px">「<b>'+esc(feature)+'</b>」是 VIP 功能。</div>';
+  vipPendingPeriod = period || null; vipPaywallFeature = feature || '';
+  var v = vipVerdict(), c = v.ent, vip = isVip(), canBuy = vipCanBuy(), store = vipStore();
+  var link = 'color:var(--accent);text-decoration:none;font-weight:700', small = 'font-size:12px;color:var(--text-muted);line-height:1.6';
+  var h = '<div class="modal-title">👑 跑車人生 VIP<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div><div id="vipPaywall">';
+  if(feature && !vip) h += '<div style="font-size:14px;line-height:1.7;margin-bottom:10px">「<b>'+esc(feature)+'</b>」是 VIP 功能。</div>';
+  var note = '';
+  if(v.vip){
+    note = '<b>'+esc(vipStatusText())+'</b>';
+    if(c.status==='grace') note += '<br>商店這次扣款沒有成功,還在重試,VIP 先照常使用。請到 '+store.name+' 更新付款方式,免得被停掉。';
+  }
+  else if(v.kind==='expired') note = '<b>'+esc(vipStatusText())+'</b><br>帳本和免費功能都不受影響;存過的分析組合也都還在,續訂後就能再套用。';
+  else if(v.kind==='revoked') note = '<b>'+esc(vipStatusText())+'</b><br>帳本和免費功能都不受影響。';
+  else if(v.kind==='stale') note = '<b>'+esc(vipStatusText())+'</b><br>你的 VIP 沒有被取消:連上網路後按下面「重新確認」就會恢復。';
+  else if(v.kind==='unknown') note = '<b>'+esc(vipStatusText())+'</b><br>如果你已經是 VIP,確認網路後按下面「重新確認」。';
+  if(note) h += '<div class="card" style="padding:10px 14px;margin-bottom:12px;font-size:13px;line-height:1.7">'+note+
+    ((v.kind==='stale' || v.kind==='unknown' || v.kind==='offline') ? '<div class="btn-row" style="margin-top:8px"><button class="btn btn-ghost" data-act="vip-recheck">重新確認</button></div>' : '')+'</div>';
   h += '<div class="card" style="padding:10px 14px;margin-bottom:12px">'+VIP_FEATURES.map(function(f){
     return '<div style="display:flex;gap:10px;padding:7px 0;line-height:1.5"><span style="font-size:18px">'+f[0]+'</span><div><b style="font-size:13.5px">'+esc(f[1])+'</b><div style="font-size:12px;color:var(--text-muted)">'+esc(f[2])+'</div></div></div>';
   }).join('')+'</div>';
-  if(betaOn()){
-    h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:10px">測試版:還不能購買。按下面按鈕就當成已經是 VIP;要切回免費版,到 ⚙️「記帳首頁與功能」最下面取消「VIP 測試」。</div>';
-    h += '<div class="btn-row"><button class="btn btn-primary" data-act="vip-test-on">開啟 VIP 測試</button></div>';
+  if(!canBuy){
+    h += '<div style="'+small+'">'+(isNativeApp() ? 'VIP 訂閱即將推出。' : 'VIP 功能在手機 App「跑車人生」裡提供,網頁版沒有。網頁版的記帳功能照常免費。')+'</div>';
+  } else if(v.vip){
+    if(c.plan!=='lifetime') h += '<div style="'+small+';margin-bottom:8px">要取消或更改方案,請到 '+store.name+' 的訂閱管理:<br><a style="'+link+'" target="_blank" rel="noopener" href="'+store.manage+'">管理訂閱 ›</a></div>';
   } else {
-    h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">VIP 訂閱即將推出。</div>';
+    h += '<div id="vipBuyBox">'+vipBuyBoxHtml()+'</div>';
+    h += '<div id="vipMsg" role="status" style="font-size:12.5px;color:var(--expense);line-height:1.6;margin:2px 0 8px"'+(vipMsg?'':' hidden')+'>'+esc(vipMsg)+'</div>';
+    h += '<div class="btn-row" style="margin-bottom:10px"><button class="btn btn-ghost" data-act="vip-restore"'+(vipBusy?' disabled':'')+'>恢復購買</button></div>';
+    h += '<div style="'+small+'">訂閱會自動續訂,費用由你的 '+store.name+' 帳號支付;在當期結束前至少 24 小時取消,下一期就不會扣款。可以隨時到 '+store.name+' 的「訂閱」管理或取消。不訂閱,記帳功能照常免費。</div>';
   }
-  openModal(h);
+  if(canBuy) h += '<div style="'+small+';margin-top:8px"><a style="'+link+'" target="_blank" rel="noopener" href="'+VIP_TERMS_URL+'">使用條款</a> · <a style="'+link+'" target="_blank" rel="noopener" href="'+VIP_PRIVACY_URL+'">隱私權政策</a></div>';
+  if(betaOn()){
+    h += '<div class="card" style="margin-top:12px;padding:10px 14px;border-style:dashed"><div style="'+small+';margin-bottom:8px">🧪 測試版:上面的購買是假的,不會扣款;結果照 ⚙️「VIP 情境模擬」選的來。也可以直接按下面按鈕當成已經是 VIP(要切回免費版,到 ⚙️「記帳首頁與功能」最下面取消「VIP 測試」)。</div>';
+    h += '<div class="btn-row"><button class="btn btn-ghost" data-act="vip-test-on">開啟 VIP 測試</button></div></div>';
+  }
+  openModal(h+'</div>');
+  if(canBuy && !v.vip && !vipProducts && !vipBusy) vipLoadProducts();
+}
+function vipUnlocked(toast){
+  vipBusy = ''; vipMsg = '';
+  closeModal();
+  if(vipPendingPeriod) analyticsPeriod = vipPendingPeriod;
+  vipPendingPeriod = null; renderAll(); showToast(toast);
+}
+function vipBuy(productId){
+  if(vipBusy) return;
+  var p = vipAttach();
+  vipBusy = productId; vipMsg = ''; vipBuyBoxFill();
+  p.purchase(productId).then(function(r){
+    vipBusy = '';
+    if(r && r.result==='purchased'){ if(r.entitlement) vipAccept(r.entitlement); else vipRefresh(); vipUnlocked('👑 VIP 已開通,謝謝支持'); return; }
+    vipMsg = (r && r.result==='pending') ? '付款還在處理中。完成後 VIP 會自動開通,不用再買一次。' : '';
+    vipBuyBoxFill();
+  }, function(err){
+    vipBusy = '';
+    vipMsg = (err && err.code==='network') ? '連不上商店,請確認網路後再試。如果已經扣款,按「恢復購買」就會開通。' : '購買沒有完成'+(err && err.message ? ':'+err.message : '')+'。沒有扣款的話可以再試一次。';
+    vipBuyBoxFill();
+  });
+}
+function vipRestore(){
+  if(vipBusy) return;
+  var p = vipAttach();
+  vipBusy = 'restore'; vipMsg = ''; vipBuyBoxFill();
+  p.restore().then(function(r){
+    vipBusy = '';
+    if(r && r.entitlement) vipAccept(r.entitlement);
+    if(vipVerdict().vip){ vipUnlocked('👑 已恢復 VIP'); return; }
+    vipMsg = '這個 '+vipStore().name+' 帳號找不到有效的 VIP。'; vipBuyBoxFill();
+  }, function(err){
+    vipBusy = '';
+    vipMsg = (err && err.code==='network') ? '連不上商店,請確認網路後再試。' : '現在無法恢復購買,請稍後再試。';
+    vipBuyBoxFill();
+  });
+}
+// ⚙️: where a driver sees the plan and its date, and gets back to the sheet (restore, manage)
+function vipSettingsHtml(){
+  return '<div class="card" style="margin-top:14px;padding:12px 14px;display:flex;gap:10px;align-items:center"><div style="flex:1;line-height:1.5"><b>👑 VIP</b>'+
+    '<div id="vipNow" style="font-size:12px;color:var(--text-muted)">'+esc(vipStatusText())+'</div></div><button type="button" class="btn btn-ghost" style="flex:none;width:auto" data-act="open-vip">查看</button></div>';
+}
+// 測試版 only: pick what the stand-in store answers
+function vipMockPanelHtml(){
+  if(vipProvider()!==VipMock) return '';
+  var m = VipMock.state();
+  var sel = function(id, list, cur){ return '<select id="'+id+'">'+list.map(function(x){ return '<option value="'+x[0]+'"'+(x[0]===cur?' selected':'')+'>'+esc(x[1])+'</option>'; }).join('')+'</select>'; };
+  return '<div class="card" style="margin-top:14px;padding:12px 14px;border-style:dashed"><b>🧪 VIP 情境模擬(只有測試版有)</b>'+
+    '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin:2px 0 8px">假裝商店回報不同的狀態,看 App 怎麼反應。選了馬上生效,並自動關掉上面的「VIP 測試」(它開著的話一律當成 VIP,看不出差別)。</div>'+
+    '<div class="form-row"><label for="f-vip-scene">商店回報的狀態</label>'+sel('f-vip-scene', VIP_MOCK_SCENES, m.scene)+'</div>'+
+    '<div class="form-row"><label for="f-vip-buy">按下購買會怎樣</label>'+sel('f-vip-buy', VIP_MOCK_BUYS, m.buy)+'</div></div>';
+}
+// Sets the stage for one scene. The three offline ones also plant the answer the phone would still be holding.
+function vipMockApply(scene){
+  vipAttach();
+  var before = vipKey();
+  VipMock.setScene(scene);
+  var now = Date.now(), held = {src:'mock', status:'active', plan:'year', expiresAt:now+200*VIP_DAY, willRenew:true};
+  if(scene==='offline_ok'){ held.checkedAt = now-10*VIP_DAY; vipEnt.cache = held; vipCacheKeep(); }
+  else if(scene==='offline_stale'){ held.checkedAt = now-(VIP_OFFLINE_DAYS+1)*VIP_DAY; vipEnt.cache = held; vipCacheKeep(); }
+  else if(scene==='down'){ vipEnt.cache = null; vipCacheKeep(); }
+  vipEnt.error = null; vipProducts = null; vipProductsErr = ''; vipMsg = '';
+  vipChanged(before);
+  return vipRefresh();
 }
 /* ---------- 定期經營摘要 (VIP; only in 跑車人生 測試版 while it is tried out) ---------- */
 // 交通部《計程車營運狀況調查》2025 年調查(2026-10-30 公布),全國專職司機。Shown as plain numbers in the month
@@ -5728,7 +6039,7 @@ function settingsSnapshot(){
   if(!body || !body.querySelector('[data-act="save-settings"]')) return null;
   var parts = [];
   body.querySelectorAll('input,select,textarea').forEach(function(el){
-    if(el.id==='chip-fontScale' || el.id==='chip-layoutWidth' || el.id==='f-vip-test') return;
+    if(el.id==='chip-fontScale' || el.id==='chip-layoutWidth' || el.id==='f-vip-test' || el.id==='f-vip-scene' || el.id==='f-vip-buy') return;
     // values in page order only: the accessibility pass gives unnamed fields an id after the sheet opens, so ids are not compared
     parts.push(el.type==='checkbox'||el.type==='radio' ? (el.checked?'1':'0') : el.value);
   });
@@ -6997,7 +7308,7 @@ function openSettingsModal(){
   h += '<div class="btn-row" style="margin:-4px 0 12px"><button class="btn btn-ghost" data-act="ob-rerun">🧭 重新跑一次設定引導</button></div>';
   var hdr = h, S = {};
   S.basic = uiSettingsHtml('basic');
-  S.features = uiSettingsHtml('features') + (betaOn() ? vipTestHtml() : '');
+  S.features = uiSettingsHtml('features') + (vipGated() ? vipSettingsHtml() : '') + (betaOn() ? vipTestHtml() + vipMockPanelHtml() : '');
   h = feeSettingsHtml(fr);
 
   h += '<div class="form-row" style="margin-top:6px"><label>平台管理(用 ▲▼ 排序,可改名/隱藏/新增)</label></div>';
@@ -7114,7 +7425,7 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.13.13';
+var APP_VERSION = '2026.11.14.1';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
@@ -7272,6 +7583,10 @@ function aboutHtml(){
     '💚 <a style="'+link+'" target="_blank" rel="noopener" href="https://line.me/R/ti/p/@029eempg">LINE 官方帳號「跑車人生」</a>(可以直接傳截圖)<br>'+
     '✉️ <a style="'+link+'" href="'+esc(mailto)+'">support@realway.com.tw</a><br>'+
     '<span style="font-size:11.5px">用 LINE 回報時,請附上這裡的版本:'+APP_VERSION+'。按上面的信箱,會自動帶入記帳本版本、手機系統版本和型號(不會帶入任何帳目)。</span>');
+  // the provider's own anonymous id, for support to look a driver up. Nothing here about buying.
+  vipAttach();
+  if(vipEnt.userId) h += para('🪪 使用者編號', '<span id="vipUserId" style="font-family:ui-monospace,Menlo,Consolas,monospace;user-select:all;-webkit-user-select:all;word-break:break-all">'+esc(vipEnt.userId)+'</span> '+
+    '<button type="button" class="btn btn-ghost" style="width:auto;padding:4px 10px;font-size:12px;vertical-align:middle" data-act="copy-vip-id">複製</button><br><span style="font-size:11.5px">客服用:找客服時請附上這組編號。它是隨機產生的,看不出你是誰,也不含任何帳目。</span>');
   h += para('ℹ️ 版本資訊', '<span data-act="ver-tap" style="cursor:default">版本:'+APP_VERSION+'</span>'+(webBetaOn()?' 🧪 測試模式':'')+(isNativeApp() && APP_ENV!=='prod' ? '(測試版:不送使用統計與車友熱區)' : '')+'<br>製作者:Welson(REALWAY CO., LTD.)<br>© 2026 REALWAY CO., LTD.');
   return h+'</div>';
 }
@@ -8060,6 +8375,24 @@ document.addEventListener('click', function(e){
   else if(cmd==='open-crowd'){ openCrowd(); }
   else if(cmd==='crowd-close'){ closeCrowd(); }
   else if(cmd==='crowd-reload'){ crowdLoad(); }
+  else if(cmd==='open-vip'){ if(settingsDirty()){ requestCloseModal(); return; } openVipIntro(); }
+  else if(cmd==='vip-buy'){ vipBuy(arg); }
+  else if(cmd==='vip-restore'){ vipRestore(); }
+  else if(cmd==='vip-products'){ vipLoadProducts(); vipBuyBoxFill(); }
+  else if(cmd==='vip-recheck'){
+    t.disabled = true;
+    vipRefresh().then(function(){
+      if(!document.getElementById('vipPaywall')) return;
+      if(vipEnt.error) showToast('還是連不上,請確認網路後再試');
+      openVipIntro(vipPaywallFeature, vipPendingPeriod);
+    });
+  }
+  else if(cmd==='copy-vip-id'){
+    var vid = vipEnt.userId, vok = function(){ showToast('已複製使用者編號'); }, vfail = function(){ showToast('複製失敗,請長按編號自己選取'); };
+    if(!vid) return;
+    if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(vid).then(vok, vfail);
+    else { try{ var vta = document.createElement('textarea'); vta.value = vid; document.body.appendChild(vta); vta.select(); var vdone = document.execCommand('copy'); document.body.removeChild(vta); (vdone ? vok : vfail)(); }catch(err){ vfail(); } }
+  }
   else if(cmd==='vip-test-on'){ state.vipTest = true; save(); closeModal(); if(vipPendingPeriod) analyticsPeriod = vipPendingPeriod; vipPendingPeriod = null; renderAll(); showToast('👑 已開啟 VIP 測試'); }
   else if(cmd==='year'){ uiMonth.setFullYear(uiMonth.getFullYear()+(+arg)); renderAll(); }
   else if(cmd==='hot-slot'){ hotspotSlot=arg; renderAll(); }
@@ -8420,6 +8753,11 @@ document.addEventListener('change', function(e){
   if(e.target.matches && e.target.matches('[data-mirror]')){ var mt = document.getElementById(e.target.getAttribute('data-mirror')); if(mt) mt.checked = e.target.checked; return; }
   if(e.target.id && e.target.id.indexOf('f-ui-')===0){ document.querySelectorAll('[data-mirror="'+e.target.id+'"]').forEach(function(m){ m.checked = e.target.checked; }); }
   if(e.target.id==='f-vip-test'){ state.vipTest = e.target.checked; save(); renderAll(); showToast(e.target.checked ? '👑 已開啟 VIP 測試' : '已切回免費版'); return; }
+  if(e.target.id==='f-vip-scene'){
+    if(state.vipTest){ state.vipTest = false; save(); var vtc = document.getElementById('f-vip-test'); if(vtc) vtc.checked = false; renderAll(); }
+    vipMockApply(e.target.value); showToast('🧪 情境:'+e.target.options[e.target.selectedIndex].text); return;
+  }
+  if(e.target.id==='f-vip-buy'){ VipMock.setBuy(e.target.value); return; }
   if(e.target.id==='rpt-from' || e.target.id==='rpt-to'){ if(e.target.value){ rptView[e.target.id==='rpt-from' ? 'from' : 'to'] = e.target.value; openReport(); } return; }
   if(e.target.id==='anf-from' || e.target.id==='anf-to'){ anFilter[e.target.id==='anf-from' ? 'hFrom' : 'hTo'] = e.target.value==='' ? null : +e.target.value; anPresetId = null; renderAll(); return; }
   if(e.target.id==='f-ocr-file'){ if(e.target.files && e.target.files[0]) ocrRun(e.target.files[0]); return; }
