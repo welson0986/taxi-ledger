@@ -930,31 +930,36 @@ function keepAsideUndo(k){
     }, 1500);
   }, function(){ nativeHold = true; });
 }
+// a restored ledger whose save failed and was given up (see replaceLedger): writes of it still waiting their turn
+// are dropped, so the phone can never end up holding a ledger the driver was told had not been restored
+var abandonedLedger = null, WRITE_SUPERSEDED = {};
 function writeStore(){
   var waiters = saveWaiters.splice(0);
   if(storageStale){ settleWaiters(waiters, false); return; }
-  var str;
+  var str, src = state;
   state.rev = ++lastKnownRev;
   try{ str = packState(state); }catch(e){ onSaveFail(); settleWaiters(waiters, false); return; }
   var rev = state.rev;
   if(NATIVE_FS){
     // the file is written first and is the only thing that counts as saved; the web view copy follows it
-    nativeWriteLedger(str, rev).then(function(){
+    nativeWriteLedger(str, rev, src).then(function(){
       idbCachePut(str, rev);
       onSaveOk(); settleWaiters(waiters, true);
-    }, function(){ onSaveFail(); settleWaiters(waiters, false); });
+    }, function(err){ if(err!==WRITE_SUPERSEDED) onSaveFail(); settleWaiters(waiters, false); });
     return;
   }
   if(__BOOT.idb){
     try{
-      var conflict = false;
+      var conflict = false, superseded = false;
       var tx = __BOOT.idb.transaction('kv','readwrite'), kv = tx.objectStore('kv');
       var g = kv.get('state_rev');
       g.onsuccess = function(){
+        if(src===abandonedLedger){ superseded = true; return; }
         if((+g.result||0) >= rev){ conflict = true; return; }
         kv.put(str, 'state'); kv.put(rev, 'state_rev');
       };
       tx.oncomplete = function(){
+        if(superseded){ settleWaiters(waiters, false); return; }
         if(conflict){ settleWaiters(waiters, false); reloadFromStore(true); return; }
         onSaveOk(); settleWaiters(waiters, true);
         try{ if(ledgerChannel) ledgerChannel.postMessage(rev); }catch(e){}
@@ -1009,8 +1014,13 @@ function saveQuiet(onDone){
   if(onDone) saveWaiters.push(onDone);
   if(!writePending){ writePending = true; setTimeout(flushWrite, 0); }
 }
+// A change is always stamped later than every confirmation point: the last confirmed cloud backup, a snapshot now on
+// its way, a whole ledger just swapped in. Two things in the same millisecond (or a phone clock set back) must never
+// make a new entry look as if it were already backed up.
+var changeFloor = 0;
 function save(onDone){
-  state.lastChangeAt = Date.now();
+  var nowC = Date.now(), floorC = Math.max(changeFloor, +state.lastCloudConfirmAt||0);
+  state.lastChangeAt = nowC > floorC ? nowC : floorC + 1;
   dataGen++;
   tripIndexStamp = null;  // any change may move a trip between weeks or months
   noteHadData();
@@ -1023,8 +1033,9 @@ function settleWaiters(list, ok){ list.forEach(function(f){ try{ f(ok); }catch(e
 // write), followed by a small index file with its revision. Start-up reads the two index files and then only
 // the newest ledger. A save counts as done once both are written; gzip's own check catches a cut-off file.
 // Phones without compression in their web view keep the older plain-text envelope, which is still read.
-function nativeWriteLedger(str, rev){
+function nativeWriteLedger(str, rev, src){
   var job = nativeChain.then(function(){
+    if(src && src===abandonedLedger) throw WRITE_SUPERSEDED;
     if(nativeHold) throw new Error('holding the slot of a ledger that could not be kept aside');
     var f = NATIVE_SLOTS[nativeNext];
     return gzipBase64(str).then(function(b64){
@@ -1531,6 +1542,7 @@ function cloudStatusText(){
 // already has; afterwards only a backup that was not there before, with this snapshot's counts, proves it got saved.
 // (an older backup with the same counts says nothing about an edited amount)
 var cloudPushBusy = false, cloudPushAgain = false, cloudPushWaiters = [];
+var cloudPushSeq = 0;  // how many sends this session has started (a cloud restore asks whether one went out meanwhile)
 // Apps Script v6 stores each backup under the id the app gave it and reports a fingerprint (SHA-256) of the
 // content it really stored. Only a matching id AND fingerprint is a full confirmation ('full'); an older
 // script, or a browser that cannot compute the fingerprint, can only show the backup arrived ('basic').
@@ -1639,10 +1651,10 @@ function canSyncLedger(){ return hasMeaningfulData() || state.hadData===true; }
 // onResult(ok, kind): ok only for a full confirmation; kind 'conflict' = held back for another device's newer backup.
 // overrule: the driver confirmed this device's ledger should go up anyway
 function pushCloudSnapshot(onResult, overrule){
-  if(!state.syncUrl || cloudSyncSuspended || storageStale || !canSyncLedger()) return false;
+  if(!state.syncUrl || cloudSyncSuspended || storageStale || !canSyncLedger() || replacingLedger) return false;
   if(onResult) cloudPushWaiters.push(onResult);
   if(cloudPushBusy){ cloudPushAgain = true; return true; }
-  cloudPushBusy = true;
+  cloudPushBusy = true; cloudPushSeq++;
   var waiters = cloudPushWaiters.splice(0), gen = cloudGen;
   function done(ok, kind){
     cloudPushBusy = false;
@@ -1654,7 +1666,8 @@ function pushCloudSnapshot(onResult, overrule){
     if(cloudPushAgain){ cloudPushAgain = false; pushCloudSnapshot(); }
   }
   var snap, builtAt;
-  try{ snap = buildCloudSnapshot(); builtAt = Date.now(); snap.key = getCloudKey(); }catch(e){ done(false); return false; }
+  // builtAt: everything changed up to this stamp is in the snapshot; a change made after it is stamped later (save())
+  try{ snap = buildCloudSnapshot(); builtAt = Math.max(Date.now(), +state.lastChangeAt||0); changeFloor = Math.max(changeFloor, builtAt); snap.key = getCloudKey(); }catch(e){ done(false); return false; }
   function post(){
     return withTimeout(fetch(state.syncUrl, {
       method:'POST', mode:'no-cors',
@@ -1739,6 +1752,8 @@ function cloudSyncTick(){
   cloudSyncTimer = null; cloudSyncDue = 0;
   // held back for another device's newer backup: wait for the driver (the check runs again after a restart)
   if(cloudConflict) return;
+  // a whole ledger is being swapped in: look again in a few seconds, when it is settled
+  if(replacingLedger){ setCloudTimer(Date.now()+5000); return; }
   if(state.syncUrl && canSyncLedger() && cloudBehind()) pushCloudSnapshot();
 }
 // force: try now (new address or password, clocking out); otherwise wait for the interval
@@ -7425,12 +7440,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.14.1';
+var APP_VERSION = '2026.11.14.3';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.14.2', '🛡️ 備份功能優化:還原進行的那幾秒會先暫停操作並提示,避免剛記的帳在還原時漏掉;雲端同步更穩定'],
   ['2026.11.13.8', '🌙 新安裝的營業日分界預設改成午夜 00:00(照日曆算),已經在用的不會變。跑 Uber 的車友:Uber 一天的車資結算是凌晨 04:00 到隔天 03:59,想跟 Uber App 的每日收入對得起來,到 ⚙️「基本設定」→「我的營業日分界時間」選凌晨 04:00'],
   ['2026.11.13.4', '📅 歷史頁的日曆可以切換顯示「結餘／工時／時薪」,一眼看出哪幾天跑很久卻賺不多'],
   ['2026.11.13.4', '📄 企業簽單可以勾「紙本簽單」:不算進車隊撥款,改列在撥款頁「待兌現」,拿去車隊換到現金再按「已兌現」(用不到可以在 ⚙️ 功能開關關掉)'],
@@ -7649,7 +7665,7 @@ function copyExportText(){
     try{ document.execCommand('copy') ? ok() : fail(); }catch(err){ fail(); }
   }
 }
-var lastCloudVersions = [];
+var lastCloudVersions = [], lastCloudVersionsSeq = -1;
 function openCloudRestoreModal(){
   if(!state.syncUrl){ alert('請先在設定填入 Google Sheet 同步網址,並按「儲存設定」。'); return; }
   var h = '<div class="modal-title">從雲端還原<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
@@ -7662,6 +7678,7 @@ function openCloudRestoreModal(){
     if(!res || !res.ok || !res.versions){ el.textContent = '讀取失敗:Apps Script 可能還是舊版,請先更新並重新部署。'; return; }
     if(!res.versions.length){ el.textContent = '雲端還沒有任何備份。'; return; }
     lastCloudVersions = res.versions;
+    lastCloudVersionsSeq = cloudPushBusy ? -1 : cloudPushSeq;
     el.innerHTML = '<div class="card">'+res.versions.map(function(v,i){
       return '<div class="list-item" data-act="do-restore:'+i+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+fmtTs(v.time)+(i===0?'(最新)':'')+'</div><div class="li-sub">收入 '+v.income+' 筆 · 支出 '+v.expense+' 筆</div></div><div class="li-amt num" style="color:var(--accent)">還原</div></div>';
     }).join('')+'</div>';
@@ -7686,11 +7703,18 @@ function doCloudRestore(i){
     // copy and make the other device ask "whose is this?" on its next sync. A later change is sent as usual.
     // Only the restored ledger itself counts as backed up (its own change time): an entry made while the restore
     // was still being written is newer and stays waiting for the next sync.
-    if(!replaceLedger(parsed, '雲端還原', function(restoredAt){ noteCloudBase(+v.time, true); state.lastCloudConfirmAt = restoredAt; writeStore(); return '已從雲端還原(收入 '+state.records.length+' 筆、支出 '+state.expenses.length+' 筆)。\n\n如果選錯了,到 ⚙️「雲端與備份」→「匯入還原」按「↩️ 復原到雲端還原前的資料」。'; })){
+    // If this device sent a backup of its own after the list was read (one was on its way, or went out since),
+    // that older ledger may now be the cloud's newest: then the restored ledger does not count as backed up and
+    // is sent like any other change, so the cloud's newest is again what this device holds.
+    var sentMeanwhile = lastCloudVersionsSeq!==cloudPushSeq || cloudPushBusy;
+    if(!replaceLedger(parsed, '雲端還原', function(restoredAt){ noteCloudBase(+v.time, true); if(!sentMeanwhile && !cloudPushBusy) state.lastCloudConfirmAt = restoredAt; writeStore(); return '已從雲端還原(收入 '+state.records.length+' 筆、支出 '+state.expenses.length+' 筆)。\n\n如果選錯了,到 ⚙️「雲端與備份」→「匯入還原」按「↩️ 復原到雲端還原前的資料」。'; })){
       if(el) el.textContent = '這份雲端備份的格式不對,沒有還原。';
     } else if(el) el.textContent = '還原中…';
   }).catch(function(){
-    if(el) el.textContent = '還原失敗,請稍後再試一次。';
+    // the driver may have left this screen while the backup was downloading: say it where it will be seen
+    var elNow = document.getElementById('restoreList');
+    if(elNow) elNow.textContent = '還原失敗,請稍後再試一次。';
+    else alert('從雲端還原沒有完成(備份下載失敗)。\n\n目前的帳沒有任何改變,請確認網路後再試一次。');
   });
 }
 function isIOS(){ return /iPhone|iPad|iPod/.test(navigator.userAgent); }
@@ -7833,14 +7857,36 @@ function ledgerProblem(p, strictDates){
 // every way of swapping in a whole ledger (backup file, cloud backup, undo, clear) goes through here:
 // check it, keep the current ledger aside, and say it worked only once the phone has really stored it.
 // If anything fails the current ledger stays as it was.
-var replacingLedger = false;
+var replacingLedger = false, replacingSince = 0;
+// While a whole ledger is being swapped in, nothing may be entered or changed: a trip recorded in those moments could
+// end up in neither the new ledger nor the copy kept of the old one. Taps are turned away with a short notice (see the
+// click handler). Should the phone's storage never answer, the hold lifts by itself after half a minute.
+function ledgerBusy(){ return replacingLedger && Date.now() - replacingSince < 30000; }
+function ledgerBusyNotice(){ showToast('還原進行中,請等幾秒再操作。'); }
 function replaceLedger(parsed, undoLabel, okMsg){
   if(replacingLedger){ alert('上一個還原還在處理中,請稍等幾秒。'); return false; }
   var prob = ledgerProblem(parsed, true);
   if(prob){ alert('這份資料不能還原:'+prob+'。\n\n目前的帳沒有任何改變。'); return false; }
-  replacingLedger = true;
-  keepUndoCopy(undoLabel, function(kept){
-    if(!kept){ replacingLedger = false; alert('沒辦法先把目前的帳另外保留一份(手機空間可能不夠),所以這次沒有還原。\n\n目前的帳沒有任何改變。'); return; }
+  replacingLedger = true; replacingSince = Date.now();
+  var tries = 0;
+  keepCopy();
+  return true;
+  function keepCopy(){
+    // the current ledger's own pending save goes first, so what the phone holds is this ledger in full
+    flushWrite();
+    var genAtCopy = dataGen;
+    keepUndoCopy(undoLabel, function(kept){
+      if(!kept){ replacingLedger = false; alert('沒辦法先把目前的帳另外保留一份(手機空間可能不夠),所以這次沒有還原。\n\n目前的帳沒有任何改變。'); return; }
+      // something was saved while the copy was being stored (the app's own housekeeping; taps are held off): the copy
+      // must hold the ledger exactly as it is when it is swapped out, so take it again
+      if(dataGen!==genAtCopy){
+        if(++tries < 3){ keepCopy(); return; }
+        replacingLedger = false; alert('帳本剛剛還在變動,這次沒有還原。\n\n目前的帳沒有任何改變,請再試一次。'); return;
+      }
+      swapIn();
+    });
+  }
+  function swapIn(){
     fillMissing(parsed);
     DEVICE_KEYS.forEach(function(k){ if(k in state) parsed[k] = state[k]; else delete parsed[k]; });
     parsed.fmt = LEDGER_FMT;
@@ -7851,19 +7897,26 @@ function replaceLedger(parsed, undoLabel, okMsg){
       replacingLedger = false;
       saveFailAlerted = prevAlerted;
       if(!ok){
-        // nothing reached storage, so it still holds exactly the ledger we go back to
+        // Back to the ledger from before; storage still holds it as its newest finished save. Writes of the ledger
+        // given up that are still waiting their turn are dropped (writeStore), so they cannot land after this.
+        var dropped = state, changedMeanwhile = dropped.lastChangeAt!==replacedAt;
+        abandonedLedger = dropped;
+        DEVICE_KEYS.forEach(function(k){ if(k in dropped) prev[k] = dropped[k]; else delete prev[k]; });
         state = prev; storageStale = prevStale; saveFailed = prevFailed; closeModal();
-        alert('資料沒有存進手機,這次沒有還原。\n\n目前的帳沒有任何改變;請確認手機空間後再試一次。');
+        if(typeof renderAll==='function') renderAll();
+        cloudSyncIfBehind();  // sends were held off meanwhile; the ledger kept may still have entries waiting for the cloud
+        alert('資料沒有存進手機,這次沒有還原。\n\n目前的帳沒有任何改變;請確認手機空間後再試一次。'+
+          (changedMeanwhile ? '\n\n⚠️ 還原進行中做的變動沒有保留,請檢查剛剛記的帳,少了請再記一次。' : ''));
         return;
       }
       cloudGen++; noteHadData();
       closeModal();
       alert(okMsg(replacedAt));
     });
-    // the change time of the replaced ledger itself: an entry made while it is still being written is later
+    // the change time of the replaced ledger itself: an entry made while it is still being written is stamped later
     var replacedAt = state.lastChangeAt;
-  });
-  return true;
+    changeFloor = Math.max(changeFloor, replacedAt);
+  }
 }
 function undoInfo(){ if(state.undoMeta) return state.undoMeta; try{ return JSON.parse(localStorage.getItem('taxi_undo_info')||'null'); }catch(e){ return null; } }
 function undoRestore(){
@@ -8209,6 +8262,7 @@ document.addEventListener('keydown', function(e){
 document.addEventListener('click', function(e){
   var t = e.target.closest('[data-act]');
   if(!t) return;
+  if(ledgerBusy()){ ledgerBusyNotice(); return; }
   var act = t.getAttribute('data-act');
   var parts = act.split(':');
   var cmd = parts[0], arg = parts.slice(1).join(':');
@@ -8749,6 +8803,7 @@ document.addEventListener('input', function(e){
   }
 });
 document.addEventListener('change', function(e){
+  if(ledgerBusy()){ ledgerBusyNotice(); return; }
   if(e.target.id && e.target.id.indexOf('f-fee-')===0 && e.target.id!=='f-fee-apply-from'){ var fcn = document.getElementById('fee-change-note'); if(fcn) fcn.hidden = false; }
   if(e.target.matches && e.target.matches('[data-mirror]')){ var mt = document.getElementById(e.target.getAttribute('data-mirror')); if(mt) mt.checked = e.target.checked; return; }
   if(e.target.id && e.target.id.indexOf('f-ui-')===0){ document.querySelectorAll('[data-mirror="'+e.target.id+'"]').forEach(function(m){ m.checked = e.target.checked; }); }
@@ -8992,6 +9047,7 @@ var __BOOT = {state:null, idb:null, idbError:false};
   // In the app the ledger file decides. Only when there is no file at all does the web view copy count
   // (moving an existing ledger in); a slow or unreadable file never starts the app with an empty ledger.
   function go(){
+    clearTimeout(dbSlow);
     if(started) return;
     if(!NATIVE_FS){ start(); return; }
     var slow = setTimeout(function(){ nativeBootProblem('slow'); }, 4000);
@@ -9002,6 +9058,11 @@ var __BOOT = {state:null, idb:null, idbError:false};
       else nativeBootProblem('bad');
     }, function(){ clearTimeout(slow); nativeBootProblem('unknown'); });
   }
+  // The browser's database is asked first and nothing starts until it answers. If it stays silent (some phones' web
+  // views have done that) the screen would stay empty without a word: after 5 seconds say that reading is taking
+  // longer and offer 重新讀取. Only the message is new: the app still starts the moment the answer comes, and never
+  // without it (starting unanswered could open an empty ledger while the real one sits in the database).
+  var dbSlow = setTimeout(function(){ if(!started) nativeBootProblem('slow'); }, 5000);
   if(!window.indexedDB){ go(); return; }
   try{
     var req = indexedDB.open('taxi_ledger', 1);
