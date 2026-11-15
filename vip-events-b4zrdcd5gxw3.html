@@ -77,6 +77,8 @@ main{padding:0 17px}
 .tab-day .weekday{font-size:14px;color:#c3d2df}.tab-day .daynum{font-size:19px;font-weight:850;margin-top:4px}
 .tab-day.is-active{background:var(--lime);border-color:var(--lime);color:#101a16;box-shadow:0 0 0 2px #d5ff7720}
 .tab-day.is-active .weekday{color:#233219}
+/* 自動跨日隱藏的日期／交管卡片，不可被按鈕、網格等 display 樣式覆蓋。 */
+[hidden]{display:none!important}
 .panel-intro{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:4px 0 14px;color:#d7e5ef}
 .panel-intro strong{font-size:18px;font-weight:850}
 .panel-intro span{font-size:14px;color:var(--muted);text-align:right}
@@ -691,6 +693,12 @@ main{padding:0 17px}
 </template>
 <script>
 (function () {
+  /* 後續每次更新人潮情報必測（避免 2026-11-15 data-day 衝突重演）：
+   * 1. 新增活動卡的 data-day 不得被當作日期按鈕；日期事件只選 #calendar .tab-day[data-date]。
+   * 2. 台灣時間跨午夜，前一日的日期／活動及單日交通資訊隱藏，跨日仍有效的封街保留。
+   * 3. 實際點開「依區域看」並核對新卡片的行政區歸類與來源連結。
+   * 4. 確認沒有 JavaScript 未處理的錯誤，並保留頁面原始發布檔名。
+   */
   // 站長設定：上架後將空字串改為「跑車人生」官方下載頁的完整 https 網址。
   var APP_DOWNLOAD_URL = "";
   if(/^https:\/\//.test(APP_DOWNLOAD_URL)){
@@ -709,7 +717,10 @@ main{padding:0 17px}
       var target=document.querySelector('#day-panel-'+day+' .event-stack');
       if(!target || document.getElementById(card.id)) return;
       target.appendChild(card.cloneNode(true));
-      var region=document.getElementById('region-panel-5');
+      // 士林區應出現在「中山／士林」，其餘本次中正、松山、萬華區歸「其他臺北」。
+      var place=card.querySelector('.event-place');
+      var regionId=place && /士林區/.test(place.textContent) ? 'region-panel-4' : 'region-panel-5';
+      var region=document.getElementById(regionId);
       if(region){
         var existing=region.getAttribute('data-event-refs') || '';
         region.setAttribute('data-event-refs',(existing+' '+card.id).trim());
@@ -925,7 +936,8 @@ main{padding:0 17px}
       document.querySelector('.region-panels').hidden = false;
       document.getElementById('region-empty').hidden = true;
     }
-    var allButtons = Array.prototype.slice.call(document.querySelectorAll('[data-' + groupName + ']'));
+    var buttonSelector=groupName==='day' ? '#calendar .tab-day[role="tab"][data-date]' : '#areas .region-button[role="tab"]';
+    var allButtons = Array.prototype.slice.call(document.querySelectorAll(buttonSelector));
     allButtons.forEach(function (item) {
       var active = item === button;
       item.classList.toggle('is-active',active);
@@ -937,7 +949,9 @@ main{padding:0 17px}
     });
   }
   ['day','region'].forEach(function(groupName){
-    var tabs=Array.prototype.slice.call(document.querySelectorAll('[data-'+groupName+']'));
+    // 僅限真正的日期按鈕。新增活動卡也可能含 data-day，不能拿來排序或綁定日期互動。
+    var selector=groupName==='day' ? '#calendar .tab-day[role="tab"][data-date]' : '#areas .region-button[role="tab"]';
+    var tabs=Array.prototype.slice.call(document.querySelectorAll(selector));
     if(groupName==='day') tabs.sort(function(a,b){return a.getAttribute('data-date').localeCompare(b.getAttribute('data-date'))});
     tabs.forEach(function(button,index){
       button.addEventListener('click',function(){activate(button,groupName);if(groupName==='day')refreshExpiredCards()});
@@ -1020,6 +1034,13 @@ main{padding:0 17px}
     var hh=String(Math.floor(now.minutes/60)).padStart(2,'0');
     var mm=String(now.minutes%60).padStart(2,'0');
     var stamp=now.date+'T'+hh+':'+mm;
+    // 11/14 林口遶境只有單日活動，不可跟著 11/15 週日銜接卡保留到 11/16。
+    document.querySelectorAll('#traffic .traffic-card[data-carryover-only]').forEach(function(card){
+      var title=card.querySelector('h3');
+      if(title && /^11\/14 林口樂林園/.test(title.textContent)){
+        card.setAttribute('data-visible-until','2026-11-15T00:00');
+      }
+    });
     document.querySelectorAll('[data-visible-until]').forEach(function(el){
       el.hidden = stamp>=el.getAttribute('data-visible-until');
     });
