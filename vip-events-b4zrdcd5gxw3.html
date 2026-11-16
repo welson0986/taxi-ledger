@@ -763,6 +763,101 @@ main{padding:0 17px}
   }
   mergeVerifiedSupplement();
 
+  // 2026/11/16 交叉補查：只加入原版缺少、能追溯到主辦／官方或明確單一線索的活動。
+  // 注意：data-day 只能加在活動卡，日期按鈕綁定仍限定 #calendar .tab-day[data-date]。
+  function mergeNov16Crosscheck() {
+    var src={
+      spring:'https://www.taipeisprings.org.tw/tw/modules/news/article.php?storyid=408',
+      springChange:'https://www.taipeisprings.org.tw/tw/modules/news/article.php?storyid=407',
+      daily:'https://gds.apothecary1969.com/web/activity/activity_in.jsp?cp_id=CP1776520029499',
+      senses:'https://gds.apothecary1969.com/web/activity/activity_in.jsp?cp_id=CP1793580186217',
+      cells:'https://www.songshanculturalpark.org/exhibition/activity/2c75fc7f-b819-4769-be64-dec0aa64430a',
+      dance:'https://www.ctdsf.org.tw/calendar_list.php',
+      go:'https://tpegosit.hyplaygo.com/TPEGo/Active/ResultDetail?pmACMID=4f92f159-6fee-4a09-80a8-b19168f39831',
+      gallery:'https://timeoff.tw/events/%E3%80%90%E5%90%8D%E5%B1%B1%E8%97%9D%E8%A1%93%E3%80%91%E8%90%8C%E7%8D%B8%E5%91%A2%E5%96%83%E7%BF%81%E6%98%8E%E5%93%B22026%E5%89%B5%E4%BD%9C%E5%B1%95',
+      dragonNews:'https://udn.com/news/story/7001/9881916',
+      dragonSecond:'https://tw.sports.yahoo.com/news/%E9%BE%8D%E8%BF%B7%E6%BA%96%E5%82%99%E4%B8%8A%E8%A1%97-%E5%91%B3%E5%85%A8%E9%BE%8D-%E9%BE%8D%E8%80%80%E8%87%BA%E5%8C%97-%E5%B0%81%E7%8E%8B%E9%81%8A%E8%A1%8C22%E6%97%A5%E8%88%89%E8%A1%8C-%E8%B7%AF%E7%B7%9A-080800220.html',
+      springTraffic:'https://www.gov.taipei/News_Content.aspx?n=F0DDAF49B89E9413&s=C21798F85BED01D4&sms=72544237BBE4C5F6',
+      bus:'https://pda5284.gov.taipei/MQS/route.jsp?rid=17801'
+    };
+    var newlyVerified=[];
+    [20,21,22].forEach(function(day){
+      var descriptions={
+        20:'開幕、藝文表演與晚間明華園演出；各節目精確演出時刻及散場未公布。',
+        21:'踩街遊行、YOSAKOI 演出與晚間「金曲之夜」；遊行開始、舞台結束與實際散場時刻未公布。',
+        22:'北投花浴衣節、YOSAKOI、YOYO 親子歡唱及 DIY；精確節目時刻及散場未公布。'
+      };
+      newlyVerified.push({day:day,key:'spring',grade:'A',time:'舞台各場時刻未公布',name:'2026 臺北溫泉季（颱風延期後恢復舉辦）',place:'新北投站周邊／七星街／七星公園（北投區）',region:'region-panel-4',note:'主辦 11/05 正式宣布因颱風改至 11/20～11/22，11/11 再確認三日節目。'+descriptions[day]+'期間七星街及光明路有正式交通管制，請看下方公告。實到人數未公布。',link:src.spring,linkText:'溫泉季主辦官方',other:src.springChange,otherText:'主辦改期公告',nav:'臺北市北投區七星街'});
+    });
+    [21,22].forEach(function(day){
+      newlyVerified.push({day:day,key:'daily',grade:'A',time:'11:00～19:00',name:'第一回《日常。日藏選品市》',place:'松山文創園區・南向製菸工廠（信義區）',region:'region-panel-0',note:'好日市集官方已確認兩日 11:00～19:00；以文具、紙品、手作、雜貨等選物攤商為主。參加人數未公布；19:00 是市集結束時間，非所有人同時離場。',link:src.daily,linkText:'主辦官方活動頁',nav:'臺北市信義區光復南路133號 松山文創園區'});
+      newlyVerified.push({day:day,key:'senses',grade:'A',time:'13:00～18:00',name:'六感生活市集｜新莊鄉林',place:'新北市新莊區公園路230號（室內）',region:'region-panel-3',note:'好日市集官方確認 11/21、11/22 每日 13:00～18:00，含手作、香氛、生活選物與餐飲；實際人數未公布，非已公布大型封路活動。',link:src.senses,linkText:'主辦官方活動頁',nav:'新北市新莊區公園路230號'});
+    });
+    [16,17,18,19,20,21,22].forEach(function(day){
+      newlyVerified.push({day:day,key:'cells',grade:'A',time:'10:00～18:00',name:'《細胞選物店》桂語謙個展',place:'松山文創園區・藝思空間（信義區）',region:'region-panel-0',note:'松菸官方確認展期 11/11～11/22，每日 10:00～18:00、免費入場。小型常態展，無單一集中散場；參觀人數未公布。',link:src.cells,linkText:'松菸官方展演資訊',nav:'臺北市信義區光復南路133號 松山文創園區'});
+    });
+    [21,22].forEach(function(day){
+      newlyVerified.push({day:day,key:'gallery',grade:'C',time:day===21?'10:00～18:30；15:00 開幕茶會':'10:00～18:30',name:'《萌獸呢喃》翁明哲 2026 創作展',place:'名山藝術台北館（中正區・仁愛路二段48-6號）',region:'region-panel-5',note:'次級藝文活動頁指出展期 11/21～12/27，11/21 15:00 有開幕茶會。原 Gemini 提供名山藝術網址，但本次無法獨立讀取該頁，暫列 C 單一可核實來源；屬小型畫廊，人數未公布。',link:src.gallery,linkText:'藝文活動原始條目（C）',nav:'臺北市中正區仁愛路二段48-6號'});
+    });
+    newlyVerified.push({day:21,key:'dance',grade:'A',time:'賽程開始、散場未公布',name:'臺北市中正盃運動舞蹈全國聯賽第 10 站',place:'臺北市大安運動中心（大安區・辛亥路三段55號）',region:'region-panel-2',note:'中華民國體育運動舞蹈總會賽事行事曆確認 11/21；未找到可核實的精確報到、開賽與結束時刻，不以運動中心一般開館時段代替。',link:src.dance,linkText:'舞總官方賽事行事曆',nav:'臺北市大安區辛亥路三段55號'});
+    newlyVerified.push({day:22,key:'go',grade:'A',time:'開賽、散場時刻未公布',name:'2026 黑嘉嘉圍棋公開賽',place:'黑嘉嘉圍棋品牌總部・科技服務大樓14樓（松山區）',region:'region-panel-5',note:'官方賽務報名平台確認 11/22 在民生東路四段133號舉行。平台標示「人數限制288」是報名上限，不是已報名或實到人數。Gemini 的 12:20 開賽尚無本次可核實的官方依據，故保留未公布。',link:src.go,linkText:'賽事官方報名資訊',nav:'臺北市松山區民生東路四段133號'});
+
+    function linkedFooter(item){
+      var foot=document.createElement('div'); foot.className='event-footer';
+      function a(label,url,css){var n=document.createElement('a');n.className=css;n.textContent=label;n.href=url;n.target='_blank';n.rel='noopener noreferrer';foot.appendChild(n);}
+      a(item.linkText+' ↗',item.link,'source-link');
+      if(item.other)a(item.otherText+' ↗',item.other,'source-link');
+      a('📍 導航','https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(item.nav)+'&travelmode=driving','nav-link');
+      return foot;
+    }
+    newlyVerified.forEach(function(item){
+      var id='ev-VERIFY-1116-'+item.key+'-'+item.day;
+      var stack=document.querySelector('#day-panel-'+item.day+' .event-stack');
+      if(!stack||document.getElementById(id))return;
+      var art=document.createElement('article');art.className='event-card event-'+item.grade.toLowerCase();art.id=id;
+      art.setAttribute('data-day',String(item.day));art.setAttribute('data-grade',item.grade);art.setAttribute('data-source','CROSSCHECK_20261116');
+      var top=document.createElement('div');top.className='event-top';
+      var time=document.createElement('span');time.className='time-text';time.textContent=item.time;top.appendChild(time);
+      var badge=document.createElement('span');badge.className='badge badge-'+item.grade.toLowerCase();badge.textContent=item.grade+(item.grade==='A'?' 官方來源':' 單一來源');top.appendChild(badge);art.appendChild(top);
+      var name=document.createElement('div');name.className='event-name';name.textContent=item.name+' ';
+      var newBadge=document.createElement('span');newBadge.className='badge badge-new';newBadge.textContent='11/16 補查';name.appendChild(newBadge);art.appendChild(name);
+      var place=document.createElement('div');place.className='event-place';var dot=document.createElement('span');dot.className='place-dot';dot.setAttribute('aria-hidden','true');place.appendChild(dot);place.appendChild(document.createTextNode(item.place));art.appendChild(place);
+      var note=document.createElement('p');note.className='event-note';note.textContent=item.note;art.appendChild(note);art.appendChild(linkedFooter(item));stack.appendChild(art);
+      var region=document.getElementById(item.region);
+      if(region){region.setAttribute('data-event-refs',((region.getAttribute('data-event-refs')||'')+' '+id).trim());region.removeAttribute('data-rendered');}
+    });
+    // 味全龍遊行在舊版已存在；只補兩家新聞確認的逐街道路線，不再新增同名卡。
+    var dragon=document.getElementById('ev-NEXT-085');
+    var route='11/22 14:00 從天母棒球場忠誠路二段側出發 → 忠誠路二段、一段 → 中山北路六段至一段 → 忠孝東路一段至四段 → 逸仙路 → 仁愛路四段 → 新仁愛路 → 仁愛路四段 → 光復南路 → 臺北大巨蛋松菸大道。天母球場售票口前、花博水晶情人橋下、市民廣場三處應援集結點；終點舉行冠軍儀式。此路線由兩家新聞引述球團公布，屬 B；警方各路段確切封閉與恢復通車時段、抵達及散場時刻仍未公布。';
+    if(dragon){var notes=dragon.querySelectorAll('.event-note');if(notes[0])notes[0].textContent=route;var foot=dragon.querySelector('.event-footer');if(foot){var dl=document.createElement('a');dl.href=src.dragonNews;dl.textContent='球團路線新聞（B） ↗';dl.className='source-link';dl.rel='noopener noreferrer';dl.target='_blank';foot.insertBefore(dl,foot.lastElementChild);}}
+    Array.prototype.forEach.call(document.querySelectorAll('#traffic .traffic-card'),function(card){
+      var h=card.querySelector('h3');if(!h||h.textContent.indexOf('味全龍封王遊行')===-1)return;
+      var status=card.querySelector('.traffic-status');if(status)status.textContent='A 遊行確定；B 球團路線有兩家新聞；警方逐路段封路時段未公布';
+      var body=card.querySelector('.traffic-body');if(body)body.textContent=route+' 部分路段將彈性交通管制，天母球場周邊部分路邊停車格禁停；請勿把行進路線等同全時封路。';
+      var foot=card.querySelector('.event-footer');if(foot){var news=document.createElement('a');news.href=src.dragonSecond;news.textContent='球團路線報導 ↗';news.className='source-link';news.rel='noopener noreferrer';news.target='_blank';foot.appendChild(news);}
+    });
+    // 公運處最新公布北投大型管制：直接顯示至最後一段管制結束才隱藏。
+    var trafficList=document.querySelector('#traffic .traffic-list');
+    if(trafficList&&!document.getElementById('traffic-spring-20261116')){
+      var t=document.createElement('article');t.className='traffic-card';t.id='traffic-spring-20261116';t.setAttribute('data-source','TAIPEI_PUBLIC_TRANSPORT_20261116');t.setAttribute('data-visible-until','2026-11-23T18:00');
+      var head=document.createElement('div');head.className='traffic-head';var icon=document.createElement('span');icon.className='traffic-icon';icon.textContent='!';icon.setAttribute('aria-hidden','true');head.appendChild(icon);var h3=document.createElement('h3');h3.textContent='11/18～11/23 北投溫泉季封路／公車改道';head.appendChild(h3);t.appendChild(head);
+      function para(cls,content){var p=document.createElement('p');p.className=cls;p.textContent=content;t.appendChild(p);}
+      para('traffic-status','A 臺北市公共運輸處正式公告；視現場提前或延後管制');
+      para('traffic-time','七星街：11/18 06:00～11/23 18:00；光明路（磺港路～中山路）：11/21 10:00～14:00');
+      para('traffic-body','小39路發車起站移到捷運新北投站北側接駁車區；共15條公車路線配合改道、10處站位取消，個別公車改道請查官方附件。司機注意新北投站周邊上下客、禁停與七星街封閉，不把全區視為全天封路。');
+      var tf=document.createElement('div');tf.className='event-footer';var ta=document.createElement('a');ta.href=src.springTraffic;ta.textContent='臺北市公運處官方交管 ↗';ta.className='source-link';ta.rel='noopener noreferrer';ta.target='_blank';tf.appendChild(ta);t.appendChild(tf);trafficList.insertBefore(t,trafficList.firstChild);
+    }
+    // 額外官方補漏：北市觀光巴士藍線特定日不進圓山飯店；並非周邊一般道路封閉。
+    if(trafficList&&!document.getElementById('traffic-roundhotel-bus-20261116')){
+      var b=document.createElement('article');b.className='traffic-card';b.id='traffic-roundhotel-bus-20261116';b.setAttribute('data-source','TAIPEI_CITY_BUS_BLUE_LINE');b.setAttribute('data-visible-until','2026-11-23T00:00');
+      b.innerHTML='<div class="traffic-head"><span class="traffic-icon" aria-hidden="true">!</span><h3>11/19～11/22 觀光巴士藍線取消停靠圓山飯店</h3></div><p class="traffic-status">A 大臺北公車官方即時公告；不等於一般車道封路</p><p class="traffic-time">11/19、11/20、11/21、11/22（逐班受影響時段未公布）</p><p class="traffic-body">臺北觀光巴士藍線 11/7、14、19、20、21、22 取消停靠圓山飯店；週內僅列 11/19～22 的差異，不推論飯店活動人數或其他交通管制。</p>';
+      var bf=document.createElement('div');bf.className='event-footer';var ba=document.createElement('a');ba.className='source-link';ba.href=src.bus;ba.textContent='臺北市公車官方訊息 ↗';ba.target='_blank';ba.rel='noopener noreferrer';bf.appendChild(ba);b.appendChild(bf);trafficList.insertBefore(b,t.nextSibling);
+    }
+    var noteSection=document.getElementById('audit-notes');if(noteSection){var box=document.createElement('p');box.className='info-box';box.textContent='11/16 Gemini × Perplexity 交叉補查：舊版已收錄 SUPER JUNIOR-83z、耶誕環保挖寶趣、冬日萌遊等活動，故未重複新增。新核實 18 張日期卡（臺北溫泉季3、兩處市集各2、細胞個展7、萌獸畫展2、中正盃1、圍棋賽1），以及北投與觀光巴士交通提醒。味全龍既有卡更新詳細路線但不另建重複卡。A 表示官方來源確認活動，不等於散場、人數或所有封路時段獲官方確認。';noteSection.insertBefore(box,noteSection.querySelector('.legend'));}
+    var footerFine=document.querySelector('.footer-fine');if(footerFine)footerFine.textContent='資料補查截至 2026-11-16（台灣時間）｜活動與交通管制以官方最新公告及現場指揮為準。© 2026 跑車人生記帳本 · VIP 專屬';
+  }
+  mergeNov16Crosscheck();
+
 
   // Source of truth: daily event cards. Reuse them in the area view when tapped.
   function fillRegion(panelId) {
