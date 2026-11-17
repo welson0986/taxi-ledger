@@ -879,6 +879,125 @@ var footerFine=document.querySelector('.footer-fine');if(footerFine)footerFine.t
   }
   mergeNov16Crosscheck();
 
+  // 2026/11/18：已收錄活動的時刻與官方來源補正，不重複產生卡片。
+  // 所有更新先於日期排序與區域卡片複製執行，兩種檢視會顯示相同資料。
+  function updateNov18EventDetails() {
+    function applyToCards(ids, detail) {
+      ids.forEach(function(id){
+        var card=document.getElementById(id);
+        if(!card)return;
+        var time=card.querySelector('.time-text');
+        var note=card.querySelector('.event-note');
+        if(time&&detail.time)time.textContent=detail.time;
+        if(note&&detail.note)note.textContent=detail.note;
+        if(detail.grade){
+          card.classList.remove('event-a','event-b','event-c');
+          card.classList.add('event-'+detail.grade.toLowerCase());
+          card.setAttribute('data-grade',detail.grade);
+          var badge=card.querySelector('.event-top .badge');
+          if(badge){
+            badge.classList.remove('badge-a','badge-b','badge-c');
+            badge.classList.add('badge-'+detail.grade.toLowerCase());
+            badge.textContent=detail.grade+' '+(detail.badgeText||'官方來源');
+          }
+        }
+        var foot=card.querySelector('.event-footer');
+        if(!foot)return;
+        if(detail.official){
+          var officialLink=detail.replaceSource ? foot.querySelector('.source-link') : null;
+          if(!officialLink){
+            officialLink=document.createElement('a');
+            officialLink.className='source-link';
+            var nav=foot.querySelector('.nav-link');
+            foot.insertBefore(officialLink,nav||null);
+          }
+          officialLink.href=detail.official;
+          officialLink.textContent=(detail.officialLabel||'官方公告')+' ↗';
+          officialLink.target='_blank';
+          officialLink.rel='noopener noreferrer';
+        }
+        if(detail.extra){
+          var extraExists=Array.prototype.some.call(foot.querySelectorAll('a'),function(a){return a.href===detail.extra;});
+          if(!extraExists){
+            var extra=document.createElement('a');
+            extra.className='source-link';
+            extra.href=detail.extra;
+            extra.textContent=(detail.extraLabel||'補充來源')+' ↗';
+            extra.target='_blank';
+            extra.rel='noopener noreferrer';
+            foot.insertBefore(extra,foot.querySelector('.nav-link')||null);
+          }
+        }
+      });
+    }
+
+    applyToCards(['ev-NEXT-003','ev-NEXT-006','ev-NEXT-010','ev-NEXT-014','ev-NEXT-018','ev-NEXT-022','ev-NEXT-026'],{
+      time:'11:00～19:00（最後入場18:30）',grade:'A',badgeText:'松菸官方',
+      note:'《咒術迴戰》快閃店展期 10/28～12/13；松山文創園區官方活動頁公告每日 11:00～19:00，最後入場 18:30。此為展場開放與閉館時刻，不代表所有訪客集中在 19:00 離場。',
+      official:'https://www.songshanculturalpark.org/exhibition/activity/37478e08-b215-4744-a1b9-3050f2120bb2',
+      officialLabel:'松菸官方快閃店公告',replaceSource:true
+    });
+    applyToCards(['ev-NEXT-007','ev-NEXT-011','ev-NEXT-015','ev-NEXT-019','ev-NEXT-023','ev-NEXT-027'],{
+      time:'10:00～18:00（週一休館）',grade:'A',badgeText:'松菸官方',
+      note:'2026 金點設計展展期 11/17～2027/04/25，地點為臺灣設計館 01、02、04 展間；官方公告週二至週日 10:00～18:00、週一休館。18:00 為閉館時間，並非所有觀眾同時散場。',
+      official:'https://www.songshanculturalpark.org/exhibition/activity/ef7b55b4-2233-4615-91d4-52b85290628a',
+      officialLabel:'松菸官方金點設計展公告',replaceSource:true
+    });
+    applyToCards(['ev-NEXT-033','ev-NEXT-034'],{
+      time:'19:30 開演；約21:30 散場（推估）',grade:'A',badgeText:'OPENTIX 官方',
+      note:'11/18、11/19 臺北場：18:20 開放一、四號門供「演前導聆」入場（不是觀眾席入場公告）；18:30～19:10 導聆，19:30 正式開演。OPENTIX 公告演出全長約 120 分鐘、含中場，依此推估約 21:30 散場，非主辦承諾的離場時刻。',
+      official:'https://www.opentix.life/event/2058868047100907520',
+      officialLabel:'OPENTIX 臺北場與演前導聆',replaceSource:true
+    });
+    applyToCards(['ev-NEXT-071'],{
+      time:'17:00 開始・散場未公布',
+      note:'ATLAS Fancon Beyond The Map：主辦 LeayDoDee Studio 的活動訊息列 11/20 17:00；目前未找到可核實的正式入場時刻與活動結束時刻，不把 17:00 當成入場時間。',
+      official:'https://x.com/LeayDoDee',officialLabel:'主辦單位活動消息'
+    });
+    applyToCards(['ev-NEXT-077'],{
+      time:'16:00 開始・散場未公布',
+      note:'DICE Fancon《The DICEcovery》：主辦活動內容列 SHOW TIME 16:00；另有第三方活動標題列 17:00，兩種寫法尚有差異。請以主辦最新入場與開演通知為準，官方散場時間未公布。',
+      official:'https://x.com/LeayDoDee',officialLabel:'主辦單位活動消息',
+      extra:'https://palaner.com/events/ticketmelon-4f0e9116ee',extraLabel:'其他活動資訊（時間有差異）'
+    });
+    applyToCards(['ev-DLTA-DERM_2122-21'],{
+      time:'08:00 會期開始；18:30 年會晚宴（非散場）',
+      note:'第 52 屆臺灣皮膚科醫學會年會正式議程為 11/21～11/22；參展單位資料列整體會期 11/21 08:00 至 11/22 17:00。已見 11/21 16:00～17:00 專題活動及 18:30 年會晚宴，但各分場結束與全體退場時刻未公布，晚宴不可當作全場散場。',
+      official:'https://tda.kktix.cc/',officialLabel:'醫學會年會／晚宴報名',
+      extra:'https://seplasma.com/52th-tda/',extraLabel:'會期與參展資訊'
+    });
+    applyToCards(['ev-DLTA-DERM_2122-22'],{
+      time:'17:00 全會期結束（參展資訊）；實際退場未公布',
+      note:'TICC 場館列 11/20～11/22 檔期，正式年會為 11/21～11/22。參展單位列會期至 11/22 17:00，但未取得逐場分議程與所有與會者的退場時刻，不宜推論 17:00 同時湧出。',
+      official:'https://tda.kktix.cc/',officialLabel:'醫學會官方活動報名',
+      extra:'https://seplasma.com/52th-tda/',extraLabel:'會期與參展資訊'
+    });
+    applyToCards(['ev-CROSS-1115-mongaFun-21','ev-CROSS-1115-mongaFun-22'],{
+      note:'11/21～11/22 為萬華車站前的爐主壇樂園、躦轎祈福等定點活動，逐日開放及結束時間尚未公布。本週未查到可確認的定點活動封路時段；青山王祭正式遶境預定 11/28～11/30，宮方公布的遶境 GPS 路線屬下週，不可套用為本週道路管制。',
+      official:'https://mjcsg.org.tw/?act=menuinfo&cmd=detail&mi_id=20261114002&ml_id=20250804008',
+      officialLabel:'青山宮官方前導活動',
+      extra:'https://www.52mazu.tw/mjcsg',extraLabel:'宮方遶境路線 GPS（11/28～30）'
+    });
+    applyToCards(['ev-VERIFY-1116-gallery-21','ev-VERIFY-1116-gallery-22'],{
+      note:'名山藝術台北館《萌獸呢喃》翁明哲 2026 創作展，展期 11/21～12/27，活動資訊列每日 10:00～18:30；11/21 15:00 有開幕茶會。18:30 為展館開放結束時間，並非集中散場。'
+    });
+    applyToCards(['ev-DLTA-ONEWE-22'],{
+      time:'17:30 開演・散場未公布',
+      note:'ONEWE 第 6 次台北專場 O! NEW E!volution VI：11/22 17:30 開演，售票活動頁可查；目前未公布可靠的觀眾席入場與正式散場時刻，且演後另有粉絲福利，不假設所有觀眾同時離場。',
+      official:'https://ticketplus.com.tw/activity/a601de31176dc59308fd38668e867636',
+      officialLabel:'Ticket Plus 活動售票'
+    });
+
+    var wine=document.getElementById('ev-NEXT-075');
+    if(wine){
+      var wineNote=wine.querySelector('.event-note');
+      if(wineNote)wineNote.textContent='主辦公布 11/21 美堤河濱公園基16號水門活動 12:00～19:00，13:30 起依距離與組別分批起跑。現階段尚未取得警方可核實的逐路段封路與管制起迄時刻；請依現場公告指揮行駛。此活動不可推論為水門週邊全天封閉。';
+    }
+    var fine=document.querySelector('.footer-fine');
+    if(fine)fine.textContent='資訊更新：2026/11/18（台灣時間）｜活動與交管以官方公告及現場指揮為準。© 2026 跑車人生記帳本 · VIP 專屬';
+  }
+  updateNov18EventDetails();
+
 
   // Source of truth: daily event cards. Reuse them in the area view when tapped.
   function fillRegion(panelId) {
@@ -950,8 +1069,8 @@ var footerFine=document.querySelector('.footer-fine');if(footerFine)footerFine.t
   var priorSaturdayDate=priorSaturdayButton && priorSaturdayButton.getAttribute('data-date');
   var priorSaturdayHidden=null;
   function isExpiredCarryover(day) {
-    return !!(day && ((carryoverDate && day===carryoverDate && taipeiDate()>carryoverDate) ||
-                      (priorSaturdayDate && day===priorSaturdayDate && taipeiDate()>priorSaturdayDate)));
+    // 每一天都在臺灣時間 00:00 自動下架；不只週末銜接日。
+    return !!(day && day<taipeiDate());
   }
   function updatePriorSaturdayVisibility() {
     if (!priorSaturdayButton || !priorSaturdayDate) return;
@@ -1178,9 +1297,62 @@ var footerFine=document.querySelector('.footer-fine');if(footerFine)footerFine.t
       tab.style.gridColumn='span '+(12/count);
     });
   }
+  function hideExpiredDayTabs() {
+    var today=taipeiDate(),changed=false;
+    Array.prototype.forEach.call(document.querySelectorAll('#calendar .tab-day[data-date]'),function(tab){
+      var expired=tab.getAttribute('data-date')<today;
+      if(tab.hidden!==expired){
+        tab.hidden=expired;
+        if(expired){
+          var panel=document.getElementById(tab.getAttribute('aria-controls'));
+          if(panel)panel.hidden=true;
+        }
+        changed=true;
+      }
+    });
+    if(!changed)return;
+    // 已展開的區域頁面須依當天有效資料重新建立，避免昨日卡片繼續留在區域檢視。
+    Array.prototype.forEach.call(document.querySelectorAll('.region-panels .tab-panel'),function(panel){
+      var list=panel.querySelector('.event-stack');
+      if(list)list.replaceChildren();
+      panel.removeAttribute('data-rendered');
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#areas .region-button[role="tab"]'),function(button){
+      var panel=document.getElementById(button.getAttribute('aria-controls'));
+      if(!panel)return;
+      var refs=(panel.getAttribute('data-event-refs')||'').trim().split(/\s+/);
+      var available=refs.some(function(id){
+        var card=document.getElementById(id);
+        var owner=card&&card.closest('.day-panels .tab-panel');
+        var day=owner&&document.getElementById(owner.getAttribute('aria-labelledby'));
+        return !!(day&&!day.hidden&&!isExpiredCarryover(day.getAttribute('data-date')));
+      });
+      button.hidden=!available;
+      if(!available && button.classList.contains('is-active')){
+        button.classList.remove('is-active');
+        button.setAttribute('aria-selected','false');
+        panel.hidden=true;
+        document.querySelector('.region-panels').hidden=true;
+        document.getElementById('region-empty').hidden=false;
+      }
+      if(available && button.classList.contains('is-active'))fillRegion(panel.id);
+    });
+    var first=document.querySelector('#calendar .tab-day[data-date]:not([hidden])');
+    var weekEnd=document.getElementById('calendar').getAttribute('data-week-end');
+    if(first&&weekEnd){
+      function shortDate(iso){return Number(iso.slice(5,7))+'/'+Number(iso.slice(8,10));}
+      var range=shortDate(first.getAttribute('data-date'))+'～'+shortDate(weekEnd);
+      var hero=document.querySelector('.hero h1 em');
+      if(hero)hero.textContent=range;
+      document.title='人潮情報｜雙北 '+range+'｜跑車人生 VIP';
+      var areas=document.querySelector('#areas .section-intro');
+      if(areas)areas.textContent='依區域查看 '+range+' 的活動，已過日期自動隱藏。';
+    }
+  }
   function rolloverTick() {
     updatePriorSaturdayVisibility();
     updateCarryoverVisibility();
+    hideExpiredDayTabs();
     layoutVisibleDateTabs();
     refreshTimeLimitedTraffic();
     selectToday();
