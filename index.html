@@ -2927,6 +2927,12 @@ function showToast(msg, ms){
   el.textContent = msg; el.style.display = 'block';
   clearTimeout(el._t); el._t = setTimeout(function(){ el.style.display='none'; }, ms||3500);
 }
+// where this phone turns location back on (the iPhone steps used to be shown on Android too)
+function geoDeniedHelp(){
+  if(IS_IOS) return '要記位置:iPhone「設定 → 隱私權與安全性 → 定位服務」打開,再回 App 按上車時選「允許」。';
+  if(isNativeApp()) return '要記位置:手機「設定 → 應用程式 → 跑車人生 → 權限 → 位置」選「使用應用程式時允許」。';
+  return '要記位置:點瀏覽器網址列左邊的圖示 → 權限(或網站設定)→ 位置,改成「允許」。';
+}
 function geoCapture(cb){
   if(!navigator.geolocation){ cb(null, '這支手機的瀏覽器不支援定位,這趟只記時間。'); return; }
   var done = false;
@@ -2935,7 +2941,7 @@ function geoCapture(cb){
     cb({lat:+p.coords.latitude.toFixed(6), lng:+p.coords.longitude.toFixed(6), acc:Math.round(p.coords.accuracy||0)}, '');
   }, function(err){
     if(done) return; done = true;
-    if(err && err.code===1) cb(null, '定位權限被拒絕,這趟只記時間。要記位置:iPhone「設定 → 隱私權與安全性 → 定位服務」打開,再回 App 按上車時選「允許」。');
+    if(err && err.code===1) cb(null, '定位權限被拒絕,這趟只記時間。'+geoDeniedHelp());
     else cb(null, '這次抓不到位置(可能訊號不好),這趟只記時間,記帳照常。');
   }, {enableHighAccuracy:true, timeout:10000, maximumAge:15000});
 }
@@ -7547,7 +7553,7 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.18.4';
+var APP_VERSION = '2026.11.18.5';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
