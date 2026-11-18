@@ -2973,11 +2973,16 @@ function ensureShiftRunning(now){
   }
   return '';
 }
+// 無縫接單: with 記錄接單時間 on, the next order can be taken while a passenger is still in the car. It is kept as
+// pendingAccept with seamless:true; after 下車 the big button is 上車 straight away, and 上車 hangs it on the next trip.
+// The analysis then counts no waiting for that trip and the approach from the drop-off (see seamlessPrevDrop).
 function tripAccept(){
-  if(state.activeTrip || state.pendingAccept) return;
+  if(state.pendingAccept) return;
+  var riding = !!state.activeTrip;
+  if(riding && !state.trackAccept) return;
   var now = Date.now(), note = ensureShiftRunning(now);
-  state.pendingAccept = {ts:now};
-  save(function(ok){ if(ok) showToast('已記錄接單時間,到上車點客人上車再按「上車」'+note, note?5000:3500); }); renderAll();
+  state.pendingAccept = riding ? {ts:now, seamless:true} : {ts:now};
+  save(function(ok){ if(ok) showToast((riding ? '已記錄接下一單的時間,這趟下車後直接按「上車」就好' : '已記錄接單時間,到上車點客人上車再按「上車」')+note, note?5000:3500); }); renderAll();
   geoCapture(function(loc){
     if(!loc) return;
     // the fix can land after 上車 was already pressed, so look for this accept wherever it went
@@ -3014,6 +3019,22 @@ function tripResume(tripId){
   save(function(ok){ if(ok) showToast('已恢復成載客中,真正下車時再按「下車」', 4500); }); closeModal(); renderAll();
 }
 function findPendingTrip(id){ return (state.pendingTrips||[]).filter(function(t){ return t.id===id; })[0]; }
+// the latest 下車 on record (trips waiting for a fare and fares with a trip), 0 when there is none
+function lastDropoffTs(){
+  var m = 0;
+  (state.pendingTrips||[]).forEach(function(t){ if(t.dropoff && t.dropoff.ts>m) m = t.dropoff.ts; });
+  for(var i=state.records.length-1;i>=0;i--){ var r = state.records[i]; if(r.dropoff && r.dropoff.ts>m) m = r.dropoff.ts; }
+  return m;
+}
+// 無縫接單: the order for trip o was taken while the trip before it (prev) still had its passenger. Returns that
+// drop-off time, else null. For such a trip there was no waiting, and the approach runs from that drop-off to this
+// pickup: from the accept on, the time already counts as the earlier trip's ride. Without the trip before it (it was
+// cancelled or deleted) it is read as an ordinary accept.
+function seamlessPrevDrop(o, prev){
+  if(!o.accept || !o.accept.seamless || !prev || !prev.dropoff || !o.pickup) return null;
+  var d = prev.dropoff.ts;
+  return (o.accept.ts < d && d <= o.pickup.ts) ? d : null;
+}
 function attachTripToRecord(t, rec){
   rec.tripId = t.id;
   rec.pickup = t.pickup;
@@ -3036,12 +3057,21 @@ function tripCardHtml(){
   if(a){
     h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">🚕 載客中 · '+hhmm(a.pickup.ts)+' 上車 · 已 '+Math.round((Date.now()-a.pickup.ts)/60000)+' 分鐘'+(a.pickup.lat!=null?' · 📍已定位':'')+'</div>';
     h += '<button data-act="trip-end" style="'+big+';background:var(--expense-fill)">下車</button>';
+    if(state.pendingAccept){
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;padding:9px 12px;border-radius:12px;background:var(--surface-sunken);font-size:13px"><span>📲 已接下一單 '+hhmm(state.pendingAccept.ts)+'</span><a data-act="accept-cancel" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline;flex:none">取消／按錯了</a></div>';
+    } else if(state.trackAccept){
+      h += '<button class="btn btn-ghost" data-act="trip-accept" style="width:100%;margin-top:10px">📲 接到下一單</button>';
+    }
     h += '<div style="text-align:right;margin-top:8px"><a data-act="trip-cancel" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">按錯了,取消這趟</a></div>';
   } else if(state.trackAccept && !state.pendingAccept){
     h += '<button data-act="trip-accept" style="'+big+';background:var(--accent-fill)">📲 接到單了</button>';
     h += '<div style="text-align:right;margin-top:8px"><a data-act="trip-start" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">路招/沒有接單時間,直接上車</a></div>';
   } else {
-    if(state.pendingAccept) h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">📲 '+hhmm(state.pendingAccept.ts)+' 接單 · 前往上車點 '+Math.round((Date.now()-state.pendingAccept.ts)/60000)+' 分鐘</div>';
+    if(state.pendingAccept){
+      var pa = state.pendingAccept, paFrom = pa.ts, paDrop = pa.seamless ? lastDropoffTs() : 0;
+      if(paDrop > paFrom) paFrom = paDrop;  // taken during the last ride: on the way since that drop-off
+      h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">📲 '+hhmm(pa.ts)+(paDrop>pa.ts ? ' 載客中接單 · 下車後前往上車點 ' : ' 接單 · 前往上車點 ')+Math.round((Date.now()-paFrom)/60000)+' 分鐘</div>';
+    }
     h += '<button data-act="trip-start" style="'+big+';background:var(--income-fill)">上車</button>';
     if(state.pendingAccept) h += '<div style="text-align:right;margin-top:8px"><a data-act="accept-cancel" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">客人取消了 / 按錯了</a></div>';
     if(!state.geoAsked) h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;line-height:1.5">第一次按,手機會問要不要讓記帳本取得位置,請按「允許」。只在按下的那一刻抓一次位置,不會一直追蹤。</div>';
@@ -4329,8 +4359,11 @@ function tripInsightsHtml(range, f){
     return uiShow('tripEff') ? '<div class="section"><div class="section-title">🚕 載客效率(上下車紀錄)</div><div class="card"><div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">'+(dayKeys.length ? '符合篩選條件的趟次都沒有上下車紀錄。' : '這段期間還沒有上下車紀錄。')+'載客時按記帳頁的「上車」「下車」,這裡就會算出載客率、空車時間、搭車長短和上車熱區。</div></div></div>' : '';
   }
   var n=0, occMin=0, gaps=[], plat={}, buckets=[0,0,0], kmBuckets=[0,0,0], kmSum=0, kmN=0;
-  var accN=0, waitN=0, waitSum=0, approachSum=0, apKmSum=0, apKmN=0, accPlat={};
+  var accN=0, waitN=0, waitSum=0, approachSum=0, apKmSum=0, apKmN=0, accPlat={}, seamN=0;
   var fullOcc=0, fullWork=0, fullDays=0;
+  // the last trip of the business day before each one, for an order taken during the ride before it
+  var wide = timedTripsByDay(addDays(range.from, -1), range.to), wk = Object.keys(wide).sort(), lastBefore = {};
+  wk.forEach(function(k, j){ if(j>0){ var pl = wide[wk[j-1]]; lastBefore[k] = pl[pl.length-1]; } });
   dayKeys.forEach(function(d){
     var list = days[d], dayOcc = 0;
     list.forEach(function(o,i){
@@ -4341,11 +4374,14 @@ function tripInsightsHtml(range, f){
       var km = straightKm(o.pickup, o.dropoff);
       if(km!=null){ kmBuckets[km<3?0:(km<12?1:2)]++; kmSum += km; kmN++; }
       if(o.accept && o.accept.ts<=o.pickup.ts){
-        var ap = (o.pickup.ts - o.accept.ts)/60000;
-        var wt = i>0 ? (o.accept.ts - list[i-1].dropoff.ts)/60000 : null;
+        // the trip before this one, also across the change of business day (only a 無縫接單 looks that far)
+        var prevO = i>0 ? list[i-1] : lastBefore[d];
+        var sd = seamlessPrevDrop(o, prevO);
+        var ap = (o.pickup.ts - (sd!=null ? sd : o.accept.ts))/60000;
+        var wt = sd!=null ? 0 : (i>0 ? (o.accept.ts - list[i-1].dropoff.ts)/60000 : null);
         if(ap<=EMPTY_GAP_CAP_MIN && (wt==null || (wt>=0 && wt<=EMPTY_GAP_CAP_MIN))){
-          accN++; approachSum += ap;
-          var akm = straightKm(o.accept, o.pickup); if(akm!=null){ apKmSum += akm; apKmN++; }
+          accN++; approachSum += ap; if(sd!=null) seamN++;
+          var akm = straightKm(sd!=null ? prevO.dropoff : o.accept, o.pickup); if(akm!=null){ apKmSum += akm; apKmN++; }
           var ak = o.rec ? o.rec.platform : null;
           if(ak){ var apl = accPlat[ak] || (accPlat[ak] = {label:platformDef(ak).label, ap:0, apN:0, wt:0, wtN:0}); apl.ap += ap; apl.apN++; if(wt!=null){ apl.wt += wt; apl.wtN++; } }
           if(wt!=null){ waitSum += wt; waitN++; }
@@ -4395,6 +4431,7 @@ function tripInsightsHtml(range, f){
     h += '<div class="stat-tile"><div class="lbl">平均接駁(接單→上車)</div><div class="val num">'+fmtNum(approachSum/accN,1)+' 分</div></div>';
     h += '</div>';
     if(apKmN) h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px">平均接駁直線距離 '+fmtNum(apKmSum/apKmN,1)+' 公里</div>';
+    if(seamN) h += '<div class="list-item"><div class="li-body"><div class="li-title">🔗 無縫接單</div><div class="li-sub">載客中就接到下一單:等單算 0,接駁從上一趟下車算起</div></div><div class="li-amt num" style="font-size:13px">'+seamN+' 趟(佔 '+Math.round(seamN/accN*100)+'%)</div></div>';
     var apl2 = Object.keys(accPlat).map(function(k){ return accPlat[k]; }).sort(function(a,b){ return a.ap/a.apN-b.ap/b.apN; });
     h += apl2.map(function(p){ return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(p.label)+'</div><div class="li-sub">'+p.apN+' 趟</div></div><div class="li-amt num" style="font-size:13px">等單 '+(p.wtN?fmtNum(p.wt/p.wtN,1):'—')+' · 接駁 '+fmtNum(p.ap/p.apN,1)+' 分</div></div>'; }).join('');
   }
@@ -7076,7 +7113,7 @@ var HELP = [
   ]],
   ['載客與熱區', [
     ['上車 / 下車', '客人上車按「上車」,下車按「下車」→ 選平台、打車資;還不知道車資可以「稍後再填」。位置只在按下那一刻記一次。', 'trips'],
-    ['接到單了(前往接客)', '⚙️「隱私與分享」→「進階:記錄接單時間」打勾後出現(上下車滿 30 趟也會提示一次),分析頁會分出等單和接駁各花多久;活動追蹤也用這個時間算趟數。'],
+    ['接到單了(前往接客)', '⚙️「隱私與分享」→「進階:記錄接單時間」打勾後出現(上下車滿 30 趟也會提示一次),分析頁會分出等單和接駁各花多久;活動追蹤也用這個時間算趟數。載客中就接到下一單:按行程卡上的「📲 接到下一單」,下車後直接按「上車」(無縫接單,等單算 0)。'],
     ['📍 上車熱區', '分析頁看你最常上車的地方,可篩白天 / 晚上 / 深夜,點 ✏️ 取名。「⏰ 現在」看過去 12 週同一個星期幾、現在前後一小時最常上車的地方。', 'hotspot'],
     ['👥 車友熱區', '同意分享上車熱區才能看附近車友都在哪裡上車,每個地點也會顯示你自己在那裡載過幾趟、平均實收多少;只分享約 1 公里一格,不含精確位置、金額;取消分享會刪除你分享過的資料。'],
     ['即時路況', '記帳頁「看即時路況」開 Google 地圖;常用地點可以新增、排序。停車或紅燈時再看。', 'traffic']
@@ -7460,7 +7497,7 @@ function openSettingsModal(){
     Array.apply(null, Array(DAY_CUTOFF_MAX+1)).map(function(x, hh){ return '<option value="'+hh+'"'+(hh===cutoffNow?' selected':'')+'>'+cutoffLabel(hh)+'</option>'; }).join('')+
     '</select></div>';
   S.basic += h; h = '';
-  h += '<div class="form-row" style="margin-top:6px"><label>進階:記錄接單時間</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-track-accept" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.trackAccept?' checked':'')+'>打開後,下車後的大按鈕會變成「📲 接到單了」。接單時按一下,客人上車再按「上車」,分析頁就能把空檔拆成「等單」和「接駁」兩段。不打開就跟原本一樣。</label></div>';
+  h += '<div class="form-row" style="margin-top:6px"><label>進階:記錄接單時間</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-track-accept" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.trackAccept?' checked':'')+'>打開後,下車後的大按鈕會變成「📲 接到單了」。接單時按一下,客人上車再按「上車」,分析頁就能把空檔拆成「等單」和「接駁」兩段。載客中就接到下一單,可以按行程卡上的「📲 接到下一單」,下車後直接按「上車」。不打開就跟原本一樣。</label></div>';
   if(HOT_URL) h += '<div class="form-row"><label>分享上車熱區(車友熱區)</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-share-hot" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.shareHot===true?' checked':'')+'><span>分享你的上車熱區,就能在分析頁看「車友熱區」。只送約 1 公里一格的區域、日期、時段、趟數,<b>不送精確位置、金額、平台</b>;3 位以上車友都上過車的地方才會顯示。取消勾選會一併刪除你分享過的資料。</span></label></div>';
   if(HOT_URL && (state.hotDelPending||[]).length) h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-6px 0 12px;line-height:1.6">⏳ 已停止分享。之前分享的資料還在等網路刪除,連上網後會自動再送,不用重新打開分享。</div>';
   h += '<div class="form-row"><label>不具名使用人數統計</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-stat-on" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.statOptOut?'':' checked')+'><span>參與不具名統計,幫製作者知道有多少司機在用。每天只送一次:隨機編號、日期、版本、簡單/完整模式、手機系統、是否從主畫面打開。<b>不含任何金額、平台、位置或個人資料。</b></span></label></div>';
@@ -7510,12 +7547,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.18.3';
+var APP_VERSION = '2026.11.18.4';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.18.4', '🔗 有打開「記錄接單時間」的車友:載客中就接到下一單,可以直接按行程卡上的「📲 接到下一單」,這趟下車後直接按「上車」就好;分析頁會算出無縫接單幾趟,這種趟次的等單算 0,接駁從上一趟下車算起'],
   ['2026.11.18.3', '📱 從下面的按鈕列或上面的標題列往上滑,整個畫面不會再跑掉、下面留一大塊空白(iPhone、安卓都修好了)'],
   ['2026.11.18.2', '⌨️ iPhone 網頁版:選好車隊、支出項目後,車資／金額欄會直接跳出數字鍵盤;收起鍵盤後,會自動把畫面捲回原位,下面的按鈕列不再卡在畫面中間'],
   ['2026.11.18.1', '⏱️ 今日跑車報告、日曆、分析頁的「時薪」改叫「平均時薪」(實收 ÷ 工時,含空車、等單);按「上廁所 +1」後,休息提醒會重新計時;營業日分界最晚可以選到早上 09:00'],
@@ -8704,7 +8742,9 @@ document.addEventListener('click', function(e){
     var ur = state.records.filter(function(r){ return r.id===arg; })[0];
     if(ur && ur.tripId && confirm('取消這筆收入和行程的連結?行程會回到「已下車、還沒記車資」清單。')){
       state.pendingTrips = state.pendingTrips||[];
-      state.pendingTrips.push({id:ur.tripId, pickup:ur.pickup, dropoff:ur.dropoff});
+      var ut = {id:ur.tripId, pickup:ur.pickup, dropoff:ur.dropoff};
+      if(ur.accept) ut.accept = ur.accept;  // the 接單 time goes back with the trip (it used to be dropped here)
+      state.pendingTrips.push(ut);
       delete ur.tripId; delete ur.pickup; delete ur.dropoff;
       save(); closeModal(); renderAll();
     }
