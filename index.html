@@ -5728,44 +5728,44 @@ if(state.catOrder && state.catOrder.indexOf('fees')<0){
 var TRAFFIC_CITIES = [
   {key:'tpe', name:'台北市(含新北)', spots:TRAFFIC_SPOTS_DEFAULT},
   {key:'tyc', name:'桃園市', spots:[
-    {name:'桃園機場 第一航廈', lat:25.0814, lng:121.2374},
-    {name:'桃園機場 第二航廈', lat:25.0775, lng:121.2322},
-    {name:'高鐵桃園站', lat:25.0130, lng:121.2149},
+    {name:'桃園機場 T1・T2', lat:25.0795, lng:121.2348},
+    {name:'高鐵桃園・華泰', lat:25.0142, lng:121.2142},
     {name:'桃園車站', lat:24.9889, lng:121.3144},
     {name:'中壢車站', lat:24.9534, lng:121.2250},
-    {name:'華泰名品城', lat:25.0141, lng:121.2132}
+    {name:'林口長庚', lat:25.0610, lng:121.3679},
+    {name:'桃園藝文特區', lat:25.0174, lng:121.2985}
   ]},
   {key:'hsz', name:'新竹市(含竹北)', spots:[
-    {name:'新竹車站', lat:24.8016, lng:120.9716},
-    {name:'高鐵新竹站', lat:24.8081, lng:121.0402},
+    {name:'新竹車站・轉運站', lat:24.8016, lng:120.9716},
+    {name:'高鐵新竹・台大生醫', lat:24.8069, lng:121.0424},
     {name:'巨城購物中心', lat:24.8101, lng:120.9743},
-    {name:'竹北車站', lat:24.8390, lng:121.0093},
-    {name:'竹科管理局', lat:24.7817, lng:121.0059},
-    {name:'遠百竹北', lat:24.8224, lng:121.0234}
+    {name:'新竹馬偕', lat:24.8001, lng:120.9907},
+    {name:'竹科 新安路口', lat:24.7817, lng:121.0059},
+    {name:'遠百竹北・縣體育館', lat:24.8214, lng:121.0213}
   ]},
   {key:'txg', name:'台中市', spots:[
-    {name:'台中車站', lat:24.1371, lng:120.6869},
     {name:'高鐵台中站', lat:24.1117, lng:120.6158},
-    {name:'台中機場', lat:24.2541, lng:120.5996},
-    {name:'七期新光三越', lat:24.1649, lng:120.6434},
-    {name:'逢甲夜市', lat:24.1775, lng:120.6466},
-    {name:'洲際棒球場', lat:24.1988, lng:120.6853}
+    {name:'台中車站', lat:24.1371, lng:120.6869},
+    {name:'中國醫藥大學附醫', lat:24.1572, lng:120.6804},
+    {name:'台中榮總', lat:24.1841, lng:120.6048},
+    {name:'新光三越・大遠百', lat:24.1647, lng:120.6440},
+    {name:'逢甲夜市', lat:24.1775, lng:120.6466}
   ]},
   {key:'tnn', name:'台南市', spots:[
     {name:'台南車站', lat:22.9971, lng:120.2130},
-    {name:'高鐵台南站', lat:22.9247, lng:120.2864},
-    {name:'台南機場', lat:22.9483, lng:120.2164},
+    {name:'高鐵台南・三井', lat:22.9250, lng:120.2869},
+    {name:'成大醫院', lat:23.0023, lng:120.2194},
+    {name:'奇美醫院(永康)', lat:23.0209, lng:120.2222},
     {name:'南紡購物中心', lat:22.9907, lng:120.2330},
-    {name:'新光三越 西門新天地', lat:22.9869, lng:120.1981},
     {name:'花園夜市', lat:23.0112, lng:120.2002}
   ]},
   {key:'khh', name:'高雄市', spots:[
-    {name:'小港機場', lat:22.5706, lng:120.3446},
-    {name:'高鐵左營站', lat:22.6871, lng:120.3077},
+    {name:'高鐵左營・新光三越', lat:22.6871, lng:120.3077},
     {name:'高雄車站', lat:22.6395, lng:120.3026},
-    {name:'高雄巨蛋', lat:22.6689, lng:120.3027},
-    {name:'夢時代', lat:22.5949, lng:120.3058},
-    {name:'高雄流行音樂中心', lat:22.6178, lng:120.2885}
+    {name:'小港機場', lat:22.5706, lng:120.3446},
+    {name:'巨蛋・漢神・瑞豐', lat:22.6683, lng:120.3017},
+    {name:'高醫附醫', lat:22.6460, lng:120.3096},
+    {name:'夢時代', lat:22.5949, lng:120.3058}
   ]}
 ];
 // no GPS guess: the driver picks the city; old users (no pick) count as 台北市
@@ -7606,12 +7606,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.18.6';
+var APP_VERSION = '2026.11.19.1';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.19.1', '🚦 各城市的預設路況地點更新:每個城市都加進大型醫院(林口長庚、新竹馬偕、中國醫、台中榮總、成大、奇美、高醫),靠很近的地點合成一格(例如「高鐵桃園・華泰」「巨蛋・漢神・瑞豐」);你自己改過的清單不會動'],
   ['2026.11.18.6', '🚦 常用路況地點可以選「我主要跑」哪個城市:台北(含新北)、桃園、新竹(含竹北)、台中、台南、高雄,選了就換成那個城市的機場、高鐵、車站、商圈;你自己改過的清單會先問你才換'],
   ['2026.11.18.4', '🔗 有打開「記錄接單時間」的車友:載客中就接到下一單,可以直接按行程卡上的「📲 接到下一單」,這趟下車後直接按「上車」就好;分析頁會算出無縫接單幾趟,這種趟次的等單算 0,接駁從上一趟下車算起'],
   ['2026.11.18.3', '📱 從下面的按鈕列或上面的標題列往上滑,整個畫面不會再跑掉、下面留一大塊空白(iPhone、安卓都修好了)'],
