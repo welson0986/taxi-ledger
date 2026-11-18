@@ -132,7 +132,9 @@ body{
 .backup-btn{position:relative}
 .backup-btn .bk-days{position:absolute;top:-6px;right:-6px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:var(--muted-fill);color:var(--on-fill);font-size:10px;font-weight:700;line-height:16px;text-align:center;font-style:normal}
 .backup-btn .bk-days.due{background:var(--expense-fill)}
-.content{flex:1;overflow-y:auto;padding:14px 16px 24px;-webkit-overflow-scrolling:touch}
+/* position:relative keeps the screen-reader-only labels (absolute) inside this scroll box; without it they hang
+   below the screen, the whole page becomes draggable and a swipe on the tab bar leaves it shifted with blank space */
+.content{flex:1;overflow-y:auto;padding:14px 16px 24px;-webkit-overflow-scrolling:touch;position:relative}
 .bottom-nav{
   position:sticky;bottom:0;z-index:20;
   display:grid;grid-template-columns:repeat(5,1fr);
@@ -324,6 +326,7 @@ body{
 /* 儲存 stays in sight above the keyboard on long forms; the gap keeps a focused field from hiding under it */
 .form-save{position:sticky;bottom:calc(-18px - env(safe-area-inset-bottom,0px));background:var(--surface);padding:10px 0 calc(12px + env(safe-area-inset-bottom,0px));margin-top:4px;z-index:2}
 .modal{scroll-padding-bottom:84px}
+html.ios-vp,html.ios-vp body{overscroll-behavior:none}
 .form-row{margin-bottom:12px}
 .form-row label{display:block;font-size:12.5px;font-weight:700;color:var(--text-muted);margin-bottom:6px}
 .form-row input, .form-row select{
@@ -6638,6 +6641,19 @@ document.addEventListener('visibilitychange', function(){ if(document.visibility
   // the visible area grew back: the keyboard is closing
   vv.addEventListener('resize', function(){ if(vv.height > lastH + 40) scheduleViewportFix(); lastH = vv.height; });
 })();
+// A drag that starts on the tab bar or the title bar has nothing to scroll, so iOS drags the whole page instead and
+// the same thing happens: it stays shifted with blank space at the bottom. Those two bars never scroll, so swallow
+// the drag there, stop the page's rubber band (ios-vp), and if the page still got scrolled, put it back once it stops.
+if(IS_IOS) document.documentElement.classList.add('ios-vp');
+document.addEventListener('touchmove', function(e){
+  if(!IS_IOS || !e.cancelable || !e.target || !e.target.closest) return;
+  var bar = e.target.closest('.bottom-nav,.topbar');
+  if(bar && bar.scrollHeight <= bar.clientHeight + 1 && bar.scrollWidth <= bar.clientWidth + 1) e.preventDefault();
+}, {passive:false});
+window.addEventListener('scroll', function(){
+  if(!IS_IOS || isTypingField(document.activeElement)) return; // with the keyboard up iOS moves the page to show the field
+  if(window.pageYOffset || (document.scrollingElement||document.documentElement).scrollTop) scheduleViewportFix();
+}, {passive:true});
 function setLayoutWidth(label){
   var m = LAYOUT_WIDTHS.filter(function(x){ return x[0]===label; })[0];
   state.layoutWidth = m ? m[1] : 'auto';
@@ -7494,12 +7510,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.18.2';
+var APP_VERSION = '2026.11.18.3';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.18.3', '📱 從下面的按鈕列或上面的標題列往上滑,整個畫面不會再跑掉、下面留一大塊空白(iPhone、安卓都修好了)'],
   ['2026.11.18.2', '⌨️ iPhone 網頁版:選好車隊、支出項目後,車資／金額欄會直接跳出數字鍵盤;收起鍵盤後,會自動把畫面捲回原位,下面的按鈕列不再卡在畫面中間'],
   ['2026.11.18.1', '⏱️ 今日跑車報告、日曆、分析頁的「時薪」改叫「平均時薪」(實收 ÷ 工時,含空車、等單);按「上廁所 +1」後,休息提醒會重新計時;營業日分界最晚可以選到早上 09:00'],
   ['2026.11.14.2', '🛡️ 備份功能優化:還原進行的那幾秒會先暫停操作並提示,避免剛記的帳在還原時漏掉;雲端同步更穩定'],
