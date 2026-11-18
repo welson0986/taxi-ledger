@@ -1120,7 +1120,7 @@ function openMissingKmModal(dateStr){
   h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="skip-missing-km:'+dateStr+'">這天不記里程</button><button class="btn btn-primary" style="flex:1" data-act="save-missing-km:'+dateStr+'">儲存</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.5">按右上角 ✕ 會先跳過,下次打開 App 會再提醒。</div>';
   openModal(h);
-  setTimeout(function(){ var el=document.getElementById('f-missing-km'); if(el) el.focus(); }, 50);
+  focusField(['f-missing-km']);
 }
 function openNextMissingKmOrClose(){
   var next = findMissingKmDate();
@@ -3165,7 +3165,7 @@ function openRenameModal(){
   h += '<div class="form-row"><label>App 名稱</label><input id="f-appname" type="text" maxlength="20" value="'+esc(state.appName||'跑車人生')+'"></div>';
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-appname">儲存</button></div>';
   openModal(h);
-  setTimeout(function(){ var el=document.getElementById('f-appname'); if(el){ el.focus(); el.select(); } }, 50);
+  focusField(['f-appname'], true);
 }
 function saveAppName(){
   var v = document.getElementById('f-appname').value.trim();
@@ -3261,7 +3261,7 @@ function openTripJudge(){
   h += '<div class="card" id="tj-result">'+tripJudgeHtml()+'</div>';
   h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;line-height:1.6">實收依你 ⚙️「平台手續費設定」計算;油錢用最近 60 天記的加油、充電除以里程;比較的是你最近 4 週的實際時薪(實收 ÷ 工時)。</div>';
   openModal(h);
-  setTimeout(function(){ var el = document.getElementById('f-tj-fare'); if(el) el.focus(); }, 50);
+  focusField(['f-tj-fare']);
 }
 function updateTripJudge(){ var box = document.getElementById('tj-result'); if(box) box.innerHTML = tripJudgeHtml(); }
 var fareComparePay = 'card';
@@ -3272,7 +3272,7 @@ function openFareCompare(){
   h += '<div class="card" id="cmp-list"><div style="font-size:12.5px;color:var(--text-muted);padding:6px 0">輸入車資後列出各車隊實拿</div></div>';
   h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;line-height:1.6">依你 ⚙️「平台手續費設定」計算,只列記帳頁有顯示的平台。Uber 多元是用你設定的 % 估算;BOLT 依本週趟數判斷用哪個抽成。</div>';
   openModal(h);
-  setTimeout(function(){ var el = document.getElementById('f-cmp-fare'); if(el) el.focus(); }, 50);
+  focusField(['f-cmp-fare']);
 }
 function updateFareCompare(){
   var el = document.getElementById('f-cmp-fare'), box = document.getElementById('cmp-list'); if(!el || !box) return;
@@ -6007,6 +6007,19 @@ function openModal(html){
   try{ body.focus({preventScroll:true}); }catch(e){ body.focus(); }
   syncSystemBars();
 }
+// An iPhone only brings up the keyboard when focus() runs inside the tap itself: on a timer, even 50 ms later, the
+// field is just highlighted and the driver has to tap it again. The sheet is already drawn by now, so focus at once;
+// a moment later try again only if nothing has the focus (Android and computers behave as before).
+function focusField(ids, selectAll){
+  function pick(){ for(var i=0;i<ids.length;i++){ var el = document.getElementById(ids[i]); if(el) return el; } return null; }
+  function go(el){ el.focus(); if(selectAll && el.select){ try{ el.select(); }catch(e){} } }
+  var el = pick(); if(el) go(el);
+  setTimeout(function(){
+    var el2 = pick(), ae = document.activeElement; if(!el2 || ae===el2) return;
+    if(ae && ae!==document.body && ae.id!=='modalBody') return; // the driver already moved on to another field
+    go(el2);
+  }, 50);
+}
 function computePreviewRecordFromForm(key){
   var def = platformDef(key);
   function grab(id){ var el=document.getElementById(id); return el?el.value:null; }
@@ -6221,7 +6234,7 @@ function openIncomeModal(key, editId){
   currentIncomeEditDate = existing ? existing.date : null;
   currentIncomeEditTs = existing ? existing.ts : null;
   updateIncomePreview();
-  setTimeout(function(){ var el=document.getElementById('f-revenue')||document.getElementById('f-tip'); if(el) el.focus(); }, 50);
+  focusField(['f-revenue','f-tip']);
 }
 var DUP_WINDOW_MS = 2*60000;
 // An extra 0 is the commonest typo. With the trip's pickup and drop-off we can say roughly what the meter
@@ -6358,7 +6371,7 @@ function openExpenseModal(catKey, editId){
   if(existing) h += '<button class="btn btn-danger" data-act="del-expense-close:'+existing.id+'">刪除這筆</button>';
   h += '<button class="btn btn-primary" data-act="save-expense:'+catKey+(existing?(':'+existing.id):'')+'">儲存</button></div></div>';
   openModal(h);
-  setTimeout(function(){ var el=document.getElementById('f-liters')||document.getElementById('f-amount'); if(el) el.focus(); }, 50);
+  focusField(['f-liters','f-amount']);
 }
 function saveExpense(catKey, editId){
   var amount = +document.getElementById('f-amount').value || 0;
@@ -6424,7 +6437,7 @@ function openFixedModal(){
     '</div><input type="hidden" id="chip-freq" value="monthly"></div>';
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-fixed">儲存</button></div>';
   openModal(h);
-  setTimeout(function(){ document.getElementById('f-name').focus(); }, 50);
+  focusField(['f-name']);
 }
 function saveFixed(){
   var name = document.getElementById('f-name').value.trim();
@@ -6588,6 +6601,43 @@ function applyLayoutWidth(){
 var layoutResizeTimer = null;
 // the keyboard only changes the height, so typing never triggers this; turning or splitting the screen does
 window.addEventListener('resize', function(){ clearTimeout(layoutResizeTimer); layoutResizeTimer = setTimeout(function(){ if(applyLayoutWidth()){ renderAll(); syncSystemBars(); } }, 150); });
+// iPhone home-screen app: after the keyboard goes away iOS sometimes leaves the page scrolled up and keyboard-short,
+// so the tab bar floats mid-screen over blank space until the driver scrolls by hand (or reopens the app). When the
+// keyboard closes or the app comes back to the front, scroll the page back ourselves: a scroll is what makes iOS
+// measure the screen again. Only on iPhone/iPad; the page itself never scrolls (the content box does), so this is safe.
+var IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent||'') || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+function isTypingField(el){
+  if(!el || !el.tagName) return false;
+  if(el.tagName==='TEXTAREA' || el.tagName==='SELECT' || el.isContentEditable) return true;
+  return el.tagName==='INPUT' && !/^(checkbox|radio|button|submit|reset|range|color|file|hidden|image)$/i.test(el.type||'');
+}
+var vpFixTimers = [];
+function scheduleViewportFix(){
+  if(!IS_IOS) return;
+  vpFixTimers.forEach(clearTimeout);
+  // once as the keyboard starts to slide away, once after it has gone
+  vpFixTimers = [setTimeout(fixViewport, 80), setTimeout(fixViewport, 500)];
+}
+function fixViewport(){
+  if(isTypingField(document.activeElement)) return; // focus went on to the next field: the keyboard is still up
+  var se = document.scrollingElement || document.documentElement;
+  var y = window.pageYOffset || se.scrollTop || 0;
+  if(y){ window.scrollTo(0, 0); }
+  else { window.scrollTo(0, 1); window.scrollTo(0, 0); } // a 1-point nudge: no visible movement, but iOS re-measures
+  if(y && webBetaOn()){
+    var vv = window.visualViewport;
+    showToast('🛠 已校正畫面高度(捲回 '+Math.round(y)+' 點;畫面 '+window.innerHeight+(vv?(' / '+Math.round(vv.height)):'')+')', 2500);
+  }
+}
+document.addEventListener('focusout', function(e){ if(isTypingField(e.target)) scheduleViewportFix(); });
+window.addEventListener('pageshow', scheduleViewportFix);
+document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='visible') scheduleViewportFix(); });
+(function(){
+  var vv = window.visualViewport; if(!vv || !IS_IOS) return;
+  var lastH = vv.height;
+  // the visible area grew back: the keyboard is closing
+  vv.addEventListener('resize', function(){ if(vv.height > lastH + 40) scheduleViewportFix(); lastH = vv.height; });
+})();
 function setLayoutWidth(label){
   var m = LAYOUT_WIDTHS.filter(function(x){ return x[0]===label; })[0];
   state.layoutWidth = m ? m[1] : 'auto';
@@ -7444,12 +7494,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.18.1';
+var APP_VERSION = '2026.11.18.2';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.18.2', '⌨️ iPhone 網頁版:選好車隊、支出項目後,車資／金額欄會直接跳出數字鍵盤;收起鍵盤後,會自動把畫面捲回原位,下面的按鈕列不再卡在畫面中間'],
   ['2026.11.18.1', '⏱️ 今日跑車報告、日曆、分析頁的「時薪」改叫「平均時薪」(實收 ÷ 工時,含空車、等單);按「上廁所 +1」後,休息提醒會重新計時;營業日分界最晚可以選到早上 09:00'],
   ['2026.11.14.2', '🛡️ 備份功能優化:還原進行的那幾秒會先暫停操作並提示,避免剛記的帳在還原時漏掉;雲端同步更穩定'],
   ['2026.11.13.8', '🌙 新安裝的營業日分界預設改成午夜 00:00(照日曆算),已經在用的不會變。跑 Uber 的車友:Uber 一天的車資結算是凌晨 04:00 到隔天 03:59,想跟 Uber App 的每日收入對得起來,到 ⚙️「基本設定」→「我的營業日分界時間」選凌晨 04:00'],
@@ -7971,7 +8022,7 @@ function openNewPlatformModal(){
     '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.6">選「撥給我」的話,撥款頁會出現這個平台,預設每週三撥款,到「撥款」頁的 ⚙️ 撥款設定改成實際的日子。</div></div>';
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-newplatform">新增</button></div>';
   openModal(h);
-  setTimeout(function(){ var el=document.getElementById('f-newplat-name'); if(el) el.focus(); }, 50);
+  focusField(['f-newplat-name']);
 }
 function saveNewPlatform(){
   var name = document.getElementById('f-newplat-name').value.trim();
@@ -8068,7 +8119,7 @@ function openNewCatModal(){
     '<div class="form-row"><label>名稱</label><input id="f-newcat-name" type="text" maxlength="12" placeholder="例如:餐費、手機網路費"></div></div>';
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-newcat">新增</button></div>';
   openModal(h);
-  setTimeout(function(){ var el=document.getElementById('f-newcat-name'); if(el) el.focus(); }, 50);
+  focusField(['f-newcat-name']);
 }
 function saveNewCat(){
   var name = document.getElementById('f-newcat-name').value.trim();
