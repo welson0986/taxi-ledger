@@ -5724,7 +5724,56 @@ if(state.catOrder && state.catOrder.indexOf('fees')<0){
   var feesAt = state.catOrder.indexOf('other');
   if(feesAt<0) state.catOrder.push('fees'); else state.catOrder.splice(feesAt, 0, 'fees');
 }
-function trafficSpots(){ return state.trafficSpots || TRAFFIC_SPOTS_DEFAULT.slice(); }
+// default spots per city; coordinates checked one by one against OpenStreetMap and Google Maps (2026-11-18)
+var TRAFFIC_CITIES = [
+  {key:'tpe', name:'台北市(含新北)', spots:TRAFFIC_SPOTS_DEFAULT},
+  {key:'tyc', name:'桃園市', spots:[
+    {name:'桃園機場 第一航廈', lat:25.0814, lng:121.2374},
+    {name:'桃園機場 第二航廈', lat:25.0775, lng:121.2322},
+    {name:'高鐵桃園站', lat:25.0130, lng:121.2149},
+    {name:'桃園車站', lat:24.9889, lng:121.3144},
+    {name:'中壢車站', lat:24.9534, lng:121.2250},
+    {name:'華泰名品城', lat:25.0141, lng:121.2132}
+  ]},
+  {key:'hsz', name:'新竹市(含竹北)', spots:[
+    {name:'新竹車站', lat:24.8016, lng:120.9716},
+    {name:'高鐵新竹站', lat:24.8081, lng:121.0402},
+    {name:'巨城購物中心', lat:24.8101, lng:120.9743},
+    {name:'竹北車站', lat:24.8390, lng:121.0093},
+    {name:'竹科管理局', lat:24.7817, lng:121.0059},
+    {name:'遠百竹北', lat:24.8224, lng:121.0234}
+  ]},
+  {key:'txg', name:'台中市', spots:[
+    {name:'台中車站', lat:24.1371, lng:120.6869},
+    {name:'高鐵台中站', lat:24.1117, lng:120.6158},
+    {name:'台中機場', lat:24.2541, lng:120.5996},
+    {name:'七期新光三越', lat:24.1649, lng:120.6434},
+    {name:'逢甲夜市', lat:24.1775, lng:120.6466},
+    {name:'洲際棒球場', lat:24.1988, lng:120.6853}
+  ]},
+  {key:'tnn', name:'台南市', spots:[
+    {name:'台南車站', lat:22.9971, lng:120.2130},
+    {name:'高鐵台南站', lat:22.9247, lng:120.2864},
+    {name:'台南機場', lat:22.9483, lng:120.2164},
+    {name:'南紡購物中心', lat:22.9907, lng:120.2330},
+    {name:'新光三越 西門新天地', lat:22.9869, lng:120.1981},
+    {name:'花園夜市', lat:23.0112, lng:120.2002}
+  ]},
+  {key:'khh', name:'高雄市', spots:[
+    {name:'小港機場', lat:22.5706, lng:120.3446},
+    {name:'高鐵左營站', lat:22.6871, lng:120.3077},
+    {name:'高雄車站', lat:22.6395, lng:120.3026},
+    {name:'高雄巨蛋', lat:22.6689, lng:120.3027},
+    {name:'夢時代', lat:22.5949, lng:120.3058},
+    {name:'高雄流行音樂中心', lat:22.6178, lng:120.2885}
+  ]}
+];
+// no GPS guess: the driver picks the city; old users (no pick) count as 台北市
+function trafficCity(){
+  for(var i=0;i<TRAFFIC_CITIES.length;i++) if(TRAFFIC_CITIES[i].key===state.trafficCity) return TRAFFIC_CITIES[i];
+  return TRAFFIC_CITIES[0];
+}
+function trafficSpots(){ return state.trafficSpots || trafficCity().spots.map(function(s){ return {name:s.name, lat:s.lat, lng:s.lng}; }); }
 function trafficUrl(lat, lng){
   var u = 'https://www.google.com/maps/@?api=1&map_action=map&layer=traffic&zoom=16';
   return (lat!=null && lng!=null) ? u+'&center='+lat+','+lng : u;
@@ -5778,6 +5827,10 @@ function parseLatLng(s){
 function openTrafficSpotsModal(){
   var spots = trafficSpots();
   var h = '<div class="modal-title">常用路況地點<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  var city = trafficCity();
+  h += '<div class="form-row"><label>我主要跑</label><div class="chip-row">'+TRAFFIC_CITIES.map(function(c){
+    return '<button type="button" class="chip-opt'+(c.key===city.key?' selected':'')+'" data-act="traffic-city:'+c.key+'">'+esc(c.name)+'</button>';
+  }).join('')+'</div><div style="font-size:11px;color:var(--text-muted);line-height:1.5;margin-top:6px">'+(state.trafficSpots ? '你改過下面的清單,換城市前會先問你。' : '選城市就會換成那個城市的預設地點(機場、高鐵、車站、商圈)。')+'不會用定位判斷。</div></div>';
   h += '<div class="card" style="margin-bottom:14px">';
   h += spots.length ? spots.map(function(s,i){
     return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(s.name)+'</div><div class="li-sub">'+s.lat+', '+s.lng+'</div></div>'+
@@ -7553,12 +7606,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.18.5';
+var APP_VERSION = '2026.11.18.6';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.18.6', '🚦 常用路況地點可以選「我主要跑」哪個城市:台北(含新北)、桃園、新竹(含竹北)、台中、台南、高雄,選了就換成那個城市的機場、高鐵、車站、商圈;你自己改過的清單會先問你才換'],
   ['2026.11.18.4', '🔗 有打開「記錄接單時間」的車友:載客中就接到下一單,可以直接按行程卡上的「📲 接到下一單」,這趟下車後直接按「上車」就好;分析頁會算出無縫接單幾趟,這種趟次的等單算 0,接駁從上一趟下車算起'],
   ['2026.11.18.3', '📱 從下面的按鈕列或上面的標題列往上滑,整個畫面不會再跑掉、下面留一大塊空白(iPhone、安卓都修好了)'],
   ['2026.11.18.2', '⌨️ iPhone 網頁版:選好車隊、支出項目後,車資／金額欄會直接跳出數字鍵盤;收起鍵盤後,會自動把畫面捲回原位,下面的按鈕列不再卡在畫面中間'],
@@ -8720,7 +8774,16 @@ document.addEventListener('click', function(e){
     var sa = trafficSpots(); sa.push({name:nm, lat:ll.lat, lng:ll.lng}); state.trafficSpots = sa; save(); openTrafficSpotsModal();
   }
   else if(cmd==='traffic-spot-reset'){
-    if(confirm('恢復成預設的 5 個地點?你自己加的地點會被移除。')){ delete state.trafficSpots; save(); openTrafficSpotsModal(); }
+    var rc = trafficCity();
+    if(confirm('恢復成「'+rc.name+'」的預設 '+rc.spots.length+' 個地點?你自己加的地點會被移除。')){ delete state.trafficSpots; save(); openTrafficSpotsModal(); }
+  }
+  else if(cmd==='traffic-city'){
+    var tc = null;
+    TRAFFIC_CITIES.forEach(function(c){ if(c.key===arg) tc = c; });
+    if(!tc || tc.key===trafficCity().key) return;
+    // a list the driver built by hand is never replaced without asking
+    if(state.trafficSpots && !confirm('換成「'+tc.name+'」的預設 '+tc.spots.length+' 個地點?你自己加過或改過的地點會被換掉。')) return;
+    state.trafficCity = tc.key; delete state.trafficSpots; save(); openTrafficSpotsModal();
   }
   else if(cmd==='trip-cancel'){ if(confirm('取消這趟上車紀錄?')){ state.activeTrip=null; save(); renderAll(); } }
   else if(cmd==='open-trip-link'){ openTripLinkModal(arg); }
