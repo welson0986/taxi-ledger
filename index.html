@@ -708,6 +708,10 @@ function toDateStr(d){ return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.
 // A new ledger starts with the calendar day (midnight, see defaultState). A ledger without the setting was made while
 // the day still changed at LEGACY_DAY_CUTOFF, and keeps that: see fillMissing.
 var LEGACY_DAY_CUTOFF = 4;
+var DAY_CUTOFF_MAX = 9;
+// the words for an hour the day can change at: 午夜 / 凌晨 01–04 / 清晨 05–06 / 早上 07–09
+function cutoffPart(hh){ return hh<=0 ? '午夜' : hh<=4 ? '凌晨' : hh<=6 ? '清晨' : '早上'; }
+function cutoffLabel(hh){ return hh===0 ? '午夜 00:00(不跨夜)' : cutoffPart(hh)+' '+pad(hh)+':00'; }
 function dayCutoffHour(){ return (typeof state!=='undefined' && state && state.dayCutoffHour!=null) ? +state.dayCutoffHour : LEGACY_DAY_CUTOFF; }
 function businessDayOf(ts){
   var d = new Date(ts);
@@ -3498,7 +3502,7 @@ function renderHistory(){
 
   var h='';
   h += '<div class="month-nav"><button data-act="month:-1">‹</button><div class="m-title">'+y+' 年 '+(mo+1)+' 月</div><button data-act="month:1">›</button></div>';
-  h += '<div class="segmented" style="margin:0 0 8px">'+[['net','結餘'],['hours','工時'],['rate','時薪']].map(function(x){ return '<button class="'+(calShow===x[0]?'active':'')+'" data-act="cal-show:'+x[0]+'">'+x[1]+'</button>'; }).join('')+'</div>';
+  h += '<div class="segmented" style="margin:0 0 8px">'+[['net','結餘'],['hours','工時'],['rate','平均時薪']].map(function(x){ return '<button class="'+(calShow===x[0]?'active':'')+'" data-act="cal-show:'+x[0]+'">'+x[1]+'</button>'; }).join('')+'</div>';
   h += '<div class="card"><div class="cal-grid">';
   DOW.forEach(function(d){ h+='<div class="cal-dow">'+d+'</div>'; });
   for(var i=0;i<startOffset;i++) h += '<div class="cal-cell empty"></div>';
@@ -3509,7 +3513,7 @@ function renderHistory(){
     else {
       var dh = totalHoursInRange(ds, ds), inc = incByDay[ds]||0;
       if(calShow==='hours'){ if(dh>0){ cellTxt = (Math.round(dh*10)/10)+'h'; cellSaid = ',工時 '+(Math.round(dh*10)/10)+' 小時'; } }
-      else if(dh>=0.5 && inc>0){ cellTxt = calAmount(inc/dh); cellSaid = ',時薪 '+Math.round(inc/dh)+' 元'; }
+      else if(dh>=0.5 && inc>0){ cellTxt = calAmount(inc/dh); cellSaid = ',平均時薪 '+Math.round(inc/dh)+' 元'; }
       net = cellTxt ? 1 : 0;
     }
     var cls = 'cal-cell';
@@ -3521,7 +3525,7 @@ function renderHistory(){
     h += '<div class="'+cls+'" data-act="select-day:'+ds+'" aria-label="'+esc(said)+'"><span class="d">'+d+'</span>'+(cellTxt?('<span class="n">'+cellTxt+'</span>'):'')+'</div>';
   }
   h += '</div></div>';
-  if(calShow!=='net') h += '<div style="font-size:11px;color:var(--text-muted);margin:4px 2px 0">'+(calShow==='hours' ? '工時＝當天上下班打卡的時數(扣掉休息)' : '時薪＝當天實收 ÷ 工時;沒有打卡的日子不會顯示')+'</div>';
+  if(calShow!=='net') h += '<div style="font-size:11px;color:var(--text-muted);margin:4px 2px 0">'+(calShow==='hours' ? '工時＝當天上下班打卡的時數(扣掉休息)' : '平均時薪＝當天實收 ÷ 工時(含空車、等單,扣掉休息);沒有打卡的日子不會顯示')+'</div>';
 
   var hBlocks = holidayBlocksInMonth(y, mo);
   if(hBlocks.length){
@@ -3545,7 +3549,7 @@ function renderHistory(){
     '<div class="stat-tile"><div class="lbl">趟數</div><div class="val num">'+dayTrips+' 趟</div></div>'+
     '<div class="stat-tile"><div class="lbl">實收(含小費)</div><div class="val income num">'+fmtMoney(dayNet)+'</div></div>'+
     '<div class="stat-tile"><div class="lbl">工時(已扣休息)</div><div class="val num">'+fmtNum(dayHours,2)+' 小時</div></div>'+
-    '<div class="stat-tile"><div class="lbl">時薪</div><div class="val num">'+(dayHours>0?fmtMoney2(dayNet/dayHours):'—')+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">平均時薪</div><div class="val num">'+(dayHours>0?fmtMoney2(dayNet/dayHours):'—')+'</div></div>'+
     '</div></div>';
 
   var histMeta = dm(selectedDay);
@@ -3722,7 +3726,7 @@ function comparisonHtml(range, f){
   // period card above, which counts the whole month
   if(!f) h += row(range.to>todayStr() ? '淨利(固定成本攤到今天)' : '淨利(固定成本按天攤)', a.profit, b.profit, fmtMoney);
   h += row('趟數', a.trips, b.trips, function(v){ return v+' 趟'; });
-  h += row(f && !anDayOnly(f) ? '含空檔時薪' : '實際時薪', a.hourly, b.hourly, fmtMoney2);
+  h += row(f && !anDayOnly(f) ? '含空檔時薪' : '平均時薪', a.hourly, b.hourly, fmtMoney2);
   if(!f || anDayOnly(f)) h += row('每公里實收', a.perKm, b.perKm, fmtMoney2);
   if(f) h += '<div style="font-size:11px;color:var(--text-muted);padding-top:8px;line-height:1.5">兩段期間都套用同一組篩選條件。</div>';
   h += '</div></div>';
@@ -3997,7 +4001,7 @@ function anBarHtml(){
       return '<button type="button" class="chip-opt'+(f.plats.indexOf(k)>=0?' selected':'')+'" data-act="anf-plat:'+esc(k)+'" aria-pressed="'+(f.plats.indexOf(k)>=0)+'">'+esc(platformDef(k).label)+'</button>';
     }).join('')+'</div></div>';
     // the weekday is the one of the business day, which follows the driver's own 營業日分界時間 (0 = the calendar day)
-    h += '<div class="form-row"><label>星期(可多選'+(dayCutoffHour()>0 ? ';照你設定的營業日,凌晨 '+dayCutoffHour()+' 點前的單算前一天' : '')+')</label><div class="chip-row">'+AN_WD.map(function(w,i){
+    h += '<div class="form-row"><label>星期(可多選'+(dayCutoffHour()>0 ? ';照你設定的營業日,'+cutoffPart(dayCutoffHour())+' '+dayCutoffHour()+' 點前的單算前一天' : '')+')</label><div class="chip-row">'+AN_WD.map(function(w,i){
       return '<button type="button" class="chip-opt'+(f.wdays.indexOf(i)>=0?' selected':'')+'" data-act="anf-wd:'+i+'" aria-pressed="'+(f.wdays.indexOf(i)>=0)+'">週'+w+'</button>';
     }).join('')+'</div></div>';
     h += '<div class="form-row"><label>時段(可以跨午夜,例如從 22:00 到 03:00)</label><div class="form-grid2"><div><label for="anf-from">從</label>'+hourSel('anf-from', f.hFrom)+'</div><div><label for="anf-to">到</label>'+hourSel('anf-to', f.hTo)+'</div></div>';
@@ -4141,7 +4145,7 @@ function renderAnalytics(){
   if(F){
     h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
     h += '<div class="stat-tile"><div class="lbl">趟數</div><div class="val num">'+fm.trips+' 趟</div></div>';
-    h += '<div class="stat-tile"><div class="lbl">'+(fm.dayOnly?'實際時薪(已扣休息)':'含空檔時薪')+'</div><div class="val num">'+(fm.hourly!=null?fmtMoney2(fm.hourly):'—')+'</div></div>';
+    h += '<div class="stat-tile"><div class="lbl">'+(fm.dayOnly?'平均時薪(已扣休息)':'含空檔時薪')+'</div><div class="val num">'+(fm.hourly!=null?fmtMoney2(fm.hourly):'—')+'</div></div>';
     h += '</div>'+anNoteHtml(F, fm, range)+'</div>';
   } else {
   h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
@@ -4188,7 +4192,7 @@ function renderAnalytics(){
   h += '<div class="stat-tile"><div class="lbl">有上下車時間的趟數</div><div class="val num">'+fm.timed+' / '+fm.trips+' 趟</div></div>';
   h += '<div class="stat-tile"><div class="lbl">平均每趟實收</div><div class="val income num">'+(fm.trips>0?fmtMoney2(net.total/fm.trips):'—')+'</div></div>';
   } else {
-  h += '<div class="stat-tile"><div class="lbl">實際時薪(已扣休息)</div><div class="val num">'+(hours>0?fmtMoney2(net.total/hours):'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">平均時薪(已扣休息)</div><div class="val num">'+(hours>0?fmtMoney2(net.total/hours):'—')+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">總工時</div><div class="val num">'+fmtNum(hours,2)+' 小時</div></div>';
   if(!F) h += '<div class="stat-tile"><div class="lbl">每公里成本</div><div class="val expense num">'+(km>0?fmtMoney2(totalExp/km):'—')+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">每公里實收</div><div class="val income num">'+(km>0?fmtMoney2(net.total/km):'—')+'</div></div>';
@@ -6954,7 +6958,7 @@ function checkRestReminder(){
     return;
   }
   if(m.onBreak || !m.segmentStart) return;
-  var cont = now - m.segmentStart;
+  var cont = now - Math.max(m.segmentStart, m.restResetAt||0);
   if(cont < restHours()*3600000 || now < (m.restSnoozeUntil||0)) return;
   m.restSnoozeUntil = now + 30*60000; saveQuiet();  // at most every 30 minutes, however the box is closed
   var hh = Math.floor(cont/3600000), mm = Math.floor(cont%3600000/60000);
@@ -6996,9 +7000,9 @@ var HELP = [
   ]],
   ['上班與工時', [
     ['上下班打卡、休息', '記帳頁「今日行車」按上班打卡 / 下班打卡,休息按休息開始 / 結束。忘了打下班卡,下次打開會問你。', 'shift'],
-    ['跑過半夜(營業日分界)', '新安裝預設午夜 00:00 換日(照日曆算)。常跑過半夜的,到 ⚙️「基本設定」→「我的營業日分界時間」往後調,那個時間以前記的帳都算前一天,凌晨時記帳頁上方會提醒。Uber 一天的車資結算是凌晨 04:00 到隔天 03:59,想跟 Uber App 的每日收入對得起來就選凌晨 04:00。'],
+    ['跑過半夜(營業日分界)', '新安裝預設午夜 00:00 換日(照日曆算)。常跑過半夜的,到 ⚙️「基本設定」→「我的營業日分界時間」往後調(最晚到早上 09:00),那個時間以前記的帳都算前一天,凌晨時記帳頁上方會提醒。Uber 一天的車資結算是凌晨 04:00 到隔天 03:59,想跟 Uber App 的每日收入對得起來就選凌晨 04:00。'],
     ['目前時薪', '今日行車顯示今日實收 ÷ 已跑工時,上班滿 30 分鐘才顯示。', 'liveRate'],
-    ['今日跑車報告', '下班打卡後跳出:實收、時薪、趟數,跟前 7 天比較,可以順便備份。', 'dayReport'],
+    ['今日跑車報告', '下班打卡後跳出:實收、平均時薪、趟數,跟前 7 天比較,可以順便備份。', 'dayReport'],
     ['休息提醒', '連續開車太久(預設 2 小時)、今天上班太久(預設 12 小時)時提醒你,只是提醒,不會幫你按休息。時間在功能開關下面改。記帳本要打開著才會跳出來。', 'restRemind'],
     ['補登上班時間', '忘了打卡、或中途才開始用:今日行車的「⏱️ 補登上班時間」,選幾點上班、幾點下班。前幾天的工時到「歷史」頁改。', 'shiftFix'],
     ['里程', '每天記里程,才能算每公里成本、每公里實收。', 'km'],
@@ -7185,7 +7189,7 @@ function openDayReport(t){
   h += '<div class="summary-row" style="grid-template-columns:1fr 1fr;margin-bottom:10px">';
   h += tile('今日實收', fmtMoney(net), 'income') + tile('今日結餘(扣今日支出)', fmtMoney(net-exp));
   h += tile('趟數', trips+' 趟') + tile('每趟平均', trips?fmtMoney(net/trips):'—');
-  h += tile('工時(已扣休息)', hours>0?fmtNum(hours,2)+' 小時':'—') + tile('時薪', rate!=null?fmtMoney(rate):'—', 'income');
+  h += tile('工時(已扣休息)', hours>0?fmtNum(hours,2)+' 小時':'—') + tile('平均時薪', rate!=null?fmtMoney(rate):'—', 'income');
   var addOn = uiOn('addOn') ? recs.filter(function(r){ return r.addOn>0; }) : [];
   if(addOn.length) h += tile('加價單', addOn.length+' 單') + tile('加價多收', fmtMoney(addOn.reduce(function(a,r){ return a+r.addOn; },0)), 'income');
   h += '</div>';
@@ -7387,7 +7391,7 @@ function openSettingsModal(){
   var cutoffNow = dayCutoffHour();
   h += '<div class="form-row" style="margin-top:6px"><label>我的營業日分界時間(日報、分析用;跑過午夜時,這個時間以前都算前一天。新安裝預設午夜 00:00,照日曆算;常跑過半夜的可以往後調。平台撥款另外依各平台結算時間計算,不受影響)</label>'+
     (uberShown() ? '<div style="font-size:11.5px;color:var(--text-muted);margin:-2px 0 6px;line-height:1.6">🚗 跑 Uber 的提醒:Uber 一天的車資結算是凌晨 04:00 到隔天 03:59。想跟 Uber App 的每日收入對得起來,選「凌晨 04:00」。</div>' : '')+'<select id="f-day-cutoff">'+
-    [0,1,2,3,4,5,6,7,8].map(function(hh){ return '<option value="'+hh+'"'+(hh===cutoffNow?' selected':'')+'>'+(hh===0?'午夜 00:00(不跨夜)':('凌晨 '+pad(hh)+':00'))+'</option>'; }).join('')+
+    Array.apply(null, Array(DAY_CUTOFF_MAX+1)).map(function(x, hh){ return '<option value="'+hh+'"'+(hh===cutoffNow?' selected':'')+'>'+cutoffLabel(hh)+'</option>'; }).join('')+
     '</select></div>';
   S.basic += h; h = '';
   h += '<div class="form-row" style="margin-top:6px"><label>進階:記錄接單時間</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-track-accept" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.trackAccept?' checked':'')+'>打開後,下車後的大按鈕會變成「📲 接到單了」。接單時按一下,客人上車再按「上車」,分析頁就能把空檔拆成「等單」和「接駁」兩段。不打開就跟原本一樣。</label></div>';
@@ -7440,12 +7444,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.14.3';
+var APP_VERSION = '2026.11.18.1';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.18.1', '⏱️ 今日跑車報告、日曆、分析頁的「時薪」改叫「平均時薪」(實收 ÷ 工時,含空車、等單);按「上廁所 +1」後,休息提醒會重新計時;營業日分界最晚可以選到早上 09:00'],
   ['2026.11.14.2', '🛡️ 備份功能優化:還原進行的那幾秒會先暫停操作並提示,避免剛記的帳在還原時漏掉;雲端同步更穩定'],
   ['2026.11.13.8', '🌙 新安裝的營業日分界預設改成午夜 00:00(照日曆算),已經在用的不會變。跑 Uber 的車友:Uber 一天的車資結算是凌晨 04:00 到隔天 03:59,想跟 Uber App 的每日收入對得起來,到 ⚙️「基本設定」→「我的營業日分界時間」選凌晨 04:00'],
   ['2026.11.13.4', '📅 歷史頁的日曆可以切換顯示「結餘／工時／時薪」,一眼看出哪幾天跑很久卻賺不多'],
@@ -8371,6 +8376,8 @@ document.addEventListener('click', function(e){
   else if(cmd==='toilet'){
     var mt = dm(todayStr());
     mt.toilet = Math.max(0, (mt.toilet||0) + (+arg));
+    // a toilet stop restarts the 連續開車 count for the rest reminder (not a break: hours and rate stay); -1 (a slip) does not undo it
+    if(+arg>0){ mt.restResetAt = Date.now(); delete mt.restSnoozeUntil; }
     save(); renderAll();
   }
   else if(cmd==='month'){ uiMonth.setMonth(uiMonth.getMonth()+(+arg)); renderAll(); }
