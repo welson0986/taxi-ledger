@@ -6946,16 +6946,24 @@ function rnAgo(m, now){
   if(min < 24*60) return Math.floor(min/60)+' 小時前';
   return Math.floor(min/1440)+' 天前';
 }
+function rnUnits(e){
+  var out = [];
+  (e.so||[]).forEach(function(x){
+    String(x).replace(/熱心聽眾\d*/g, '').split(/[+＋、,，]/).forEach(function(u){ u = u.trim(); if(u && out.indexOf(u)<0) out.push(u); });
+  });
+  return out.join('、');
+}
 function rnItemHtml(e, now){
   var d = new Date(e.m), when = (toDateStr(d)===toDateStr(new Date(now)) ? '' : (d.getMonth()+1)+'/'+d.getDate()+' ')+hhmm(e.m);
-  var src = e.srcs.slice().sort().map(function(s){ return RN_SRC[s]||s; }).join('＋'), who = e.so.length ? e.so.join('、') : '';
+  // only the reporting units (高公局北區交控中心、北市交大…); 熱心聽眾 has its own yellow line; no unit at all → say 警廣／交通部 TDX
+  var who = rnUnits(e), src = who || (e.listener ? '' : e.srcs.slice().sort().map(function(s){ return RN_SRC[s]||s; }).join('＋'));
   var h = '<div class="li-body" style="min-width:0"><div class="li-title" style="white-space:normal">'+(RN_ICON[e.ty]||'ℹ️')+' '+esc(e.ty)+
     (e.done ? ' <span style="font-size:11.5px;font-weight:700;color:var(--text-muted)">✅ 已排除</span>' : '')+
     (e.major && !e.done ? ' <span style="font-size:11.5px;font-weight:700;color:var(--expense)">重大</span>' : '')+
     ' <span style="font-size:11.5px;font-weight:400;color:var(--text-muted)">'+when+'('+rnAgo(e.m, now)+'更新)</span></div>'+
     (e.ar ? '<div class="li-sub" style="white-space:normal;font-weight:700;color:var(--text)">'+esc(e.ar)+'</div>' : '')+
     '<div class="li-sub" style="white-space:normal;line-height:1.55;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden">'+esc(e.tx||e.tx2)+'</div>'+
-    '<div style="font-size:11px;color:var(--text-muted);margin-top:3px">來源:'+esc(src)+(who ? ' · '+esc(who) : '')+'</div>'+
+    (src ? '<div style="font-size:11px;color:var(--text-muted);margin-top:3px">'+esc(src)+'</div>' : '')+
     (e.listener ? '<div style="font-size:11px;color:var(--accent-strong);font-weight:700;margin-top:2px">👂 熱心聽眾提供,請自己判斷</div>' : '')+'</div>';
   var tail = e.la!=null && e.lo!=null ? '<div style="flex:none;align-self:center;color:var(--accent);font-size:12.5px;white-space:nowrap">看路況 ›</div>' : '';
   var st = 'text-decoration:none;color:inherit;align-items:flex-start;gap:8px'+(e.done ? ';opacity:.5' : '');
@@ -6994,7 +7002,7 @@ function rnSheetHtml(){
   return '<div class="modal-title">🚦 路況快報<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div><div id="rnSheet">'+
     '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 8px">城市:<b style="color:var(--text)">'+esc(rnCityNames(keys))+'</b>(照「常用路況地點」的我主要跑) · <a data-act="traffic-spots" style="color:var(--accent);cursor:pointer;font-weight:700">改城市</a></div>'+
     '<div id="rnBody">'+rnBodyHtml()+'</div>'+
-    '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:12px;border-top:1px solid var(--border);padding-top:8px">資料來源:警察廣播電臺即時路況、交通部運輸資料流通服務平臺(TDX)。內容僅供參考,以現場狀況為準;開車時請勿操作。<br>只送出你選的城市,不送你的位置;不推播,打開才讀。</div></div>';
+    '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:12px;border-top:1px solid var(--border);padding-top:8px">資料來源:警察廣播電臺即時路況、交通部運輸資料流通服務平臺(TDX)。<br>內容僅供參考,以現場狀況為準;開車時請勿操作。<br>只送出你選的城市,不送你的位置;不推播,打開才讀。</div></div>';
 }
 function rnRefresh(){ var b = document.getElementById('rnBody'); if(b) b.innerHTML = rnBodyHtml(); }
 function rnLoad(force){
@@ -8866,12 +8874,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.20.1';
+var APP_VERSION = '2026.11.20.2';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.20.2', '🚦 測試版:路況快報每則的來源改成只寫通報單位(例如高公局北區交控中心),畫面比較清爽;熱心聽眾提供的照樣用黃字提醒', 'beta'],
   ['2026.11.20.1', '🚦 測試版:路況快報的「重大」標示更準,寫著「已解除、未封路、預計、明日、今晚、預告」的不再標重大;沒有消息時改寫「目前沒有收到通報（不代表道路通暢）」;台北、新北改由伺服器每 3 分鐘自動整理,打開更快', 'beta'],
   ['2026.11.19.13', '🚦 測試版新功能:記帳頁「看即時路況」下面多了「路況快報」,依你勾的我主要跑城市,列出警廣和交通部公布的事故、壅塞、封路、施工,點一則看地圖路況。只送出城市、不送你的位置;打開才讀,不推播。上架後是 VIP 功能', 'beta'],
   ['2026.11.19.12', '📍 測試版新功能:分析頁「下車地統計」,看客人常把你載去哪裡(下車熱區前 10 名),以及在哪裡下車後最久才接到下一單(死區前 5 名)。最近 90 天,只在手機上算。上架後是 VIP 功能', 'beta'],
