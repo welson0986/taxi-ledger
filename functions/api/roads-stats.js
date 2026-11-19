@@ -393,7 +393,9 @@ function page(snap, now) {
   h += '<h1>🚦 路況提醒・只記錄不推播</h1>';
   h += '<p class="muted">模擬一位台北＋新北都勾、一直在上班的司機：照定案規則「如果現在推會推什麼」。<b>沒有推給任何人。</b>時間都是台灣時間。</p>';
   h += '<h2>Worker 狀態</h2><p>最後一次執行：<b>' + twHm(snap.at) + '</b>（' + ago(snap.at, now) + '）' + (now - snap.at > 10 * 60000 ? ' <span class="bad">超過 10 分鐘沒跑，請檢查 Worker 排程</span>' : ' <span class="ok">正常</span>') +
+    '　由' + (snap.last ? (snap.last.by === 'app' ? '「有人打開 App」備援' : '排程') + '跑' + (snap.last.colo ? '，機房 <b>' + esc(snap.last.colo) + '</b>' : '') : '—') +
     '　累計執行 ' + (snap.runs || 0) + ' 次　今天寫入 KV ' + ((snap.w && snap.w.day === twDay(now)) ? snap.w.n : 0) + ' 次（上限 1,000）</p>';
+  h += '<p class="muted">機房代號：TPE 台北、KHH 高雄；其他（例如 HKG、NRT、SIN、LAX）是國外機房。</p>';
   h += '<table><tr><th>來源</th><th>最後成功</th><th>這一輪</th><th>連續失敗</th><th>雙北筆數</th></tr>';
   for (const k in snap.src) {
     const s = snap.src[k];
@@ -402,10 +404,10 @@ function page(snap, now) {
   if (!snap.tdxOn) h += '<tr><td colspan="5" class="bad">Worker 沒有設定 TDX 金鑰，只抓警廣</td></tr>';
   h += '</table>';
 
-  h += '<h2>每天</h2><table><tr><th>日期</th><th>會推幾批</th><th>候選件數</th><th>最密集 10 分鐘</th><th>重複件（警廣＋TDX 同一件）</th><th>推了之後被排除（1 小時內）</th><th>來源失敗次數</th></tr>';
+  h += '<h2>每天</h2><table><tr><th>日期</th><th>會推幾批</th><th>候選件數</th><th>最密集 10 分鐘</th><th>重複件（警廣＋TDX 同一件）</th><th>推了之後被排除（1 小時內）</th><th>來源失敗次數</th><th>排程／App 備援 跑幾輪</th></tr>';
   keys.forEach(k => {
     const d = days[k];
-    h += '<tr><td>' + k + '</td><td><b>' + d.batches + '</b></td><td>' + d.cand.length + '</td><td>' + d.peak.n + (d.peak.n ? '（' + twHm(d.peak.at) + ' 起）' : '') + '</td><td>' + d.dups + '</td><td>' + d.cleared + '（' + d.cleared60 + '）</td><td>警廣 ' + d.fails.pbs + '・TDX ' + d.fails.tdx + '</td></tr>';
+    h += '<tr><td>' + k + '</td><td><b>' + d.batches + '</b></td><td>' + d.cand.length + '</td><td>' + d.peak.n + (d.peak.n ? '（' + twHm(d.peak.at) + ' 起）' : '') + '</td><td>' + d.dups + '</td><td>' + d.cleared + '（' + d.cleared60 + '）</td><td>警廣 ' + d.fails.pbs + '・TDX ' + d.fails.tdx + '</td><td>' + (d.by ? d.by.cron + '／' + d.by.app : '—') + '</td></tr>';
   });
   h += '</table>';
 
@@ -444,7 +446,7 @@ export async function onRequest(context) {
   if (new URL(req.url).searchParams.get('format') === 'json') {
     const src = {};
     for (const k in snap.src) { const s = snap.src[k]; src[k] = { ok: s.ok, at: s.at, okAt: s.okAt, err: s.err, fails: s.fails, n: s.items ? s.items.length : 0 }; }
-    return new Response(JSON.stringify({ at: snap.at, runs: snap.runs, writes: snap.w, tdxOn: snap.tdxOn, src, days: (snap.sim && snap.sim.days) || {} }), { status: 200, headers: Object.assign({ 'Content-Type': 'application/json; charset=utf-8' }, HEAD) });
+    return new Response(JSON.stringify({ at: snap.at, last: snap.last || null, runs: snap.runs, writes: snap.w, tdxOn: snap.tdxOn, src, days: (snap.sim && snap.sim.days) || {} }), { status: 200, headers: Object.assign({ 'Content-Type': 'application/json; charset=utf-8' }, HEAD) });
   }
   return new Response(page(snap, now), { status: 200, headers: Object.assign({ 'Content-Type': 'text/html; charset=utf-8' }, HEAD) });
 }

@@ -271,6 +271,202 @@ function twDay(ms) { return new Date(ms + 8 * HOUR).toISOString().slice(0, 10); 
 function twHour(ms) { return new Date(ms + 8 * HOUR).getUTCHours(); }
 function twHm(ms) { return ms ? new Date(ms + 8 * HOUR).toISOString().slice(11, 16) : '—'; }
 
+// ===== 「只記錄不推播」模擬（relay/lib/alert_sim.js）=====
+// 每輪照定案規格第三節的規則算「如果現在推，會推什麼」，只記在統計裡，不推給任何人。
+// 模擬一位「雙北司機」：台北＋新北都勾、一直在上班、沒設不打擾時段（每小時的數字可以自己對照上班時段看）。
+
+const FRESH_MS = 15 * MIN;          // 新鮮：來源更新時間在 15 分鐘內
+const GAP_MS = 10 * MIN;            // 每位司機 10 分鐘最多 1 批
+const DAY_CAP = 5;                  // 每天最多 5 批
+const BASELINE_GAP = 15 * MIN;      // 隔這麼久沒跑（剛上線、服務恢復）→ 先把現有的記為已看過，不推
+const KEEP_DAYS = 8;
+const STAGE = { major: 2, acc: 1, gen: 0, work: 0, done: 0 };
+
+const WHY_NAMES = {
+  baseline: '啟動基準（剛開始或服務恢復，現有的先記為已看過）',
+  stale: '不新鮮（來源更新超過 15 分鐘）',
+  listener: '只有熱心聽眾（列「待確認」，不推）',
+  neg: '有「解除、未、預計、明日、今晚、預告」等字眼',
+  aux: '只有火災、翻覆、多車等字，沒有寫到影響行車',
+  workClose: '施工封路（列重大候選，不推）',
+  tenMin: '10 分鐘內已推過一批（只更新摘要）',
+  dayCap: '今天已滿 5 批（只更新摘要）'
+};
+
+function newDay() {
+  return { runs: 0, fails: { pbs: 0, tdx: 0 }, batches: 0, events: 0, hours: new Array(24).fill(0), cand: [], peak: { n: 0, at: 0 },
+    why: { baseline: 0, stale: 0, listener: 0, neg: 0, aux: 0, workClose: 0, tenMin: 0, dayCap: 0 }, dups: 0, cleared: 0, cleared60: 0, samples: [], negs: [] };
+}
+function short(e) { return ((e.ar ? e.ar + '｜' : '') + (e.tx || e.tx2 || '')).slice(0, 60); }
+
+// state：上一輪留下的 { lastRun, seen, drv, days }；events：這一輪「有新抓到」的來源合併後的事件
+// base：這一輪剛恢復的來源（{pbs:true} 之類），只來自這些來源的事件當成啟動基準
+function simulate(state, events, now, base) {
+  state = state || {};
+  const seen = state.seen || (state.seen = {});
+  const days = state.days || (state.days = {});
+  const today = twDay(now);
+  const day = days[today] || (days[today] = newDay());
+  const startup = !state.lastRun || now - state.lastRun > BASELINE_GAP;
+  base = base || {};
+  day.runs++;
+
+  const once = (ids, why, e) => {
+    if (ids.some(id => seen[id] && seen[id].w && seen[id].w.indexOf(why) >= 0)) return;
+    day.why[why]++;
+    ids.forEach(id => { if (seen[id]) (seen[id].w = seen[id].w || []).push(why); });
+    if (why === 'neg') { day.negs.push({ at: now, tx: short(e) }); if (day.negs.length > 10) day.negs.shift(); }
+  };
+
+  const cands = [];
+  events.forEach(e => {
+    const ids = e.ids || [e.id];
+    let prev = -1;
+    ids.forEach(id => { if (seen[id] && seen[id].st > prev) prev = seen[id].st; });
+    const c = classify(e), stage = STAGE[c.lv];
+    if (prev < 0 && e.srcs.length > 1) day.dups++;
+    ids.forEach(id => {
+      const s = seen[id] || (seen[id] = { st: -1, f: now });
+      s.st = Math.max(s.st, stage, prev); s.l = now;
+    });
+    if (c.lv === 'done') {
+      // 推過之後被標成已排除：算「已排除仍被選中」
+      const p = ids.map(id => seen[id]).find(s => s.p && !s.cl);
+      if (p) { day.cleared++; if (now - p.p <= 60 * MIN) day.cleared60++; ids.forEach(id => { seen[id].cl = 1; }); }
+      return;
+    }
+    if (c.why) once(ids, c.why, e);
+    if (c.lv !== 'major' || prev >= 2) return;
+    if (startup || e.srcs.every(s => base[s])) return once(ids, 'baseline', e);
+    if (now - e.m > FRESH_MS) return once(ids, 'stale', e);
+    cands.push({ e, ids });
+  });
+
+  if (cands.length) {
+    cands.sort((a, b) => b.e.m - a.e.m);
+    cands.forEach(() => day.cand.push(now));
+    // 最密集的 10 分鐘（推播限制之前的候選數）
+    for (let i = 0, j = 0; i < day.cand.length; i++) {
+      while (day.cand[i] - day.cand[j] >= GAP_MS) j++;
+      if (i - j + 1 > day.peak.n) day.peak = { n: i - j + 1, at: day.cand[j] };
+    }
+    const drv = state.drv || (state.drv = { day: today, n: 0, last: 0 });
+    if (drv.day !== today) { drv.day = today; drv.n = 0; }
+    if (drv.last && now - drv.last < GAP_MS) cands.forEach(c => once(c.ids, 'tenMin', c.e));
+    else if (drv.n >= DAY_CAP) cands.forEach(c => once(c.ids, 'dayCap', c.e));
+    else {
+      drv.last = now; drv.n++;
+      day.batches++; day.events += cands.length; day.hours[twHour(now)]++;
+      cands.forEach(c => c.ids.forEach(id => { seen[id].p = now; }));
+      day.samples.push({ at: now, main: short(cands[0].e), more: cands.length - 1 });
+      if (day.samples.length > 30) day.samples.shift();
+    }
+  }
+
+  // 整理：2 天沒再出現的事件忘掉；統計留 8 天
+  for (const id in seen) if (now - (seen[id].l || 0) > 2 * DAY) delete seen[id];
+  Object.keys(days).sort().slice(0, -KEEP_DAYS).forEach(k => { delete days[k]; });
+  state.lastRun = now;
+  return { state, day, cands: cands.length };
+}
+
+// ===== 抓一輪雙北＋寫快照＋只記錄不推播（relay/lib/refresh.js）=====
+// 兩個地方會跑這一輪：
+//   1. 排程（每 3 分鐘）：paoche-roads-cron 叫 paoche-roads-worker（指定在台灣機房跑）去抓。
+//   2. 備援：有司機打開 App、快照裡的警廣超過 5 分鐘沒更新時，網站中繼順便跑一輪（網站一定在司機附近的機房）。
+// KV 寫入：每輪只寫 1 次快照＋TDX Token 約每天 1 次；同一天寫到 900 次就停寫（免費上限 1,000）。
+
+const WRITE_CAP = 900;
+const SLACK = 30 * 1000;          // 排程時間會有幾秒誤差，提早 30 秒也算到期
+const TOKEN_RETRY = 30 * MIN;     // 要 Token 失敗後 30 分鐘內不再向 TDX 要（被擋 429 時越要越擋）；這段時間每輪仍會看 KV 有沒有網站分享的
+const APP_REFRESH_AFTER = 5 * MIN;   // 快照裡警廣超過這麼久沒成功 → 有人打開 App 時網站補抓
+const APP_REFRESH_GAP = 3 * MIN;     // 網站補抓之間至少隔這麼久
+
+async function snapTdxToken(env, now, force, cnt, snap) {
+  if (!force) { const tk = await readToken(env.ROADS_KV, now); if (tk && tk !== snap.badTk) return tk; }
+  if (snap.tkFail && now - snap.tkFail.at < TOKEN_RETRY) throw new Error(snap.tkFail.err + ' wait');
+  let tk;
+  try { tk = await fetchTdxToken(env); } catch (e) { snap.tkFail = { at: now, err: errText(e) }; throw e; }
+  snap.tkFail = null;
+  if (cnt.ok()) await saveToken(env.ROADS_KV, tk, now);
+  return tk;
+}
+
+// opts：by＝'cron' 或 'app'；colo＝在哪個機房跑（只是記下來看）；pbsWait＝警廣等幾毫秒；
+//       load＝{ pbs(), tdx(ep, cityKey) } 換掉預設的抓法（網站用它已經抓好、快取著的資料，不重抓）
+async function runOnce(env, now, opts) {
+  opts = opts || {};
+  const kv = env.ROADS_KV;
+  if (!kv) throw new Error('no ROADS_KV');
+  let snap = null;
+  try { snap = await kv.get(SNAP_KEY, 'json'); } catch (e) {}
+  if (!snap || snap.v !== 1) snap = { v: 1, at: 0, runs: 0, src: {}, sim: {}, w: { day: '', n: 0 } };
+  const today = twDay(now);
+  if (snap.w.day !== today) snap.w = { day: today, n: 0 };
+  const cnt = { ok: () => snap.w.n < WRITE_CAP && ++snap.w.n > 0 };
+  const pick = picker(SNAP_CITIES);
+
+  // 這輪要抓哪些
+  const tdxOn = !!(env.TDX_CLIENT_ID && env.TDX_CLIENT_SECRET);
+  const want = { pbs: [FAST, null] };
+  if (tdxOn) Object.assign(want, tdxWant(SNAP_CITIES));
+  for (const k in snap.src) if (!want[k]) delete snap.src[k];   // 拿掉金鑰後，舊的 TDX 資料不再留
+  const due = Object.keys(want).filter(k => { const s = snap.src[k]; return !s || !s.ok || !s.okAt || now - s.okAt >= want[k][0] * 1000 - SLACK; });
+
+  // 恢復判斷要看抓之前的狀態
+  const downLong = {};
+  due.forEach(k => { const s = snap.src[k]; downLong[k] = !!(s && s.okAt && now - s.okAt > 15 * MIN && !s.ok); });
+
+  // 幾個網址同時要 Token：只取一次；過期（401）時也只重取一次
+  let tkP = null, forced = null;
+  const token = force => force ? (forced || (forced = tkP = snapTdxToken(env, now, true, cnt, snap))) : (tkP || (tkP = snapTdxToken(env, now, false, cnt, snap)));
+  const load = opts.load || {
+    pbs: async () => parsePbs(await fetchPbs(opts.pbsWait), now, pick),
+    tdx: async (k, cityKey) => {
+      const tk0 = await token(false);
+      let r = await fetchTdxRaw(k, tk0);
+      if (r.status === 401) { snap.badTk = tk0; r = await fetchTdxRaw(k, await token(true)); }   // Token 過期：重取一次
+      if (!r.json) throw new Error('tdx ' + r.status);
+      return parseTdx(r.json, cityKey, now, pick);
+    }
+  };
+  const results = await Promise.all(due.map(async k => {
+    try {
+      const items = k === 'pbs' ? await load.pbs() : await load.tdx(k, want[k][1]);
+      return { k, items: items.filter(pick) };
+    } catch (e) { return { k, err: errText(e) }; }
+  }));
+
+  const fresh = {}, base = {};
+  results.forEach(r => {
+    const old = snap.src[r.k] || {};
+    if (r.err) { snap.src[r.k] = { ok: false, at: now, okAt: old.okAt || null, err: r.err, fails: (old.fails || 0) + 1, items: old.items || [], by: opts.by || null }; return; }
+    snap.src[r.k] = { ok: true, at: now, okAt: now, err: null, fails: 0, items: r.items, by: opts.by || null };
+    fresh[r.k] = true;
+    if (!old.okAt || downLong[r.k]) base[r.k === 'pbs' ? 'pbs' : 'tdx'] = true;
+  });
+
+  // 只記錄不推播：只用「這輪抓到的」和「還在有效期內」的來源，不從失敗來源的舊資料產生新提醒
+  let items = [];
+  for (const k in snap.src) {
+    const s = snap.src[k];
+    if (s.ok && (fresh[k] || now - s.okAt < want[k][0] * 1000 + 10 * MIN)) items = items.concat(s.items);
+  }
+  const r = simulate(snap.sim, mergeSources(items), now, { pbs: !!base.pbs, tdx: !!base.tdx });
+  snap.sim = r.state;
+  results.forEach(x => { if (x.err) r.day.fails[x.k === 'pbs' ? 'pbs' : 'tdx']++; });
+  const by = opts.by === 'app' ? 'app' : 'cron';
+  r.day.by = r.day.by || { cron: 0, app: 0 };
+  r.day.by[by]++;
+
+  snap.at = now; snap.runs++; snap.tdxOn = tdxOn;
+  snap.last = { by, colo: opts.colo ? String(opts.colo).replace(/[^A-Za-z0-9]/g, '').slice(0, 8) : null, at: now };
+  if (by === 'app') snap.pg = now;
+  if (!cnt.ok()) return { wrote: false, due, snap };
+  await kv.put(SNAP_KEY, JSON.stringify(snap));
+  return { wrote: true, due, snap };
+}
+
 // ===== 主程式 =====
 // 只接受這些來源的網頁讀取：網站、舊網址、App（Android／iOS 的內建網頁）
 const ORIGINS = ['https://app.realway.com.tw', 'https://welson0986.github.io', 'https://localhost', 'capacitor://localhost', 'http://localhost'];
@@ -315,7 +511,7 @@ function forget(key) {
 // ---------- 自己抓（其他縣市；快照不能用時雙北也走這裡）----------
 async function loadPbs() { return { ok: true, at: Date.now(), items: parsePbs(await fetchPbs(), Date.now()) }; }
 // Token 先看 KV 裡有沒有（排程 Worker 或別台中繼拿過的），沒有才向 TDX 要，要到也放進 KV 給大家用
-let badTk = null;
+let badTk = null, shared = false;
 async function tdxToken(env) {
   const v = await cached('tdx-token', TOKEN_TTL, async () => {
     const now = Date.now(), kvTk = await readToken(env.ROADS_KV, now);
@@ -325,6 +521,11 @@ async function tdxToken(env) {
     return { ok: true, at: now, tk };
   });
   if (!(v && v.ok)) throw new Error((v && v.err) || 'token');   // 把真正原因（例如 token 401）往上傳
+  // 手上這張是快取裡的（KV 還沒有）→ 分享進 KV 給排程用（2026-11-20：排程一直要 Token 被 TDX 擋 429）
+  if (!shared && env.ROADS_KV && v.tk !== badTk && Date.now() - v.at < TOKEN_TTL * 1000) {
+    shared = true;
+    if (!(await readToken(env.ROADS_KV, Date.now()))) await saveToken(env.ROADS_KV, v.tk, v.at);
+  }
   return v.tk;
 }
 async function loadTdx(ep, env, cityKey) {
@@ -355,12 +556,26 @@ async function live(sel, env) {
 }
 
 // ---------- 讀快照（台北、新北）----------
-async function readSnap(env, now) {
+async function readSnapRaw(env) {
   if (!env.ROADS_KV) return null;
-  let s = null;
-  try { s = await env.ROADS_KV.get(SNAP_KEY, { type: 'json', cacheTtl: 60 }); } catch (e) { return null; }
-  if (!s || s.v !== 1 || !s.at || now - s.at > SNAP_MAX_AGE) return null;   // Worker 停了 → 自己抓
-  return s;
+  try { const s = await env.ROADS_KV.get(SNAP_KEY, { type: 'json', cacheTtl: 60 }); return s && s.v === 1 ? s : null; } catch (e) { return null; }
+}
+function usableSnap(s, now) { return s && s.at && now - s.at <= SNAP_MAX_AGE ? s : null; }   // Worker 停了 → 自己抓
+
+// ---------- 備援：有人打開 App、快照裡的警廣太久沒更新 → 順便跑一輪寫快照（用剛剛抓好、快取著的資料，不重抓）----------
+let refreshing = false;
+function needRefresh(raw, now) {
+  if (!raw) return true;
+  const pbsAt = (raw.src && raw.src.pbs && raw.src.pbs.okAt) || 0;
+  return now - pbsAt > APP_REFRESH_AFTER && now - (raw.pg || 0) > APP_REFRESH_GAP;
+}
+function pagesLoad(env) {
+  const want = tdxWant(SNAP_CITIES);
+  const use = g => { if (!(g && g.ok)) throw new Error((g && g.err) || 'fail'); return g.items; };
+  return {
+    pbs: async () => use(await cached('pbs', FAST, loadPbs)),
+    tdx: async (ep, cityKey) => use(await cached('tdx:' + ep, want[ep][0], () => loadTdx(ep, env, cityKey)))
+  };
 }
 // 一個來源在快照裡的狀態：上一輪失敗但還有上次成功的資料 → 照樣給，標 stale（App 會寫「先顯示 hh:mm 的」）
 function snapSrc(s, period, now) {
@@ -400,13 +615,19 @@ export async function onRequest(context) {
 
   const now = Date.now();
   const inSnap = sel.filter(k => SNAP_CITIES.indexOf(k) >= 0), others = sel.filter(k => SNAP_CITIES.indexOf(k) < 0);
-  let snap = inSnap.length ? await readSnap(env, now) : null, fs = null;
+  const raw = inSnap.length ? await readSnapRaw(env) : null;
+  let snap = usableSnap(raw, now), fs = null;
   // 快照裡警廣沒有可用的資料、或 TDX 開著卻一個都沒有 → 這次雙北也自己抓（App 不會因為 Worker 抓不到而空白）
   if (snap) { fs = fromSnap(snap, inSnap, now); if (!fs.pbs.ok || (fs.tdxOn && !fs.tdx.some(g => g.ok))) { snap = null; fs = null; } }
   const parts = [];
   if (fs) parts.push(fs);
   const liveSel = snap ? others : sel;
   if (liveSel.length) parts.push(await live(liveSel, env));
+  if (inSnap.length && env.ROADS_KV && !refreshing && needRefresh(raw, now) && context.waitUntil) {
+    refreshing = true;
+    const job = runOnce(env, now, { by: 'app', colo: req.cf && req.cf.colo, load: pagesLoad(env) }).catch(() => {}).then(() => { refreshing = false; });
+    context.waitUntil(job);
+  }
 
   // 合併：同一筆（例如國道在台北和桃園的範圍都有）只留一筆
   const byId = {};
