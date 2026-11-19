@@ -2096,7 +2096,8 @@ function vehHomeHtml(){
 function vehCardHtml(){
   var v = veh(), est = vehOdoEstimate(), m = v.maint || {}, lines = [];
   if(est) lines.push('目前里程(推估)'+fmtNum(est.km,0)+' 公里');
-  if(m.next>0) lines.push('下次保養 '+fmtNum(m.next,0)+' 公里'+(est?('(還差 '+fmtNum(m.next-est.km,0)+')'):''));
+  var left = est ? m.next-est.km : null;
+  if(m.next>0) lines.push('下次保養 '+fmtNum(m.next,0)+' 公里'+(left==null ? '' : left>0 ? '(還差 '+fmtNum(left,0)+')' : left<0 ? '(已超過 '+fmtNum(-left,0)+')' : '(到了)'));
   if(v.inspect && v.inspect.next) lines.push('驗車 '+v.inspect.next);
   (v.policies||[]).forEach(function(p){ if(p.due) lines.push(esc(p.name)+' '+p.due); });
   return '<div class="section"><div class="card" style="padding:12px 14px"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div><div style="font-weight:700;font-size:13.5px">🔧 車輛提醒</div>'+
@@ -8226,12 +8227,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.19.8';
+var APP_VERSION = '2026.11.19.9';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.19.9', '🔧 支出頁「車輛提醒」超過保養里程時,改寫「已超過 X 公里」,不再顯示「還差」負數'],
   ['2026.11.19.8', '🔧 支出細項「保養維修」預設多了煞車、電瓶、其他維修,機油標「小保養」、定期保養標「大保養」(兩個填了儀表板里程都會自動算下次保養);自己改過細項的不會變'],
   ['2026.11.19.8', '🚗 測試版新功能:「支出」頁多一張「車輛成本」,算每開 1 公里車子花你多少(油錢、保養、折舊)、回本進度、下次保養約幾天後到、大概花多少;購車價、車貸都是選填。上架後是 VIP 功能', 'beta'],
   ['2026.11.19.8', '💰 測試版:可支配所得的保養預留改用車輛成本算出的每公里保養成本(資料不到 3 個月才用你填的),換車預留填了車輛成本就能開', 'beta'],
