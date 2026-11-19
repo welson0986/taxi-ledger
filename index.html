@@ -3410,7 +3410,7 @@ function renderEntry(){
     '<div class="stat-tile"><div class="lbl">今日支出</div><div class="val expense num">'+fmtMoney(exp)+'</div></div></div></div>';
   // an unfinished trip stays visible even after the buttons are switched off
   B.trips = (uiShow('trips') || state.activeTrip || (state.pendingTrips||[]).length || state.pendingAccept) ? tripCardHtml() : '';
-  B.traffic = uiShow('traffic') ? trafficCardHtml() : '';
+  B.traffic = (uiShow('traffic') ? trafficCardHtml() : '')+rnEntryHtml();
   var todayFlow = cashSummary(todayRecs);
   B.cashFlow = '';
   if(todayRecs.length && uiShow('cashFlow')){
@@ -4883,7 +4883,8 @@ var VIP_FEATURES = [
   ['⏱️', '目標還要跑多久', '今日、本月目標還差多少錢,照你的平均時薪和每趟實收,算出還要跑幾小時、幾趟'],
   ['🚗', '車輛成本與保養預測', '每開 1 公里車子花你多少(油錢、保養、折舊),回本進度、下次保養大概幾天後到、花多少,輪胎等分項更換提醒'],
   ['🏁', '我的車隊收益比較', '用你自己的紀錄比各車隊的手續費率、每小時和每公里實收,試算「這些單如果在別家跑」實收差多少'],
-  ['📍', '下車地統計', '看客人常把你載去哪裡(下車熱區),以及在哪裡下車之後最久才接到下一單(死區)']
+  ['📍', '下車地統計', '看客人常把你載去哪裡(下車熱區),以及在哪裡下車之後最久才接到下一單(死區)'],
+  ['🚦', '官方路況快報', '依你主要跑的城市,列出警廣和交通部公布的事故、壅塞、封路、施工,點一下看地圖路況']
 ];
 var VIP_PERIODS = {year:1, custom:1, all:1};
 function vipGated(){ return VIP_GATE || betaOn(); }
@@ -6841,6 +6842,192 @@ function openTrafficHere(){
     setTimeout(restore, 60000);
   });
 }
+/* ---------- 🚦 官方路況快報 (VIP 2.0 ⑤, 規格第 7 節) ----------
+   Only when the driver opens it (no push, nothing in the background): ask our relay on Cloudflare
+   (app.realway.com.tw/api/roads) for the cities ticked under 「我主要跑」. The relay reads 警察廣播電臺即時路況 and
+   交通部 TDX 道路事件 and keeps them a few minutes; only the city codes are sent, never a position or the ledger.
+   What comes back stays in memory (rnData), never in the ledger, backups or cloud sync.
+   Shown by 規格第 7 節's table, counted from the last update (m = modDttm / LastUpdateTime), Taiwan time. */
+var RN_URL = 'https://app.realway.com.tw/api/roads';
+var RN_WAIT_MS = 15000, RN_STALE_MS = 60000, RN_H = 3600000;
+var RN_MAJOR_WORDS = ['火災','翻覆','多車','封閉','封路','受困','傷亡','坍方','淹水','停電'];
+var RN_DONE_WORDS = ['已排除','已修復','已移除','已恢復','已解除'];
+// 警廣 often marks the end at the front instead, e.g. 「*1939新北交大:排除*」「*1520北市交控:車流恢復正常*」「*1600坪控:結束*」
+var RN_DONE_NOTE = /\*[^*]{0,30}(排除|恢復|結束|解除|移除|修復|處理完畢)[^*]{0,20}\*/;
+var RN_ICON = {'事故':'💥','阻塞':'🚗','交通障礙':'⚠️','交通管制':'⛔','號誌故障':'🚥','道路施工':'🚧','災害':'🌊','其他':'ℹ️'};
+var RN_GROUP = {'事故':'acc','阻塞':'jam','道路施工':'work','交通管制':'ctl'};   // the rest count as one 「障礙」 group when merging
+var RN_SRC = {pbs:'警廣', tdx:'交通部 TDX'};
+var rnData = null, rnErr = '', rnBusy = false, rnTab = 'live', rnGen = 0, rnTimer = null;
+function rnAvailable(){ return betaOn(); }
+function rnCityNames(keys){
+  return keys.map(function(k){ var c = TRAFFIC_CITIES.filter(function(x){ return x.key===k; })[0]; return c ? (c.short||c.name) : k; }).join('、');
+}
+// a Taiwan calendar day's last second → ms
+function rnTwDayEnd(y, mo, d){ return Date.UTC(y, mo-1, d, 23, 59, 59) - 8*RN_H; }
+// 交通管制 often says until when: 「~12/27(日)」「至119年3月1日」「至2026/12/31」. Only a date counts; a time of day alone
+// (「22:00~隔日6:00」) does not. Nothing believable → null (then the 6-hour rule).
+function rnEndFromText(tx, m){
+  var s = String(tx||''), r, y, end = null, my = new Date(m + 8*RN_H).getUTCFullYear();
+  if((r = s.match(/(?:~|～|至|到)\s*(\d{2,3})年(\d{1,2})月(\d{1,2})日/))) end = rnTwDayEnd(+r[1]+1911, +r[2], +r[3]);
+  else if((r = s.match(/(?:~|～|至|到)\s*(20\d{2})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/))) end = rnTwDayEnd(+r[1], +r[2], +r[3]);
+  else if((r = s.match(/(?:~|～|至|到)\s*(\d{1,2})\/(\d{1,2})(?!\d)/))){
+    y = my; end = rnTwDayEnd(y, +r[1], +r[2]);
+    if(end < m - 86400000) end = rnTwDayEnd(y+1, +r[1], +r[2]);
+  }
+  if(end==null || end < m - 86400000 || end > m + 5*366*86400000) return null;   // long works say 「至119年3月1日」
+  return end;
+}
+function rnIsDone(e){
+  var t = (e.tx||'')+' '+(e.tx2||'');
+  return RN_DONE_WORDS.some(function(w){ return t.indexOf(w)>=0; }) || RN_DONE_NOTE.test(t);
+}
+function rnIsMajor(e){
+  var t = (e.tx||'')+' '+(e.tx2||'');
+  return e.ty==='災害' || e.st===105 || RN_MAJOR_WORDS.some(function(w){ return t.indexOf(w)>=0; });
+}
+// one (merged) item → null when it should not be shown, else {tab, done, major}
+function rnRule(e, now){
+  var age = now - Math.min(e.m, now), done = rnIsDone(e);
+  if(done) return age <= RN_H ? {tab:e.ty==='道路施工' ? 'work' : 'live', done:true, major:false} : null;
+  if(e.ty==='道路施工') return age <= 7*24*RN_H ? {tab:'work', done:false, major:false} : null;
+  var major = rnIsMajor(e);
+  if(e.ty==='交通管制'){
+    var end = e.end || rnEndFromText(e.tx, e.m) || rnEndFromText(e.tx2, e.m);
+    if(end) return now <= end ? {tab:'live', done:false, major:major} : null;
+    return age <= 6*RN_H ? {tab:'live', done:false, major:major} : null;
+  }
+  return age <= (major ? 6 : 3)*RN_H ? {tab:'live', done:false, major:major} : null;
+}
+function rnDist(a, b){
+  if(a.la==null || a.lo==null || b.la==null || b.lo==null) return Infinity;
+  var dy = (a.la-b.la)*110540, dx = (a.lo-b.lo)*111320*Math.cos(a.la*Math.PI/180);
+  return Math.sqrt(dx*dx+dy*dy);
+}
+// the same event from 警廣 and TDX: within 300 m, updated within 30 minutes, the same kind → one line, both sources.
+// 警廣's wording stays (written for drivers); the later update time counts.
+function rnMerge(items){
+  var byId = {}, out = [];
+  (items||[]).forEach(function(it){ if(it && it.id && typeof it.m==='number' && (!byId[it.id] || byId[it.id].m < it.m)) byId[it.id] = it; });
+  Object.keys(byId).map(function(k){ return byId[k]; }).sort(function(a, b){ return (b.m-a.m) || (a.id<b.id ? -1 : 1); }).forEach(function(it){
+    var g = RN_GROUP[it.ty]||'obs', hit = null;
+    for(var i=0;i<out.length && !hit;i++){
+      var e = out[i];
+      if(e.srcs.indexOf(it.s)<0 && (RN_GROUP[e.ty]||'obs')===g && Math.abs(e.m-it.m) <= 30*60000 && rnDist(e, it) <= 300) hit = e;
+    }
+    if(!hit){
+      out.push({id:it.id, ty:it.ty, st:it.st||null, ar:it.ar||'', tx:it.tx||'', tx2:'', la:it.la, lo:it.lo, m:it.m, end:it.end||null, srcs:[it.s], so:[it.so||''].filter(Boolean), listener:/熱心聽眾/.test(it.so||'')});
+      return;
+    }
+    hit.srcs.push(it.s);
+    if(it.so && hit.so.indexOf(it.so)<0) hit.so.push(it.so);
+    if(/熱心聽眾/.test(it.so||'')) hit.listener = true;
+    if(it.s==='pbs'){ hit.tx2 = hit.tx; hit.tx = it.tx||hit.tx; if(it.ar) hit.ar = it.ar; } else hit.tx2 = it.tx||'';
+    if(hit.la==null){ hit.la = it.la; hit.lo = it.lo; }
+    if(it.m > hit.m) hit.m = it.m;
+    if(it.end && !hit.end) hit.end = it.end;
+    if(it.st && !hit.st) hit.st = it.st;
+  });
+  return out;
+}
+// what the sheet shows: {live:[...], work:[...]}, newest first, the ✅ 已排除 ones last
+function rnView(items, now){
+  var v = {live:[], work:[]};
+  rnMerge(items).forEach(function(e){ var r = rnRule(e, now); if(r){ e.done = r.done; e.major = r.major; v[r.tab].push(e); } });
+  ['live','work'].forEach(function(t){ v[t].sort(function(a, b){ return (a.done-b.done) || (b.m-a.m); }); });
+  return v;
+}
+function rnAgo(m, now){
+  var min = Math.max(0, Math.round((now-m)/60000));
+  if(min < 1) return '剛剛';
+  if(min < 60) return min+' 分鐘前';
+  if(min < 24*60) return Math.floor(min/60)+' 小時前';
+  return Math.floor(min/1440)+' 天前';
+}
+function rnItemHtml(e, now){
+  var d = new Date(e.m), when = (toDateStr(d)===toDateStr(new Date(now)) ? '' : (d.getMonth()+1)+'/'+d.getDate()+' ')+hhmm(e.m);
+  var src = e.srcs.slice().sort().map(function(s){ return RN_SRC[s]||s; }).join('＋'), who = e.so.length ? e.so.join('、') : '';
+  var h = '<div class="li-body" style="min-width:0"><div class="li-title" style="white-space:normal">'+(RN_ICON[e.ty]||'ℹ️')+' '+esc(e.ty)+
+    (e.done ? ' <span style="font-size:11.5px;font-weight:700;color:var(--text-muted)">✅ 已排除</span>' : '')+
+    (e.major && !e.done ? ' <span style="font-size:11.5px;font-weight:700;color:var(--expense)">重大</span>' : '')+
+    ' <span style="font-size:11.5px;font-weight:400;color:var(--text-muted)">'+when+'('+rnAgo(e.m, now)+'更新)</span></div>'+
+    (e.ar ? '<div class="li-sub" style="white-space:normal;font-weight:700;color:var(--text)">'+esc(e.ar)+'</div>' : '')+
+    '<div class="li-sub" style="white-space:normal;line-height:1.55;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden">'+esc(e.tx||e.tx2)+'</div>'+
+    '<div style="font-size:11px;color:var(--text-muted);margin-top:3px">來源:'+esc(src)+(who ? ' · '+esc(who) : '')+'</div>'+
+    (e.listener ? '<div style="font-size:11px;color:var(--accent-strong);font-weight:700;margin-top:2px">👂 熱心聽眾提供,請自己判斷</div>' : '')+'</div>';
+  var tail = e.la!=null && e.lo!=null ? '<div style="flex:none;align-self:center;color:var(--accent);font-size:12.5px;white-space:nowrap">看路況 ›</div>' : '';
+  var st = 'text-decoration:none;color:inherit;align-items:flex-start;gap:8px'+(e.done ? ';opacity:.5' : '');
+  return e.la!=null && e.lo!=null
+    ? '<a class="list-item rn-item" style="'+st+'" target="_blank" rel="noopener" href="'+trafficUrl(e.la, e.lo)+'">'+h+tail+'</a>'
+    : '<div class="list-item rn-item" style="'+st+'">'+h+'</div>';
+}
+function rnBodyHtml(){
+  var keys = trafficPicks(), now = Date.now(), NOTE = 'font-size:12.5px;color:var(--text-muted);line-height:1.65;padding:10px 0';
+  var have = rnData && rnData.cities===keys.join(',');
+  if(!have){
+    if(rnErr) return '<div style="text-align:center;padding:18px 0"><div style="font-size:30px" aria-hidden="true">📡</div><div style="font-size:14px;font-weight:700;margin:6px 0 4px">暫時讀不到路況,稍後再試</div>'+
+      '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:12px">'+(rnErr==='offline' ? '手機現在沒有網路。' : '可能是網路不穩,或資料來源暫時沒有回應。')+'</div><button class="btn btn-primary" style="width:auto;padding:8px 22px" data-act="rn-reload">重試</button></div>';
+    return '<div style="'+NOTE+';text-align:center">讀取中…</div>';
+  }
+  var v = rnView(rnData.items, now), list = v[rnTab]||[], src = rnData.src||{}, h = '';
+  h += '<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted);margin:2px 0 6px"><span style="flex:1">'+(rnBusy ? '更新中…' : hhmm(rnData.at)+' 讀取')+'</span>'+
+    '<button class="btn btn-ghost" style="width:auto;padding:5px 12px;font-size:12.5px" data-act="rn-reload"'+(rnBusy?' disabled':'')+'>重新整理</button></div>';
+  if(rnErr) h += '<div style="font-size:12px;color:var(--expense);line-height:1.6;margin-bottom:6px">暫時讀不到最新路況,下面是 '+hhmm(rnData.at)+' 讀到的。</div>';
+  else if(src.pbs && !src.pbs.ok) h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:6px">警廣暫時讀不到,先顯示交通部 TDX 的。</div>';
+  else if(src.tdx && src.tdx.on && !src.tdx.ok) h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:6px">交通部 TDX 暫時讀不到'+(src.tdx.part ? '一部分' : '')+',先顯示警廣的。</div>';
+  h += '<div class="segmented" style="margin-bottom:8px"><button class="'+(rnTab==='live'?'active':'')+'" data-act="rn-tab:live">即時路況('+v.live.length+')</button><button class="'+(rnTab==='work'?'active':'')+'" data-act="rn-tab:work">🚧 施工('+v.work.length+')</button></div>';
+  if(!list.length) h += '<div style="'+NOTE+'">'+(rnTab==='work' ? '最近 7 天沒有'+esc(rnCityNames(keys))+'的施工消息。' : '目前沒有'+esc(rnCityNames(keys))+'的事故、壅塞、封路消息。')+'</div>';
+  h += list.map(function(e){ return rnItemHtml(e, now); }).join('');
+  h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:10px">'+(rnTab==='work'
+    ? '施工收在這裡,顯示最近 7 天有更新的。'
+    : '事故、壅塞等顯示 3 小時;火災、翻覆、封路等重大事件 6 小時;交通管制 6 小時或到說明寫的結束日;已排除的灰色顯示 1 小時。')+
+    '時間是消息最後更新的時間。點一則打開 Google 地圖路況。</div>';
+  return h;
+}
+function rnSheetHtml(){
+  var keys = trafficPicks();
+  return '<div class="modal-title">🚦 路況快報<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div><div id="rnSheet">'+
+    '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 8px">城市:<b style="color:var(--text)">'+esc(rnCityNames(keys))+'</b>(照「常用路況地點」的我主要跑) · <a data-act="traffic-spots" style="color:var(--accent);cursor:pointer;font-weight:700">改城市</a></div>'+
+    '<div id="rnBody">'+rnBodyHtml()+'</div>'+
+    '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:12px;border-top:1px solid var(--border);padding-top:8px">資料來源:警察廣播電臺即時路況、交通部運輸資料流通服務平臺(TDX)。內容僅供參考,以現場狀況為準;開車時請勿操作。<br>只送出你選的城市,不送你的位置;不推播,打開才讀。</div></div>';
+}
+function rnRefresh(){ var b = document.getElementById('rnBody'); if(b) b.innerHTML = rnBodyHtml(); }
+function rnLoad(force){
+  if(!isVip()) return;
+  var keys = trafficPicks().join(',');
+  if(!force && rnData && rnData.cities===keys && Date.now()-rnData.at < RN_STALE_MS && !rnErr) return;
+  var gen = ++rnGen;
+  clearTimeout(rnTimer);
+  if(navigator.onLine===false){ rnBusy = false; rnErr = 'offline'; rnRefresh(); return; }
+  rnBusy = true; rnErr = ''; rnRefresh();
+  var fail = function(){ if(gen!==rnGen) return; clearTimeout(rnTimer); rnBusy = false; rnErr = 'down'; rnRefresh(); };
+  rnTimer = setTimeout(fail, RN_WAIT_MS);
+  fetch(RN_URL+'?city='+encodeURIComponent(keys).replace(/%2C/g, ','), {cache:'no-store', credentials:'omit', referrerPolicy:'no-referrer'}).then(function(r){
+    if(!r.ok) throw new Error('http '+r.status);
+    return r.json();
+  }).then(function(j){
+    if(gen!==rnGen) return;
+    if(!j || !j.ok || !(j.items instanceof Array)) return fail();
+    clearTimeout(rnTimer);
+    rnData = {at:Date.now(), cities:keys, src:j.src||{}, items:j.items};
+    rnBusy = false; rnErr = ''; rnRefresh();
+  }).catch(fail);
+}
+function openRoadNews(){
+  if(!isVip()){ openVipIntro('官方路況快報'); return; }
+  if(rnData && rnData.cities!==trafficPicks().join(',')) rnData = null;
+  rnTab = 'live';
+  openModal(rnSheetHtml());
+  rnLoad(false);
+}
+function rnEntryHtml(){
+  if(!rnAvailable() || !uiShow('roadNews')) return '';
+  if(!isVip()) return '<div class="section"><div class="card" style="padding:12px 14px;display:flex;gap:10px;align-items:center"><div style="flex:1;font-size:13px;line-height:1.5"><b>🚦 官方路況快報 👑</b>'+
+    '<div style="font-size:12px;color:var(--text-muted)">依你主要跑的城市,列出警廣和交通部公布的事故、壅塞、封路、施工</div></div>'+
+    '<button class="btn btn-ghost" style="flex:none" data-act="rn-vip">看看</button></div></div>';
+  return '<div class="section"><button class="card" style="width:100%;padding:12px 14px;display:flex;gap:10px;align-items:center;text-align:left;cursor:pointer;font:inherit;color:inherit" data-act="open-roadnews">'+
+    '<div style="flex:1;font-size:13px;line-height:1.5"><b>🚦 路況快報</b><div style="font-size:12px;color:var(--text-muted)">'+esc(rnCityNames(trafficPicks()))+'的事故、壅塞、封路、施工(警廣＋交通部)</div></div>'+
+    '<span style="flex:none;color:var(--accent);font-size:13px;font-weight:700">打開 ›</span></button></div>';
+}
 function parseLatLng(s){
   var m = String(s||'').match(/(-?\d+(?:\.\d+)?)\s*[,，]\s*(-?\d+(?:\.\d+)?)/);
   if(!m) return null;
@@ -7675,7 +7862,7 @@ function wireFeePlatToggle(){
 }
 /* ---------- 顯示模式與功能開關 ---------- */
 var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/悠遊卡/愛心卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['paperSlip','紙本簽單(企業簽單是紙本,要拿回車隊換現金)'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(Uber 小黃)'],['tip','小費'],['tripToll','過路費(Uber、BOLT 記車資時順手填)'],['tripKm','每趟公里數(車隊 App 上的里程,算每公里實收)','','beta'],['fxTip','外幣小費(美金、日圓…自動換算台幣)'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
-var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日、本月目標進度(還差多少錢)'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['liveRate','今日行車顯示目前時薪'],['restRemind','休息提醒(連續開太久、今天上班太久)'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告'],['fareCompare','🧮 各車隊實收比較(輸入車資看各車隊實拿多少)'],['targetCalc','目標還要跑多久(依平均時薪算還要幾小時、幾趟)','vip']];
+var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日、本月目標進度(還差多少錢)'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['liveRate','今日行車顯示目前時薪'],['restRemind','休息提醒(連續開太久、今天上班太久)'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告'],['fareCompare','🧮 各車隊實收比較(輸入車資看各車隊實拿多少)'],['targetCalc','目標還要跑多久(依平均時薪算還要幾小時、幾趟)','vip'],['roadNews','🚦 官方路況快報(事故、壅塞、封路、施工)','vip','beta']];
 var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度'],['dispIncome','💰 可支配所得(本週、本月真正落袋)','vip','beta'],['vehCost','🚗 車輛成本(每公里成本、回本、保養預估)','vip','beta'],['fleetCmp','🏁 我的車隊收益比較(每小時、每公里實收,換車隊試算)','vip','beta'],['dropStat','📍 下車地統計(下車熱區、下車後空檔、死區)','vip','beta']];
 var UI_DEFAULT_OFF = ['shiftFix','campaign','restRemind','fxTip','fareCompare','targetCalc','fleetCmp','tripKm'];  // extras nobody sees unless they turn them on
 var UI_SIMPLE_OFF = ['liveRate','subtype','fareType','payment','discount','markup','addOn','coupon','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
@@ -8218,7 +8405,8 @@ var HELP = [
     ['📍 上車熱區', '分析頁看你最常上車的地方,可篩白天 / 晚上 / 深夜,點 ✏️ 取名。「⏰ 現在」看過去 12 週同一個星期幾、現在前後一小時最常上車的地方。', 'hotspot'],
     ['📍 下車地統計', '分析頁「上車熱區」下面:最近 90 天(可改 30 天、180 天、1 年)你最常在哪裡下車(前 10 名),每一區下車後平均多久才接到下一單;「死區提醒」列下車後最久才接到下一單的前 5 區(同一區至少 3 次才列)。空檔是估算:下車到按「接到單了」(沒按就到下一趟上車),每天最後一趟、下班前最後一趟、休息中都不算。要按上車／下車並允許定位才有資料,只在手機上算。', 'dropStat', 'vip', 'beta'],
     ['👥 車友熱區', '同意分享上車熱區才能看附近車友都在哪裡上車,每個地點也會顯示你自己在那裡載過幾趟、平均實收多少;只分享約 1 公里一格,不含精確位置、金額;取消分享會刪除你分享過的資料。'],
-    ['即時路況', '記帳頁「看即時路況」開 Google 地圖;常用地點可以新增、排序。停車或紅燈時再看。', 'traffic']
+    ['即時路況', '記帳頁「看即時路況」開 Google 地圖;常用地點可以新增、排序。停車或紅燈時再看。', 'traffic'],
+    ['🚦 官方路況快報', '記帳頁「看即時路況」下面點「路況快報」:依「常用路況地點」勾的我主要跑城市,列出警察廣播電臺和交通部 TDX 公布的事故、壅塞、封路、交通管制;施工另外放在「🚧 施工」。點一則開 Google 地圖路況。只送出城市、不送位置,打開才讀,不推播。停車或紅燈時再看。', 'roadNews', 'vip', 'beta']
   ]],
   ['分析', [
     ['看賺多少', '分析頁選本日 / 本週 / 本月 / 本年 / 自訂,看實收、淨利、時薪。'],
@@ -8672,12 +8860,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.19.12';
+var APP_VERSION = '2026.11.19.13';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.19.13', '🚦 測試版新功能:記帳頁「看即時路況」下面多了「路況快報」,依你勾的我主要跑城市,列出警廣和交通部公布的事故、壅塞、封路、施工,點一則看地圖路況。只送出城市、不送你的位置;打開才讀,不推播。上架後是 VIP 功能', 'beta'],
   ['2026.11.19.12', '📍 測試版新功能:分析頁「下車地統計」,看客人常把你載去哪裡(下車熱區前 10 名),以及在哪裡下車後最久才接到下一單(死區前 5 名)。最近 90 天,只在手機上算。上架後是 VIP 功能', 'beta'],
   ['2026.11.19.11', '📏 測試版新的選填欄位「每趟公里數」(到 ⚙️ 功能開關打開):記車資時填車隊 App 上這趟的里程,算各車隊實際的每公里實收。預設關閉,不想填的不用開', 'beta'],
   ['2026.11.19.11', '🏁 測試版:我的車隊收益比較改用你填的每趟公里數(沒填的才用上下車直線距離);上班、休息的打卡時間開始記下來,每小時實收的第一趟從打卡算起', 'beta'],
@@ -9711,6 +9900,10 @@ document.addEventListener('click', function(e){
   else if(cmd==='vc-vip'){ openVipIntro('車輛成本與保養預測'); }
   else if(cmd==='fc-vip'){ openVipIntro('我的車隊收益比較'); }
   else if(cmd==='ds-vip'){ openVipIntro('下車地統計'); }
+  else if(cmd==='rn-vip'){ openVipIntro('官方路況快報'); }
+  else if(cmd==='open-roadnews'){ openRoadNews(); }
+  else if(cmd==='rn-reload'){ rnLoad(true); }
+  else if(cmd==='rn-tab'){ rnTab = arg==='work' ? 'work' : 'live'; rnRefresh(); }
   else if(cmd==='ds-days'){ var dsN = +arg; if(DS_DAYS.indexOf(dsN)>=0){ dsDays = dsN; renderAll(); } }
   else if(cmd==='fc-tab'){ fcTab = arg==='whatif' ? 'whatif' : 'real'; renderAll(); }
   else if(cmd==='fc-settings'){ openFcSettings(); }
