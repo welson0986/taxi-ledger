@@ -1784,8 +1784,24 @@ document.addEventListener('visibilitychange', function(){
 });
 
 /* ---------- 匿名使用人數統計 ----------
-   once per calendar day: a random device id, date, version, mode, phone OS. Never any amounts, platforms or locations.
-   The endpoint only accepts these pings; it has no way to read anything back. */
+   once per calendar day: a random device id, date, version, mode, phone OS, the cities the driver ticked for the
+   traffic card (c, with their ⭐ main one as pc; never GPS) and whether they are VIP (vip, plan vp). Never any amounts,
+   platforms or coordinates. The endpoint only accepts these pings; it has no way to read anything back. */
+// nothing when the driver never picked a city (a new driver who skipped that step)
+function statCityParams(){
+  if(!state.trafficCity && !(state.trafficCities && state.trafficCities.length)) return '';
+  return '&c='+trafficPicks().join(',')+'&pc='+trafficMainCity();
+}
+// only the real entitlement (store answer + this phone's kept copy), never the 測試版 「VIP 測試」 switch; while
+// VIP_GATE is off everyone has every feature, so nobody is counted as VIP. The website never sells VIP.
+var STAT_VIP_PLAN = {month:'m', year:'y', lifetime:'l'};
+function statVipParams(){
+  if(!VIP_GATE || !isNativeApp()) return '&vip=0';
+  var v = vipVerdict();
+  if(!v.vip || !v.ent) return '&vip=0';
+  var vp = STAT_VIP_PLAN[v.ent.plan] || '';
+  return '&vip=1'+(vp ? '&vp='+vp : '');
+}
 var STAT_URL = 'https://script.google.com/macros/s/AKfycbymslkUN8TEY80ln4-WNynHxzMp2vKwkWBzYfFuU7oJ9k-OEyWtJojB8MWLY1Oi2EqmmQ/exec';
 function statPing(){
   if(!STAT_URL || state.statOptOut || !maySendShared()) return;
@@ -1800,7 +1816,7 @@ function statPing(){
   var ua = navigator.userAgent;
   var os = /iPhone|iPad|iPod/.test(ua) ? 'ios' : (/Android/.test(ua) ? 'android' : 'other');
   var sa = ((window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone) ? 1 : 0;
-  var q = 'id='+state.statId+'&d='+day+'&v='+encodeURIComponent(APP_VERSION)+'&m='+(state.uiMode||'new')+'&os='+os+'&sa='+sa;
+  var q = 'id='+state.statId+'&d='+day+'&v='+encodeURIComponent(APP_VERSION)+'&m='+(state.uiMode||'new')+'&os='+os+'&sa='+sa+statCityParams()+statVipParams();
   fetch(STAT_URL+'?'+q, {mode:'no-cors', cache:'no-store'}).then(function(){
     try{ localStorage.setItem('taxi_stat_day', day); }catch(e){}
   }, function(){});
@@ -5725,6 +5741,8 @@ if(state.catOrder && state.catOrder.indexOf('fees')<0){
   if(feesAt<0) state.catOrder.push('fees'); else state.catOrder.splice(feesAt, 0, 'fees');
 }
 // default spots per city; coordinates checked one by one against OpenStreetMap and Google Maps (2026-11-18, 其他縣市 11-19)
+// Each key is also the fixed city code the 不具名使用統計 sends (c / pc) and the 使用統計 Apps Script checks against its
+// own CITIES table: never rename a key, and add a new city to both places.
 var TRAFFIC_CITIES = [
   {key:'tpe', name:'台北市', short:'台北', spots:TRAFFIC_SPOTS_DEFAULT},
   {key:'ntpc', name:'新北市', short:'新北', spots:[
@@ -5871,6 +5889,12 @@ function trafficPicks(){
   var cur = trafficCity().key, p = state.trafficCities || [];
   return TRAFFIC_CITIES.filter(function(c){ return c.key===cur || p.indexOf(c.key)>=0; }).map(function(c){ return c.key; });
 }
+// the one city the driver counts as their main one (⭐), for the 不具名使用統計: the first ticked unless they picked
+// another; always one of trafficPicks()
+function trafficMainCity(){
+  var p = trafficPicks();
+  return p.indexOf(state.trafficMain)>=0 ? state.trafficMain : p[0];
+}
 // state.trafficSpots stays the hand-edited list of the city on screen; the other cities' edited lists wait in trafficSpotsBy
 function trafficShow(key){
   var cur = trafficCity().key;
@@ -5948,7 +5972,14 @@ function openTrafficSpotsModal(){
   h += '<div class="form-row"><label>我主要跑(可以複選)</label><div class="chip-row">'+TRAFFIC_CITIES.map(function(c){
     return '<button type="button" class="chip-opt'+(picks.indexOf(c.key)>=0?' selected':'')+'" data-act="traffic-city:'+c.key+'">'+esc(c.name)+'</button>';
   }).join('')+'</div><div style="font-size:11px;color:var(--text-muted);line-height:1.5;margin-top:6px">'+(picks.length>1 ? '路況卡上會出現城市按鈕,點一下就切換。每個城市改過的清單會各自記住。' : '常跑好幾個城市就多勾幾個,路況卡上會出現切換按鈕。')+'不會用定位判斷。</div></div>';
-  if(picks.length>1) h += '<div class="form-row"><label>下面是哪個城市的地點</label>'+trafficTabsHtml(picks)+'</div>';
+  if(picks.length>1){
+    var main = trafficMainCity();
+    h += '<div class="form-row"><label>最主要的城市</label><div class="chip-row">'+picks.map(function(k){
+      var c = TRAFFIC_CITIES.filter(function(x){ return x.key===k; })[0];
+      return '<button type="button" class="chip-opt'+(k===main?' selected':'')+'" style="font-size:12px;padding:4px 10px" data-act="traffic-main:'+k+'">'+(k===main?'⭐ ':'')+esc(c.short||c.name)+'</button>';
+    }).join('')+'</div><div style="font-size:11px;color:var(--text-muted);line-height:1.5;margin-top:6px">點一下設成 ⭐ 最主要(預設是第一個勾的)。</div></div>';
+    h += '<div class="form-row"><label>下面是哪個城市的地點</label>'+trafficTabsHtml(picks)+'</div>';
+  }
   h += '<div class="card" style="margin-bottom:14px">';
   h += spots.length ? spots.map(function(s,i){
     return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(s.name)+'</div><div class="li-sub">'+s.lat+', '+s.lng+'</div></div>'+
@@ -7691,7 +7722,7 @@ function openSettingsModal(){
   h += '<div class="form-row" style="margin-top:6px"><label>進階:記錄接單時間</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-track-accept" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.trackAccept?' checked':'')+'>打開後,下車後的大按鈕會變成「📲 接到單了」。接單時按一下,客人上車再按「上車」,分析頁就能把空檔拆成「等單」和「接駁」兩段。載客中就接到下一單,可以按行程卡上的「📲 接到下一單」,下車後直接按「上車」。不打開就跟原本一樣。</label></div>';
   if(HOT_URL) h += '<div class="form-row"><label>分享上車熱區(車友熱區)</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-share-hot" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.shareHot===true?' checked':'')+'><span>分享你的上車熱區,就能在分析頁看「車友熱區」。只送約 1 公里一格的區域、日期、時段、趟數,<b>不送精確位置、金額、平台</b>;3 位以上車友都上過車的地方才會顯示。取消勾選會一併刪除你分享過的資料。</span></label></div>';
   if(HOT_URL && (state.hotDelPending||[]).length) h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-6px 0 12px;line-height:1.6">⏳ 已停止分享。之前分享的資料還在等網路刪除,連上網後會自動再送,不用重新打開分享。</div>';
-  h += '<div class="form-row"><label>不具名使用人數統計</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-stat-on" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.statOptOut?'':' checked')+'><span>參與不具名統計,幫製作者知道有多少司機在用。每天只送一次:隨機編號、日期、版本、簡單/完整模式、手機系統、是否從主畫面打開。<b>不含任何金額、平台、位置或個人資料。</b></span></label></div>';
+  h += '<div class="form-row"><label>不具名使用人數統計</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-stat-on" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.statOptOut?'':' checked')+'><span>參與不具名統計,幫製作者知道有多少司機在用。每天只送一次:隨機編號、日期、版本、簡單/完整模式、手機系統、是否從主畫面打開、你在路況卡「我主要跑」勾的城市(不是定位)、是否訂閱 VIP。<b>不含任何金額、平台、精確位置或個人資料。</b></span></label></div>';
   S.privacy = h; h = '';
   h += '<div class="form-row" style="margin-top:2px"><label>💾 備份檔(每個人都建議用)</label>'+
     '<div style="font-size:11.5px;color:var(--text-muted);margin:-2px 0 8px;line-height:1.6">帳只存在這支手機。換手機、刪掉主畫面圖示前,一定要先存備份檔;新手機按「匯入還原」選這個檔就回來了。右上角 💾 也是同一個功能。</div>'+
@@ -7738,12 +7769,14 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.19.5';
+var APP_VERSION = '2026.11.19.6';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.19.6', '🔒 隱私權政策更新:不具名使用統計多送兩項,你在路況卡「我主要跑」自己勾的城市(不是定位)、是否訂閱 VIP 與方案,讓我們知道新功能該先支援哪些城市;一樣不含金額、平台、精確位置。不想參與,到 ⚙️「隱私與分享」取消勾選'],
+  ['2026.11.19.6', '⭐ 路況卡勾了好幾個城市時,「編輯常用地點」可以點一個設成最主要的城市(預設是第一個勾的)'],
   ['2026.11.19.5', '🧭 新安裝的設定引導多一步「你主要在哪個城市跑?」,選了「即時路況」就直接是那個城市的地點,不用再自己去改'],
   ['2026.11.19.4', '🚦 路況地點的城市加到全台:新增苗栗、彰化、南投、雲林、嘉義(含嘉義縣)、屏東、花蓮、台東,每個城市都有車站和大醫院,到「編輯常用地點」勾你常跑的城市'],
   ['2026.11.19.3', '🚦 常用路況地點的「我主要跑」可以複選了:例如勾台北和新北,路況卡上會出現城市按鈕,送客到板橋時點一下就換成新北的地點。每個城市改過的清單各自記住。也新增了新北市(板橋車站、亞東、中和環球、雙和、裕隆城、宏匯、林口三井、淡水)'],
@@ -8920,12 +8953,20 @@ document.addEventListener('click', function(e){
     var tp = trafficPicks();
     if(tp.indexOf(arg)>=0){
       if(tp.length===1) return;  // at least one city stays ticked
+      var wasMain = arg===trafficMainCity();
       tp = tp.filter(function(k){ return k!==arg; });
+      if(wasMain) state.trafficMain = tp[0];
       if(arg===trafficCity().key) trafficShow(tp[0]);
     } else {
+      // the city ticked first stays the main one until the driver stars another
+      if(tp.indexOf(state.trafficMain)<0) state.trafficMain = trafficMainCity();
       tp.push(arg); trafficShow(arg);
     }
     state.trafficCities = tp; save(); openTrafficSpotsModal();
+  }
+  else if(cmd==='traffic-main'){
+    if(trafficPicks().indexOf(arg)<0) return;
+    state.trafficMain = arg; save(); openTrafficSpotsModal();
   }
   else if(cmd==='traffic-show'){
     if(trafficPicks().indexOf(arg)<0) return;
@@ -9071,7 +9112,7 @@ document.addEventListener('click', function(e){
     // nothing ticked counts as skipping; edited lists of each city are kept (trafficShow)
     if(obCities && obCities.length){
       var oc = TRAFFIC_CITIES.filter(function(c){ return obCities.indexOf(c.key)>=0; }).map(function(c){ return c.key; });
-      trafficShow(oc[0]); state.trafficCities = oc; save(); renderAll();
+      trafficShow(oc[0]); state.trafficCities = oc; state.trafficMain = obCities[0]; save(); renderAll();
     }
     openOnboardPlats();
   }
