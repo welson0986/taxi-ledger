@@ -1301,7 +1301,7 @@ function rawNet(r){
     var thresholdEnabled = fees.boltThresholdEnabled!==false;
     if(thresholdEnabled){
       var threshold = fees.boltThreshold!=null?fees.boltThreshold:15;
-      var weekCount = boltWeekTripCount(r.date) + (r._newPreview ? 1 : 0);
+      var weekCount = boltWeekTripCount(r.date) + (r._newPreview ? 1 : 0) + (+r._boltExtra||0);  // _boltExtra: trips a 換車隊試算 moves into that week
       if(weekCount>=threshold){
         var pctB = fees.boltPct!=null?fees.boltPct:10;
         return round2(gross*(1-pctB/100));
@@ -1317,7 +1317,7 @@ function rawNet(r){
   if(r.platform==='linego' && fees.linegoTaxi){
     var feeL = linegoDispatchFee(gross, fees);
     var capL = fees.linegoTaxiCap!=null ? +fees.linegoTaxiCap : 3000;
-    if(capL>0) feeL = Math.min(feeL, Math.max(0, capL - linegoMonthDispatchBefore(r)));
+    if(capL>0) feeL = Math.min(feeL, Math.max(0, capL - linegoMonthDispatchBefore(r) - (+r._linegoExtra||0)));  // _linegoExtra: fees of trips a 換車隊試算 moved in before
     if(r.payment && r.payment!=='現金') feeL += gross*(fees.linegoTaxiCard!=null ? +fees.linegoTaxiCard : 2.5)/100;
     return Math.max(0, gross - feeL);
   }
@@ -3266,11 +3266,16 @@ function targetPaceSlot(left, from, to, previewShown){
   return previewShown ? '' : '<div style="font-size:12px;margin-top:4px"><span data-act="pace-vip" style="cursor:pointer;color:var(--accent);font-weight:700">👑 想知道還要跑多久?</span></div>';
 }
 function isFleetKey(key){ var def = platformDef(key); return !(def.tipOnly || def.bonus || key==='bonus' || NOT_A_FLEET.indexOf(key)>=0); }
-function previewNet(key, fare, pay){
+// at (換車隊試算 of 🏁 我的車隊收益比較 only): one of the driver's own trips moved here, {payment, date, boltExtra,
+// linegoExtra}; without it this is exactly the free 🧮 各車隊實收比較, so both always price a fare the same way
+function previewNet(key, fare, pay, at){
   var fees = resolvedFeeRules(), def = platformDef(key);
   if(key==='uber' && !isYellowCab()) return fare*(1-((fees.uber!=null?fees.uber:25))/100);
-  var r = {platform:key, revenue:fare, tip:0, fees:fees, date:todayStr(), _newPreview:true, discountFinal:true, discountTier:'原價'};
-  if(def.paymentOptions) r.payment = pay==='cash' ? '現金' : (def.paymentOptions.indexOf('信用卡')>=0 ? '信用卡' : def.paymentOptions[1]||def.paymentOptions[0]);
+  var r = {platform:key, revenue:fare, tip:0, fees:fees, date:(at && at.date) || todayStr(), _newPreview:true, discountFinal:true, discountTier:'原價'};
+  if(at && at.boltExtra>0) r._boltExtra = at.boltExtra;
+  if(at && at.linegoExtra>0) r._linegoExtra = at.linegoExtra;
+  if(def.paymentOptions && at && at.payment && def.paymentOptions.indexOf(at.payment)>=0) r.payment = at.payment;
+  else if(def.paymentOptions) r.payment = pay==='cash' ? '現金' : (def.paymentOptions.indexOf('信用卡')>=0 ? '信用卡' : def.paymentOptions[1]||def.paymentOptions[0]);
   if(def.fareTypeOptions) r.fareType = def.fareTypeOptions[0];
   if(def.subtypeOptions) r.subtype = def.subtypeOptions[0];
   if(def.dispatchOptions) r.dispatchPct = parseFloat(def.dispatchOptions[0]);
@@ -3829,6 +3834,288 @@ function platformEfficiencyHtml(recs){
   h += '<div style="font-size:11px;color:var(--text-muted);padding-top:8px">平均每趟實收已扣手續費、含記在該趟的小費;另外用「'+esc(platformDef('tipbox').label)+'」記的不列入。</div></div></div>';
   return h;
 }
+/* ---------- VIP 2.0 ③: 🏁 我的車隊收益比較 (VIP; only in 跑車人生 測試版 while it is tried out; off until turned on) ----------
+   Two tabs on the analysis page, for the period picked (not under the 🔎 filter). 我的實際比較: each fleet's trips,
+   fares, fees, take-home, per trip (as 平台效率比較), the real fee rate, take-home per hour and per km, campaign money;
+   then 各時段哪家最好, the fee rate with campaign money taken off, how fast the money arrives, short / medium / long
+   trips. 換車隊試算: every trip of one fleet in the period, fare unchanged, priced again with another fleet's fee rules
+   of today through previewNet(), the very function of the free 🧮 各車隊實收比較, plus the fare share at which both
+   come out even (規格 3-3 ①; no 車資差異 ±% input, 規格 (d)).
+   Per hour (規格 (c)): the time from the drop-off before (same business day, gap up to EMPTY_GAP_CAP_MIN) to this
+   drop-off goes to this trip's fleet. The first trip of a business day or after a break counts from 接到單了 when it
+   was pressed, else from 上車: the ledger keeps each day's punched total, not the time of each clock-in. 無縫接單
+   waits 0 (the trip before ends where this one's time starts). Per km: the straight line from 上車 to 下車, the only
+   distance the app has per trip; the short / medium / long bounds are the driver's own (state.fleetCmp, a ledger
+   setting, so it travels with backups and the cloud copy), applied when shown and never stored on a trip.
+   Worked out on the phone, nothing is sent. */
+function fcAvailable(){ return betaOn(); }
+var FC_SHORT_DEF = 5, FC_LONG_DEF = 15, FC_KM_MAX = 200, FC_MIN_SLOT = 5;
+// a broken or missing setting is read as the defaults, never as a number
+function fcBounds(){
+  var c = vcObj(state.fleetCmp) ? state.fleetCmp : {}, s = +c.shortKm, l = +c.longKm;
+  if(typeof c.shortKm!=='boolean' && typeof c.longKm!=='boolean' && isFinite(s) && isFinite(l) && s>0 && l>s && l<=FC_KM_MAX) return {s:s, l:l, custom:s!==FC_SHORT_DEF || l!==FC_LONG_DEF};
+  return {s:FC_SHORT_DEF, l:FC_LONG_DEF, custom:false};
+}
+var FC_SLOTS = [['平日白天','6–18 點'],['平日晚上','18–24 點'],['平日深夜','0–6 點'],['週末白天','6–18 點'],['週末晚上','18–24 點'],['週末深夜','0–6 點']];
+// 平日／週末 by the business day (the driver's own 營業日分界), the time of day by 上車
+function fcSlotOf(d, ts){
+  var wd = new Date(d+'T00:00:00').getDay(), h = new Date(ts).getHours();
+  return (wd===0 || wd===6 ? 3 : 0) + (h>=6 && h<18 ? 0 : (h>=18 ? 1 : 2));
+}
+// every timed trip from..to (fares not entered yet too: their time goes to no fleet) with the minutes it is given
+function fcTimed(from, to){
+  var days = timedTripsByDay(from, to), out = [];
+  Object.keys(days).sort().forEach(function(d){
+    var list = days[d];
+    list.forEach(function(o, i){
+      if(tripMin(o.pickup, o.dropoff) < 0) return;
+      var prev = i>0 ? list[i-1] : null, start;
+      var linked = !!prev && prev.dropoff.ts<=o.dropoff.ts && (o.pickup.ts - prev.dropoff.ts)/60000 <= EMPTY_GAP_CAP_MIN;
+      if(linked) start = Math.min(prev.dropoff.ts, o.pickup.ts);
+      else start = (o.accept && o.accept.ts<=o.pickup.ts && (o.pickup.ts - o.accept.ts)/60000 <= EMPTY_GAP_CAP_MIN) ? o.accept.ts : o.pickup.ts;
+      out.push({o:o, d:d, min:(o.dropoff.ts - start)/60000, linked:linked, km:straightKm(o.pickup, o.dropoff)});
+    });
+  });
+  return out;
+}
+var fcMemo = null;
+function fcStats(from, to){
+  var B = fcBounds(), key = from+'|'+to+'|'+B.s+'|'+B.l+'|'+Math.floor(Date.now()/600000);
+  if(fcMemo && fcMemo.gen===dataGen && fcMemo.st===state && fcMemo.key===key) return fcMemo.val;
+  var map = {}, list = [];
+  function F(k){
+    if(!map[k]){
+      var def = platformDef(k), m = {key:k, label:def.label, trips:0, gross:0, fee:0, net:0, tripBonus:0, bonus:0, est:false,
+        tN:0, tNet:0, min:0, kmN:0, kmNet:0, km:0, len:[], slots:[], cashN:0, cashFee:0, cashSep:0, payN:0, payDays:0, payNone:0};
+      for(var i=0;i<6;i++) m.slots.push({n:0, net:0, min:0});
+      for(var j=0;j<3;j++) m.len.push({n:0, net:0, km:0});
+      map[k] = m; list.push(m);
+    }
+    return map[k];
+  }
+  recordsInRange(from, to).forEach(function(r){
+    if(r.platform==='bonus'){ var bk = r.bonusPlatform; if(bk && !platformDef(bk).tipOnly) F(bk).bonus += (+r.revenue||0); return; }
+    if(platformDef(r.platform).tipOnly) return;
+    var m = F(r.platform), g = grossBase(r);
+    m.trips++; m.gross += g; m.fee += Math.max(0, g - netBeforeCoupon(r)); m.net += computeNetRevenue(r)+(+r.tip||0); m.tripBonus += (+r.tripBonus||0);
+    if(isUberNetRec(r)) m.est = true;
+    if(isCashRecord(r)){ var mf = moneyFlow(r); m.cashN++; m.cashFee += mf.cashFee; if(!mf.netted) m.cashSep += mf.cashFee; }
+    else if(!r.paperSlip){ var b = payoutBatchOf(r); if(b && b.payDate){ m.payN++; m.payDays += Math.max(0, daysBetween(r.date, b.payDate)); } else m.payNone++; }
+  });
+  var allMin = 0;
+  fcTimed(from, to).forEach(function(x){
+    allMin += x.min;
+    var r = x.o.rec; if(!r || !map[r.platform] || !inRange(r.date, from, to) || platformDef(r.platform).tipOnly) return;
+    var m = map[r.platform], n = computeNetRevenue(r)+(+r.tip||0), s = m.slots[fcSlotOf(x.d, x.o.pickup.ts)];
+    m.tN++; m.tNet += n; m.min += x.min; s.n++; s.net += n; s.min += x.min;
+    if(x.km!=null && x.km>=0.1){ var L = m.len[x.km<B.s ? 0 : (x.km<=B.l ? 1 : 2)]; m.kmN++; m.kmNet += n; m.km += x.km; L.n++; L.net += n; L.km += x.km; }
+  });
+  list.forEach(function(m){
+    m.avg = m.trips ? m.net/m.trips : null; m.feePct = m.gross>0 ? m.fee/m.gross*100 : null;
+    m.hourly = m.min>=30 ? m.tNet/(m.min/60) : null; m.perKm = m.km>=1 ? m.kmNet/m.km : null;
+    m.bonusAll = m.bonus + m.tripBonus; m.feeAfterBonus = (m.gross>0 && m.bonusAll>0) ? (m.fee - m.bonusAll)/m.gross*100 : null;
+  });
+  list.sort(function(a,b){ return (b.net-a.net) || (b.bonus-a.bonus); });
+  var val = {list:list, B:B, allMin:allMin, worked:totalHoursInRange(from, to)};
+  fcMemo = {gen:dataGen, st:state, key:key, val:val};
+  return val;
+}
+// 換車隊試算: the trips of fleet src from..to, each priced again as run with fleet dst today. The fare stays (Uber 多元
+// worked back from what it paid, as everywhere else), the payment stays when dst takes it (else previewNet's own
+// default), and BOLT's weekly trip count and LINE GO 小黃's monthly cap carry the moved trips along.
+function fcWhatIfPrep(from, to, src){
+  var recs = recordsInRange(from, to).filter(function(r){ return r.platform===src && (+r.revenue||0)>0; })
+    .sort(function(a,b){ return a.date<b.date ? -1 : (a.date>b.date ? 1 : (+a.ts||0)-(+b.ts||0)); });
+  var weekN = {};
+  recs.forEach(function(r){ var w = weekStartOf(r.date); weekN[w] = (weekN[w]||0)+1; });
+  return {weekN:weekN, items:recs.map(function(r){ return {r:r, fare:grossBase(r), pay:isCashRecord(r) ? 'cash' : 'card', actual:netBeforeCoupon(r)}; })};
+}
+// k: the dst fare as a share of the src fare (1 = the same fare)
+function fcWhatIfRun(P, dst, k){
+  var fees = resolvedFeeRules(), lg = dst==='linego' && !!fees.linegoTaxi, capL = fees.linegoTaxiCap!=null ? +fees.linegoTaxiCap : 3000, lgM = {}, o = {n:0, fare:0, actual:0, net:0};
+  P.items.forEach(function(x){
+    var r = x.r, ym = r.date.slice(0,7), fare = x.fare*k, extra = lgM[ym]||0;
+    var net = previewNet(dst, fare, x.pay, {payment:r.payment, date:r.date, boltExtra: dst==='bolt' ? P.weekN[weekStartOf(r.date)]-1 : 0, linegoExtra: lg ? extra : 0});
+    // only the dispatch fee counts toward the monthly cap (the card fee on top does not), as in rawNet
+    if(lg && capL>0) lgM[ym] = extra + Math.min(linegoDispatchFee(fare, fees), Math.max(0, capL - linegoMonthDispatchBefore({platform:'linego', date:r.date, revenue:fare, fees:fees}) - extra));
+    o.n++; o.fare += x.fare; o.actual += x.actual; o.net += net;
+  });
+  return o;
+}
+// the share of the src fare at which dst pays the same in total, trip by trip (規格 3-3 ①)
+function fcBreakEven(P, dst, actual){
+  if(!(actual>0)) return null;
+  var lo = 0.2, hi = 5;
+  if(fcWhatIfRun(P, dst, lo).net >= actual) return {pct:lo*100, edge:'low'};
+  if(fcWhatIfRun(P, dst, hi).net < actual) return {pct:hi*100, edge:'high'};
+  for(var i=0;i<22;i++){ var mid = (lo+hi)/2; if(fcWhatIfRun(P, dst, mid).net >= actual) hi = mid; else lo = mid; }
+  return {pct:hi*100};
+}
+var fcWiMemo = null;
+function fcWhatIfCalc(from, to, src, dst){
+  var key = [from, to, src, dst].join('|');
+  if(fcWiMemo && fcWiMemo.gen===dataGen && fcWiMemo.st===state && fcWiMemo.key===key) return fcWiMemo.val;
+  var P = fcWhatIfPrep(from, to, src), base = fcWhatIfRun(P, dst, 1);
+  var val = {n:base.n, fare:base.fare, actual:base.actual, net:base.net, be: base.n ? fcBreakEven(P, dst, base.actual) : null,
+    srcEst: P.items.some(function(x){ return isUberNetRec(x.r); }), dstEst: dst==='uber' && !isYellowCab()};
+  fcWiMemo = {gen:dataGen, st:state, key:key, val:val};
+  return val;
+}
+var fcTab = 'real', fcSrc = null, fcDst = null;
+function fcPreviewHtml(){
+  return '<div class="section"><div class="card" style="padding:12px 14px;display:flex;gap:10px;align-items:center"><div style="flex:1;font-size:13px;line-height:1.5"><b>🏁 我的車隊收益比較 👑</b>'+
+    '<div style="font-size:12px;color:var(--text-muted)">用你自己的紀錄比各車隊的手續費率、每小時和每公里實收,還能試算「這些單如果在別家跑」實收差多少</div></div>'+
+    '<button class="btn btn-ghost" style="flex:none" data-act="fc-vip">看看</button></div></div>';
+}
+function fcRow(k, v, sub){
+  return '<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid var(--border);font-size:12.5px"><span style="color:var(--text-muted)">'+k+(sub?'<div style="font-size:11px">'+sub+'</div>':'')+'</span><span class="num" style="text-align:right;white-space:nowrap">'+v+'</span></div>';
+}
+var FC_NOTE = 'font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:6px';
+function fcCardHtml(range){
+  if(!fcAvailable() || !uiShow('fleetCmp')) return '';
+  if(!isVip()) return fcPreviewHtml();
+  var S = fcStats(range.from, range.to);
+  var tab = function(k, t){ return '<button type="button" class="chip-opt'+(fcTab===k?' selected':'')+'" data-act="fc-tab:'+k+'" aria-pressed="'+(fcTab===k)+'">'+t+'</button>'; };
+  var h = '<div class="section" id="fcCard"><div class="section-title"><span>🏁 我的車隊收益比較(估算)</span></div><div class="card" style="padding:12px 14px">';
+  h += '<div class="chip-row" style="margin-bottom:10px">'+tab('real','📊 我的實際比較')+tab('whatif','🔄 換車隊試算')+'</div>';
+  if(!S.list.some(function(m){ return m.trips>0; })) h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">這段期間還沒有收入紀錄。</div>';
+  else h += fcTab==='whatif' ? fcWhatIfHtml(range, S) : fcRealHtml(S);
+  return h+'</div></div>';
+}
+function fcRealHtml(S){
+  var dash = '—', h = '';
+  S.list.forEach(function(m){
+    h += '<div style="margin:0 0 12px"><div style="font-size:14px;font-weight:800;margin-bottom:2px">'+esc(m.label)+' <span style="font-size:12px;font-weight:400;color:var(--text-muted)">'+m.trips+' 趟</span></div>';
+    if(m.trips){
+      h += fcRow('總車資'+(m.est?'(估)':''), fmtMoney(m.gross));
+      h += fcRow('手續費'+(m.est?'(估)':''), fmtMoney(m.fee));
+      h += fcRow('實收(扣手續費,含小費)', fmtMoney(m.net));
+      h += fcRow('平均每趟實收', fmtMoney2(m.avg));
+      h += fcRow('手續費率(實際)', m.feePct!=null ? fmtNum(m.feePct,1)+'%' : dash, '手續費 ÷ 車資');
+      h += fcRow('每小時實收(估)', m.hourly!=null ? fmtMoney(m.hourly) : dash, m.tN ? '有按上下車的 '+m.tN+' 趟,共 '+fmtNum(m.min/60,1)+' 小時' : '沒有按上下車的趟次');
+      h += fcRow('每公里實收(直線距離)', m.perKm!=null ? fmtMoney2(m.perKm) : dash, m.kmN ? m.kmN+' 趟有記到上下車位置' : '沒有記到上下車位置');
+    }
+    if(m.bonusAll>0){
+      var parts = [];
+      if(m.tripBonus>0) parts.push('趟趟加給 '+fmtMoney(m.tripBonus)+'(已含在實收)');
+      if(m.bonus>0) parts.push('獎金 '+fmtMoney(m.bonus)+'(另外記的,不在上面的實收裡)');
+      h += fcRow('活動獎勵', fmtMoney(m.bonusAll), parts.join('、'));
+      if(m.feeAfterBonus!=null) h += fcRow('扣掉活動獎勵的實際抽成', fmtNum(m.feeAfterBonus,1)+'%', '(手續費 − 活動獎勵)÷ 車資'+(m.feeAfterBonus<0 ? ';獎勵比手續費多' : ''));
+    }
+    h += '</div>';
+  });
+  if(S.list.some(function(m){ return m.est; })) h += '<div style="'+FC_NOTE+'">Uber 多元記的是實收,車資和手續費是用你設定的抽成 % 反推的估算。</div>';
+  h += '<div style="'+FC_NOTE+'">⏱️ 每小時實收是<b>估算</b>:上一趟下車到這一趟下車的時間(等單＋接客＋載客)算給這一趟的車隊。同時開好幾個車隊 App 時分不出來,等單時間算給接到的那一家。空檔超過 '+(EMPTY_GAP_CAP_MIN/60)+' 小時當成休息不算;每天第一趟、休息後第一趟從按「接到單了」算起,沒按就只算載客時間;載客中接到的下一單(無縫接單)等單算 0。'+
+    (S.worked > S.allMin/60 + 0.05 ? '<br>這段期間打卡 '+fmtNum(S.worked,1)+' 小時,其中 '+fmtNum(S.allMin/60,1)+' 小時算給了各趟;其餘(上班後第一趟以前、最後一趟以後、沒按上下車的趟)分不出是哪一家,沒有算進去,所以各車隊的每小時實收通常會比平均時薪高一些。' : '')+'</div>';
+  h += fcSlotsHtml(S) + fcPayHtml(S) + fcLenHtml(S);
+  return h;
+}
+// 規格 3-3 ②: per time slot, each fleet's take-home per hour; under FC_MIN_SLOT timed trips it is not shown
+function fcSlotsHtml(S){
+  var h = '<div style="font-size:13.5px;font-weight:800;margin:16px 0 4px">⏰ 各時段每小時實收</div>', any = false;
+  FC_SLOTS.forEach(function(sl, i){
+    var c = S.list.map(function(m){ var s = m.slots[i]; return (s.n>=FC_MIN_SLOT && s.min>=30) ? {label:m.label, rate:s.net/(s.min/60), n:s.n} : null; })
+      .filter(function(x){ return x; }).sort(function(a,b){ return b.rate-a.rate; });
+    if(!c.length) return;
+    any = true;
+    h += '<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12.5px"><div style="font-weight:700">'+sl[0]+' <span style="font-weight:400;font-size:11px;color:var(--text-muted)">'+sl[1]+'</span></div>'+
+      c.map(function(x, j){ return '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:2px"><span>'+(j===0 && c.length>1 ? '🏆 ' : '')+esc(x.label)+' <span style="font-size:11px;color:var(--text-muted)">'+x.n+' 趟</span></span><span class="num">'+fmtMoney(x.rate)+' / 時</span></div>'; }).join('')+'</div>';
+  });
+  if(!any) h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6">資料還不夠:同一個時段、同一家要有 '+FC_MIN_SLOT+' 趟以上有按上下車的單才列出,多跑幾天就會出現。</div>';
+  else h += '<div style="'+FC_NOTE+'">同一個時段、同一家少於 '+FC_MIN_SLOT+' 趟不列出。平日／週末照你的營業日,時段看上車時間;算法跟上面的每小時實收一樣(估算)。</div>';
+  return h;
+}
+// 規格 3-3 ④: from the trip to the money in the bank, by the 撥款設定; cash is in hand, its fee goes later
+function fcPayHtml(S){
+  var rows = S.list.filter(function(m){ return m.trips>0; }).map(function(m){
+    var p = [];
+    if(m.payN) p.push('刷卡／App 付款 '+m.payN+' 趟,平均跑完約 <b>'+fmtNum(m.payDays/m.payN,1)+' 天</b>入帳');
+    else if(m.payNone) p.push('刷卡／App 付款 '+m.payNone+' 趟:撥款設定沒有撥款日,算不出幾天');
+    if(m.cashN){
+      var t = '現金 '+m.cashN+' 趟當下拿到';
+      if(m.cashFee>=0.5) t += ',手續費 '+fmtMoney(m.cashFee)+' '+(m.cashSep>=m.cashFee-0.5 ? '要另外繳(例如錢包扣款)' : (m.cashSep>=0.5 ? '部分從撥款扣、部分另外繳' : '從之後的撥款扣'));
+      p.push(t);
+    }
+    return p.length ? '<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12.5px;line-height:1.6"><b>'+esc(m.label)+'</b><br>'+p.join('<br>')+'</div>' : '';
+  }).join('');
+  if(!rows) return '';
+  return '<div style="font-size:13.5px;font-weight:800;margin:16px 0 4px">💸 拿到錢的速度</div>'+rows+
+    '<div style="'+FC_NOTE+'">依撥款頁「⚙️ 撥款設定」推算(假日照設定順延),從那一趟的營業日算到預計入帳日;實際以平台入帳為準。</div>';
+}
+// 規格 3-3 ⑤ and (m): short / medium / long by the driver's own bounds, straight-line km only
+function fcLenHtml(S){
+  var B = S.B, bc = ['var(--accent)','var(--income)','#4472C4'], labels = ['短程 &lt; '+fmtNum(B.s,1).replace(/\.0$/,'')+' 公里', '中程', '長程 &gt; '+fmtNum(B.l,1).replace(/\.0$/,'')+' 公里'];
+  var kmN = 0, trips = 0, h = '';
+  S.list.forEach(function(m){
+    trips += m.trips; kmN += m.kmN;
+    if(!m.kmN) return;
+    h += shareBarHtml(esc(m.label)+' <span style="font-weight:400;color:var(--text-muted)">'+m.kmN+' 趟</span>', m.len.map(function(L){ return L.n; }), labels, bc, null);
+    h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:2px">每公里實收:'+m.len.map(function(L, i){ return ['短','中','長'][i]+' '+(L.km>=1 ? fmtMoney2(L.net/L.km) : '—'); }).join(' · ')+'</div>';
+  });
+  var head = '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:16px 0 4px"><span style="font-size:13.5px;font-weight:800">📏 趟次長短</span><a data-act="fc-settings" role="button" tabindex="0" style="font-size:12px;color:var(--accent);cursor:pointer;flex:none">⚙️ 改長短分界</a></div>';
+  if(!kmN) return head+'<div style="font-size:12px;color:var(--text-muted);line-height:1.6">這段期間沒有記到上下車位置的趟次。載客時按記帳頁的「上車」「下車」(手機允許取得位置),這裡就會分出短程、中程、長程。</div>';
+  return head+'<div style="font-size:11.5px;color:var(--text-muted)">中程 '+fmtNum(B.s,1).replace(/\.0$/,'')+'–'+fmtNum(B.l,1).replace(/\.0$/,'')+' 公里'+(B.custom ? '(你自己設的分界)' : '')+'</div>'+h+
+    '<div style="'+FC_NOTE+'">只統計有記到上下車位置的 '+kmN+' 趟(共 '+trips+' 趟)。距離是上車點到下車點的直線距離,實際開的路通常比較長,所以每公里實收會偏高,適合用來比各家,不適合當成實際每公里收入。</div>';
+}
+function fcWhatIfHtml(range, S){
+  var srcs = S.list.filter(function(m){ return m.trips>0 && isFleetKey(m.key); }).sort(function(a,b){ return b.trips-a.trips; });
+  if(!srcs.length) return '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">這段期間還沒有車隊的單(路招、私客、接電、預約單不算車隊)。</div>';
+  var dl = visiblePlatforms().filter(function(p){ return isFleetKey(p.key); });
+  var src = srcs.some(function(m){ return m.key===fcSrc; }) ? fcSrc : srcs[0].key;
+  dl = dl.filter(function(p){ return p.key!==src; });
+  if(!dl.length) return '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">沒有其他車隊可以比。到 ⚙️ 設定的平台管理打開其他車隊,就能試算。</div>';
+  var other = srcs.filter(function(m){ return m.key!==src && dl.some(function(p){ return p.key===m.key; }); })[0];
+  var dst = dl.some(function(p){ return p.key===fcDst; }) ? fcDst : (other ? other.key : dl[0].key);
+  fcSrc = src; fcDst = dst;
+  var sL = esc(platformDef(src).label), dL = esc(platformDef(dst).label);
+  var sel = function(id, items, v){ return '<select id="'+id+'">'+items.map(function(x){ return '<option value="'+esc(x.key)+'"'+(x.key===v?' selected':'')+'>'+esc(x.label)+(x.trips!=null ? '('+x.trips+' 趟)' : '')+'</option>'; }).join('')+'</select>'; };
+  var h = '<div class="form-grid2"><div class="form-row"><label for="fc-src">這些單(本期實際跑的)</label>'+sel('fc-src', srcs, src)+'</div>'+
+    '<div class="form-row"><label for="fc-dst">如果改在這家跑</label>'+sel('fc-dst', dl.map(function(p){ return {key:p.key, label:p.label}; }), dst)+'</div></div>';
+  var R = fcWhatIfCalc(range.from, range.to, src, dst), pct = function(fee){ return R.fare>0 ? '('+fmtNum(fee/R.fare*100,1)+'%)' : ''; };
+  if(!R.n) return h+'<div style="font-size:12.5px;color:var(--text-muted)">'+sL+' 這段期間沒有記車資的單。</div>';
+  h += fcRow(sL+' '+R.n+' 趟的車資'+(R.srcEst?'(估)':''), fmtMoney(R.fare), '試算時每一趟的車資都不變');
+  h += fcRow('在 '+sL+' 實際拿到', fmtMoney(R.actual), '手續費 '+fmtMoney(R.fare-R.actual)+pct(R.fare-R.actual));
+  h += fcRow('如果在 '+dL+' 跑(試算'+(R.dstEst?',估':'')+')', fmtMoney(R.net), '手續費 '+fmtMoney(R.fare-R.net)+pct(R.fare-R.net));
+  var diff = R.net - R.actual, col = diff>=0.5 ? 'var(--income)' : (diff<=-0.5 ? 'var(--expense)' : 'var(--text)');
+  h += '<div style="font-size:15px;font-weight:800;margin:10px 0 2px;color:'+col+'">'+(diff>=0.5 ? '在 '+dL+' 多拿 '+fmtMoney(diff) : (diff<=-0.5 ? '在 '+dL+' 少拿 '+fmtMoney(-diff) : '兩家差不多'))+
+    (R.actual>0 && Math.abs(diff)>=0.5 ? ' <span style="font-size:12px;font-weight:400">('+(diff>0?'+':'')+fmtNum(diff/R.actual*100,1)+'%)</span>' : '')+'</div>';
+  if(R.be){
+    var p = R.be.pct, txt;
+    if(R.be.edge==='low') txt = dL+' 的車資就算只有 '+sL+' 的 20%,實收也不會比較少';
+    else if(R.be.edge==='high') txt = dL+' 的車資要超過 '+sL+' 的 5 倍,實收才追得上';
+    else txt = dL+' 的車資只要有 '+sL+' 的 <b>'+fmtNum(p,1)+'%</b> 以上,實收就跟在 '+sL+' 一樣多,再高就比較多。例如 '+sL+' 收 $100 的單,'+dL+' 收 $'+fmtNum(p,1).replace(/\.0$/,'')+' 就打平';
+    h += '<div class="card" style="padding:10px 12px;margin-top:10px;font-size:12.5px;line-height:1.7;background:var(--surface-sunken)">⚖️ <b>打平點</b>:'+txt+'。<div style="font-size:11px;color:var(--text-muted)">用這段期間的每一趟,把車資一起調高或調低重算,找出兩邊實收總和一樣的比例。</div></div>';
+  }
+  h += '<div style="'+FC_NOTE+';margin-top:10px">⚠️ 這只是比兩家的<b>手續費算法</b>:<br>・<b>車資相同是假設</b>。實際上同一趟在各家的車資不一樣(Uber 有動態加價、各家計價方式不同),所以不代表換車隊一定多賺。<br>'+
+    '・不包含:各家的活動獎勵、派單量、等單時間、付款與撥款時間、錢包門檻。「實際拿到」也不含趟趟加給、小費和自己吸收的優惠券。<br>'+
+    '・付款方式照原本那一趟;'+dL+' 沒有那種付款方式時,現金照現金,其他當成刷卡。<br>'+
+    '・用 '+dL+' <b>現在</b>的手續費設定(跟記帳頁「🧮 各車隊實收比較」同一套算法)。BOLT 每週趟數門檻、LINE GO 小黃每月派遣費上限,會把移過去的單一起算。'+
+    (R.srcEst || R.dstEst ? '<br>・Uber 多元記的是實收,車資是用你設定的抽成 % 反推、實收是照抽成 % 估的。' : '')+'</div>';
+  return h;
+}
+function openFcSettings(){
+  if(!isVip()){ openVipIntro('我的車隊收益比較'); return; }
+  var B = fcBounds(), numIn = 'width:80px;display:inline-block;text-align:center;padding:6px';
+  var n = function(v){ return fmtNum(v,1).replace(/\.0$/,'').replace(/,/g,''); };
+  var h = '<div class="modal-title">📏 趟次長短的分界<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div style="font-size:12.5px;line-height:1.7;margin-bottom:10px">只影響你自己畫面上的「短程／中程／長程」分類。每一趟只記上下車位置,不記分類,改了隨時可以改回來。預設短程 '+FC_SHORT_DEF+' 公里以下、長程 '+FC_LONG_DEF+' 公里以上。</div>';
+  h += '<div style="font-size:13.5px;line-height:2.4">短程:少於 <input id="f-fc-short" type="number" min="0.5" max="'+FC_KM_MAX+'" step="0.5" inputmode="decimal" style="'+numIn+'" value="'+n(B.s)+'"> 公里<br>'+
+    '長程:超過 <input id="f-fc-long" type="number" min="1" max="'+FC_KM_MAX+'" step="0.5" inputmode="decimal" style="'+numIn+'" value="'+n(B.l)+'"> 公里</div>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);margin:4px 0 10px">中間的就是中程。距離是上車點到下車點的直線距離。</div>';
+  h += '<div class="btn-row"><button class="btn btn-ghost" data-act="fc-reset">恢復預設</button><button class="btn btn-primary" data-act="fc-save">儲存</button></div>';
+  openModal(h);
+}
+function saveFcSettings(reset){
+  var s = FC_SHORT_DEF, l = FC_LONG_DEF;
+  if(!reset){
+    var g = function(id){ var el = document.getElementById(id); return el ? parseFloat(el.value) : NaN; };
+    s = Math.round(g('f-fc-short')*10)/10; l = Math.round(g('f-fc-long')*10)/10;
+    if(!(s>0 && s<FC_KM_MAX)){ showToast('短程的分界請填 0.5～'+FC_KM_MAX+' 公里'); return; }
+    if(!(l>s && l<=FC_KM_MAX)){ showToast('長程的分界要比短程大,最多 '+FC_KM_MAX+' 公里'); return; }
+  }
+  state.fleetCmp = {shortKm:s, longKm:l};
+  save(); closeModal(); renderAll(); showToast(reset ? '✓ 已恢復預設分界' : '✓ 長短分界已儲存');
+}
 function barChartHtml(id, items, emptyNote){
   var vals = items.map(function(it){ return it.value||0; });
   var max = Math.max.apply(null, vals.concat([0]));
@@ -4310,6 +4597,7 @@ function renderAnalytics(){
     h += '</div></div>';
   }
   if(uiShow('platEff')) h += platformEfficiencyHtml(recs);
+  if(!F) h += fcCardHtml(range);
   if(uiShow('tripEff') || uiShow('hotspot')) h += tripInsightsHtml(range, F);
 
   if(sub.length && uiShow('detail')){
@@ -4549,7 +4837,8 @@ var VIP_FEATURES = [
   ['🔥', '人潮情報', '雙北演唱會、展覽、比賽的散場時間與地點,每週更新'],
   ['💰', '可支配所得', '實收扣掉支出、固定成本和你想先存的錢,看本週、本月真正落袋多少,還有照目前速度的月底預測'],
   ['⏱️', '目標還要跑多久', '今日、本月目標還差多少錢,照你的平均時薪和每趟實收,算出還要跑幾小時、幾趟'],
-  ['🚗', '車輛成本與保養預測', '每開 1 公里車子花你多少(油錢、保養、折舊),回本進度、下次保養大概幾天後到、花多少,輪胎等分項更換提醒']
+  ['🚗', '車輛成本與保養預測', '每開 1 公里車子花你多少(油錢、保養、折舊),回本進度、下次保養大概幾天後到、花多少,輪胎等分項更換提醒'],
+  ['🏁', '我的車隊收益比較', '用你自己的紀錄比各車隊的手續費率、每小時和每公里實收,試算「這些單如果在別家跑」實收差多少']
 ];
 var VIP_PERIODS = {year:1, custom:1, all:1};
 function vipGated(){ return VIP_GATE || betaOn(); }
@@ -7239,8 +7528,8 @@ function wireFeePlatToggle(){
 /* ---------- 顯示模式與功能開關 ---------- */
 var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/悠遊卡/愛心卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['paperSlip','紙本簽單(企業簽單是紙本,要拿回車隊換現金)'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(Uber 小黃)'],['tip','小費'],['tripToll','過路費(Uber、BOLT 記車資時順手填)'],['fxTip','外幣小費(美金、日圓…自動換算台幣)'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
 var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日、本月目標進度(還差多少錢)'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['liveRate','今日行車顯示目前時薪'],['restRemind','休息提醒(連續開太久、今天上班太久)'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告'],['fareCompare','🧮 各車隊實收比較(輸入車資看各車隊實拿多少)'],['targetCalc','目標還要跑多久(依平均時薪算還要幾小時、幾趟)','vip']];
-var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度'],['dispIncome','💰 可支配所得(本週、本月真正落袋)','vip','beta'],['vehCost','🚗 車輛成本(每公里成本、回本、保養預估)','vip','beta']];
-var UI_DEFAULT_OFF = ['shiftFix','campaign','restRemind','fxTip','fareCompare','targetCalc'];  // extras nobody sees unless they turn them on
+var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度'],['dispIncome','💰 可支配所得(本週、本月真正落袋)','vip','beta'],['vehCost','🚗 車輛成本(每公里成本、回本、保養預估)','vip','beta'],['fleetCmp','🏁 我的車隊收益比較(每小時、每公里實收,換車隊試算)','vip','beta']];
+var UI_DEFAULT_OFF = ['shiftFix','campaign','restRemind','fxTip','fareCompare','targetCalc','fleetCmp'];  // extras nobody sees unless they turn them on
 var UI_SIMPLE_OFF = ['liveRate','subtype','fareType','payment','discount','markup','addOn','coupon','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
 // x[2] 'vip': a VIP feature (👑 while VIP is sold); x[3] 'beta': only in 跑車人生 測試版 while it is tried out
 function uiListed(x){ return x[3]!=='beta' || betaOn(); }
@@ -7790,6 +8079,7 @@ var HELP = [
     ['收入目標', '⚙️「收入目標」設定每天 / 每月目標,記帳頁顯示今日、本月目標進度和還差多少錢,分析頁也有目標進度。', 'todayTarget'],
     ['目標還要跑多久', '打開後,今日／本月目標下面會依目前的平均時薪和每趟實收,算出還要跑幾小時、幾趟;每記一筆就自動更新。剛開始跑還沒資料時,用近 30 天平均。', 'targetCalc', 'vip'],
     ['💰 可支配所得', '分析頁選本週或本月:實收扣掉已記的支出、固定成本(依天數分攤)和你自己開啟的預留款(保養、稅金,預設都不扣),看真正落袋多少;本月還有「照目前速度」的月底預測(每月 4 號起)。都是估算,只在手機上算。', 'dispIncome', 'vip', 'beta'],
+    ['🏁 我的車隊收益比較', '分析頁(功能開關打開後):「我的實際比較」列各車隊趟數、車資、手續費、實收、手續費率、每小時實收(估算:上一趟下車到這趟下車的時間算給這一趟的車隊)、每公里實收(上下車直線距離)、活動獎勵,還有各時段哪家每小時實收最高、多久入帳、短中長程比例(分界可以自己改);「換車隊試算」把一家的單、車資不變,用另一家現在的手續費重算,看實收差多少、車資要差多少才打平。只比手續費算法,不含活動獎勵、派單量。只在手機上算。', 'fleetCmp', 'vip', 'beta'],
     ['每公里油錢、電費', '分析頁效率指標:記加油的金額算每公里油錢;電動車記充電時填度數,算每公里電費和每度電可跑幾公里。', 'efficiency'],
     ['📊 年度報表', '⚙️「年度報表」,可以匯出 CSV 檔,用 Excel、Numbers 或 Google 試算表都能打開。']
   ]],
@@ -8227,12 +8517,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.19.9';
+var APP_VERSION = '2026.11.19.10';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.19.10', '🏁 測試版新功能(到 ⚙️ 功能開關打開):分析頁「我的車隊收益比較」,用你自己的紀錄比各車隊的手續費率、每小時和每公里實收、各時段哪家最好、多久入帳;還能試算「這些單如果在別家跑」實收差多少、車資要差多少才打平。上架後是 VIP 功能', 'beta'],
   ['2026.11.19.9', '🔧 支出頁「車輛提醒」超過保養里程時,改寫「已超過 X 公里」,不再顯示「還差」負數'],
   ['2026.11.19.8', '🔧 支出細項「保養維修」預設多了煞車、電瓶、其他維修,機油標「小保養」、定期保養標「大保養」(兩個填了儀表板里程都會自動算下次保養);自己改過細項的不會變'],
   ['2026.11.19.8', '🚗 測試版新功能:「支出」頁多一張「車輛成本」,算每開 1 公里車子花你多少(油錢、保養、折舊)、回本進度、下次保養約幾天後到、大概花多少;購車價、車貸都是選填。上架後是 VIP 功能', 'beta'],
@@ -9260,6 +9551,11 @@ document.addEventListener('click', function(e){
   else if(cmd==='disp-settings'){ openDispSettings(); }
   else if(cmd==='disp-save'){ saveDispSettings(); }
   else if(cmd==='vc-vip'){ openVipIntro('車輛成本與保養預測'); }
+  else if(cmd==='fc-vip'){ openVipIntro('我的車隊收益比較'); }
+  else if(cmd==='fc-tab'){ fcTab = arg==='whatif' ? 'whatif' : 'real'; renderAll(); }
+  else if(cmd==='fc-settings'){ openFcSettings(); }
+  else if(cmd==='fc-save'){ saveFcSettings(false); }
+  else if(cmd==='fc-reset'){ saveFcSettings(true); }
   else if(cmd==='open-vcost'){ openVcostModal(); }
   else if(cmd==='vc-save'){ saveVcost(); }
   else if(cmd==='vc-subs-on'){ state.ui = Object.assign({}, state.ui||{}, {expSub:true}); save(); renderAll(); showToast('✓ 已打開支出細項,記保養維修時可以選'); }
@@ -9674,6 +9970,7 @@ document.addEventListener('change', function(e){
   }
   if(e.target.id==='f-vip-buy'){ VipMock.setBuy(e.target.value); return; }
   if(e.target.id==='rpt-from' || e.target.id==='rpt-to'){ if(e.target.value){ rptView[e.target.id==='rpt-from' ? 'from' : 'to'] = e.target.value; openReport(); } return; }
+  if(e.target.id==='fc-src' || e.target.id==='fc-dst'){ if(e.target.id==='fc-src') fcSrc = e.target.value; else fcDst = e.target.value; renderAll(); return; }
   if(e.target.id==='anf-from' || e.target.id==='anf-to'){ anFilter[e.target.id==='anf-from' ? 'hFrom' : 'hTo'] = e.target.value==='' ? null : +e.target.value; anPresetId = null; renderAll(); return; }
   if(e.target.id==='f-ocr-file'){ if(e.target.files && e.target.files[0]) ocrRun(e.target.files[0]); return; }
   if(e.target.id==='f-tip-cur'){ var re = document.getElementById('f-tip-rate'); if(re) re.value = fxRate(e.target.value)||''; tipFxUpdate(); if(currentIncomeModalKey) updateIncomePreview(); return; }
