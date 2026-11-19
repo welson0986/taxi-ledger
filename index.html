@@ -4642,6 +4642,7 @@ function renderAnalytics(){
   if(uiShow('platEff')) h += platformEfficiencyHtml(recs);
   if(!F) h += fcCardHtml(range);
   if(uiShow('tripEff') || uiShow('hotspot')) h += tripInsightsHtml(range, F);
+  if(!F) h += dsCardHtml();
 
   if(sub.length && uiShow('detail')){
     lastSubBreakdown = sub;
@@ -4881,7 +4882,8 @@ var VIP_FEATURES = [
   ['💰', '可支配所得', '實收扣掉支出、固定成本和你想先存的錢,看本週、本月真正落袋多少,還有照目前速度的月底預測'],
   ['⏱️', '目標還要跑多久', '今日、本月目標還差多少錢,照你的平均時薪和每趟實收,算出還要跑幾小時、幾趟'],
   ['🚗', '車輛成本與保養預測', '每開 1 公里車子花你多少(油錢、保養、折舊),回本進度、下次保養大概幾天後到、花多少,輪胎等分項更換提醒'],
-  ['🏁', '我的車隊收益比較', '用你自己的紀錄比各車隊的手續費率、每小時和每公里實收,試算「這些單如果在別家跑」實收差多少']
+  ['🏁', '我的車隊收益比較', '用你自己的紀錄比各車隊的手續費率、每小時和每公里實收,試算「這些單如果在別家跑」實收差多少'],
+  ['📍', '下車地統計', '看客人常把你載去哪裡(下車熱區),以及在哪裡下車之後最久才接到下一單(死區)']
 ];
 var VIP_PERIODS = {year:1, custom:1, all:1};
 function vipGated(){ return VIP_GATE || betaOn(); }
@@ -6505,6 +6507,103 @@ function hotspotHtml(days, dayKeys){
   return h;
 }
 
+/* ---------- 📍 下車地統計 (VIP 2.0 ④, 規格第 5 節, (h)(i)) ----------
+   Drop-off cells of about 1 km (the very cells, names and ✏️ of 上車熱區), the time from each drop-off to the next order
+   (接到單了 when pressed, else 上車), and the 死區: the cells with the longest average wait, each with at least
+   DS_MIN_DEAD waits that could be measured. A wait only counts when the next trip is on the same business day and the
+   driver was at work in between: on a day with a clock-in log (punchSegs) the drop-off and the next 上車 must be in the
+   same work period, so the last trip before 下班 or a 休息 is left out; on days without one (older days, hours edited in
+   歷史) the last trip of the day and gaps over EMPTY_GAP_CAP_MIN are left out. An order taken during the ride (無縫接單)
+   waits 0. Trips without a drop-off position are not counted. Worked out on the phone; the place names come from the
+   上車熱區 cache, looked up with the cell's grid point only. 「下一單在哪裡上車」(i) waits for the second version. */
+function dsAvailable(){ return betaOn(); }
+var DS_DAYS = [30, 90, 180, 365], DS_DAYS_DEF = 90, DS_TOP = 10, DS_DEAD_TOP = 5, DS_MIN_DEAD = 3;
+var dsDays = DS_DAYS_DEF;
+// the wait after trip t (in minutes), or null when it is not waiting for a fare
+function dsWait(t, nx, segs){
+  if(!nx) return null;  // the last trip of the business day
+  if(nx.pickup.ts < t.dropoff.ts) return null;  // the times overlap: something was pressed wrong
+  var end = (nx.accept && nx.accept.ts>0 && nx.accept.ts<=nx.pickup.ts) ? nx.accept.ts : nx.pickup.ts;
+  var min = Math.max(0, (end - t.dropoff.ts)/60000);
+  if(segs){
+    for(var k=0;k<segs.length;k++){
+      if(segs[k][0]<=t.dropoff.ts && t.dropoff.ts<=segs[k][1]) return nx.pickup.ts<=segs[k][1] ? {min:min, punch:true} : null;
+    }
+    return null;  // dropped off after 下班 or during a 休息
+  }
+  return min<=EMPTY_GAP_CAP_MIN ? {min:min, punch:false} : null;
+}
+var dsMemo = null;
+function dsStats(from, to){
+  var key = from+'|'+to+'|'+Math.floor(Date.now()/600000);
+  if(dsMemo && dsMemo.gen===dataGen && dsMemo.st===state && dsMemo.key===key) return dsMemo.val;
+  var days = timedTripsByDay(from, to), cells = {}, S = {n:0, noPos:0, waitN:0, waitSum:0, punchN:0};
+  Object.keys(days).sort().forEach(function(d){
+    var list = days[d], segs = punchSegs(d);
+    list.forEach(function(t, i){
+      if(tripMin(t.pickup, t.dropoff) < 0) return;
+      var dr = t.dropoff;
+      if(dr.lat==null || dr.lng==null || !isFinite(+dr.lat) || !isFinite(+dr.lng)){ S.noPos++; return; }
+      S.n++;
+      var k = cellKeyOf(+dr.lat, +dr.lng), c = cells[k] || (cells[k] = {key:k, n:0, lat:0, lng:0, wN:0, w:0, fareN:0, fare:0});
+      c.n++; c.lat += +dr.lat; c.lng += +dr.lng;
+      if(t.rec){ c.fareN++; c.fare += computeNetRevenue(t.rec)+(+t.rec.tip||0); }
+      var w = dsWait(t, list[i+1], segs);
+      if(w){ c.wN++; c.w += w.min; S.waitN++; S.waitSum += w.min; if(w.punch) S.punchN++; }
+    });
+  });
+  var all = Object.keys(cells).map(function(k){ var c = cells[k]; c.avg = c.wN ? c.w/c.wN : null; return c; });
+  S.avg = S.waitN ? S.waitSum/S.waitN : null;
+  S.hot = all.slice().sort(function(a,b){ return (b.n-a.n) || (b.wN-a.wN) || (a.key<b.key ? -1 : 1); }).slice(0, DS_TOP);
+  S.dead = all.filter(function(c){ return c.wN>=DS_MIN_DEAD; }).sort(function(a,b){ return (b.avg-a.avg) || (b.wN-a.wN) || (a.key<b.key ? -1 : 1); }).slice(0, DS_DEAD_TOP);
+  S.cells = all.length;
+  dsMemo = {gen:dataGen, st:state, key:key, val:S};
+  return S;
+}
+function dsPreviewHtml(){
+  return '<div class="section"><div class="card" style="padding:12px 14px;display:flex;gap:10px;align-items:center"><div style="flex:1;font-size:13px;line-height:1.5"><b>📍 下車地統計 👑</b>'+
+    '<div style="font-size:12px;color:var(--text-muted)">看客人常把你載去哪裡,以及在哪裡下車之後最難接到下一單</div></div>'+
+    '<button class="btn btn-ghost" style="flex:none" data-act="ds-vip">看看</button></div></div>';
+}
+function dsCellHtml(c, title, sub, amt){
+  var lat = (c.lat/c.n).toFixed(4), lng = (c.lng/c.n).toFixed(4), name = hotspotName(c.key, lat, lng);
+  return '<div class="list-item"><div class="li-body"><div class="li-title">'+title+' · '+(name?esc(name):'<span style="color:var(--text-muted);font-weight:400">查詢地名中…</span>')+
+    ' <a data-act="hot-rename:'+c.key+'" style="cursor:pointer;font-size:12px;text-decoration:none" aria-label="幫這一區取名">✏️</a></div><div class="li-sub">'+sub+'</div></div>'+
+    '<div style="flex:none;text-align:right">'+(amt?'<div class="li-amt num" style="font-size:13px">'+amt+'</div>':'')+
+    '<a style="color:var(--accent);font-size:12.5px;text-decoration:none" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query='+lat+','+lng+'">看地圖 ›</a></div></div>';
+}
+function dsCardHtml(){
+  if(!dsAvailable() || !uiShow('dropStat')) return '';
+  if(!isVip()) return dsPreviewHtml();
+  var to = todayStr(), from = addDays(to, -(dsDays-1)), S = dsStats(from, to), NOTE = 'font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:8px';
+  var h = '<div class="section" id="dsCard"><div class="section-title"><span>📍 下車地統計</span></div><div class="card">';
+  h += '<div class="segmented" style="margin-bottom:8px">'+DS_DAYS.map(function(n){ return '<button class="'+(dsDays===n?'active':'')+'" data-act="ds-days:'+n+'">'+(n===365?'1 年':n+' 天')+'</button>'; }).join('')+'</div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin:-2px 0 8px">最近 '+(dsDays===365?'1 年':dsDays+' 天')+'('+from.slice(5).replace('-','/')+'～'+to.slice(5).replace('-','/')+',跟上面選的期間無關)</div>';
+  if(!S.n){
+    h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">'+(S.noPos ? '這段期間有 '+S.noPos+' 趟按了上下車,但都沒有記到下車位置(可能沒有允許定位)。' : '這段期間還沒有上下車紀錄。')+'載客時按記帳頁的「上車」「下車」並允許定位,這裡就會統計你在哪裡下車、下車後多久接到下一單。</div>';
+    return h+'</div></div>';
+  }
+  h += '<div class="summary-row" style="grid-template-columns:1fr 1fr">';
+  h += '<div class="stat-tile"><div class="lbl">有下車位置的趟數</div><div class="val num">'+S.n+' 趟</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">下車後平均空檔(估)</div><div class="val num">'+(S.avg!=null?fmtNum(S.avg,1)+' 分':'—')+'</div></div>';
+  h += '</div>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px">只統計有下車位置的 '+S.n+' 趟'+(S.noPos?'(另有 '+S.noPos+' 趟沒有記到位置,不列入)':'')+';能算空檔的 '+S.waitN+' 次。</div>';
+  h += '<div style="font-size:13.5px;font-weight:800;margin:14px 0 2px">📌 下車熱區(前 '+DS_TOP+' 名)</div>';
+  h += S.hot.map(function(c, i){
+    return dsCellHtml(c, '下車區 '+(i+1), c.n+' 趟'+(c.fareN?' · 平均實收 '+fmtMoney(c.fare/c.fareN):'')+' · 下車後平均空檔 '+(c.wN ? fmtNum(c.avg,1)+' 分('+c.wN+' 次)' : '—(沒有可算的)'), '');
+  }).join('');
+  h += '<div style="font-size:13.5px;font-weight:800;margin:16px 0 2px">🐢 死區提醒(下車後最久才接到下一單,前 '+DS_DEAD_TOP+' 名)</div>';
+  if(!S.dead.length) h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;padding:6px 0">還沒有哪一區累積到 '+DS_MIN_DEAD+' 次可算的空檔,多跑一陣子就會出現。</div>';
+  h += S.dead.map(function(c, i){
+    var diff = S.avg!=null ? c.avg - S.avg : null;
+    return dsCellHtml(c, '死區 '+(i+1), c.wN+' 次'+(diff!=null ? ' · '+(diff>=0.05 ? '比你的平均多 '+fmtNum(diff,1)+' 分' : (diff<=-0.05 ? '比你的平均少 '+fmtNum(-diff,1)+' 分' : '跟你的平均差不多')) : ''), '平均 '+fmtNum(c.avg,1)+' 分');
+  }).join('');
+  h += '<div style="'+NOTE+'">⏱️ 下車後空檔是<b>估算</b>:這一趟下車到下一單(有按「接到單了」就算到接單,沒按就算到下一趟上車)。不算:每天最後一趟、隔天才接的單;有記到上班時間的日子(2026.11.19.11 版以後的打卡),下班前最後一趟、休息中下車或休息後才接的單也不算;以前的日子或在「歷史」改過工時的,空檔超過 '+(EMPTY_GAP_CAP_MIN/60)+' 小時當成休息不算。載客中就接到的下一單(無縫接單)空檔算 0。中間有沒按上下車的單,空檔會算得比較長。'+
+    (S.waitN ? '<br>能算空檔的 '+S.waitN+' 次中,'+S.punchN+' 次有對到上班時間。' : '')+'</div>';
+  h += '<div style="'+NOTE+'">死區:同一區至少 '+DS_MIN_DEAD+' 次能算的空檔才列入,依平均空檔由長到短。只跟你自己的平均比。以下車位置約 1 公里見方分區,地名、✏️ 取名跟「上車熱區」共用(查詢時只送出 1 公里格子的格點座標)。只在手機上算,不上傳。</div>';
+  return h+'</div></div>';
+}
+
 /* ---------- live traffic: open Google Maps with the traffic layer ---------- */
 var TRAFFIC_SPOTS_DEFAULT = [
   {name:'大巨蛋', lat:25.0424, lng:121.5595},
@@ -7577,7 +7676,7 @@ function wireFeePlatToggle(){
 /* ---------- 顯示模式與功能開關 ---------- */
 var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/悠遊卡/愛心卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['paperSlip','紙本簽單(企業簽單是紙本,要拿回車隊換現金)'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(Uber 小黃)'],['tip','小費'],['tripToll','過路費(Uber、BOLT 記車資時順手填)'],['tripKm','每趟公里數(車隊 App 上的里程,算每公里實收)','','beta'],['fxTip','外幣小費(美金、日圓…自動換算台幣)'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
 var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日、本月目標進度(還差多少錢)'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['liveRate','今日行車顯示目前時薪'],['restRemind','休息提醒(連續開太久、今天上班太久)'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告'],['fareCompare','🧮 各車隊實收比較(輸入車資看各車隊實拿多少)'],['targetCalc','目標還要跑多久(依平均時薪算還要幾小時、幾趟)','vip']];
-var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度'],['dispIncome','💰 可支配所得(本週、本月真正落袋)','vip','beta'],['vehCost','🚗 車輛成本(每公里成本、回本、保養預估)','vip','beta'],['fleetCmp','🏁 我的車隊收益比較(每小時、每公里實收,換車隊試算)','vip','beta']];
+var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度'],['dispIncome','💰 可支配所得(本週、本月真正落袋)','vip','beta'],['vehCost','🚗 車輛成本(每公里成本、回本、保養預估)','vip','beta'],['fleetCmp','🏁 我的車隊收益比較(每小時、每公里實收,換車隊試算)','vip','beta'],['dropStat','📍 下車地統計(下車熱區、下車後空檔、死區)','vip','beta']];
 var UI_DEFAULT_OFF = ['shiftFix','campaign','restRemind','fxTip','fareCompare','targetCalc','fleetCmp','tripKm'];  // extras nobody sees unless they turn them on
 var UI_SIMPLE_OFF = ['liveRate','subtype','fareType','payment','discount','markup','addOn','coupon','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
 // x[2] 'vip': a VIP feature (👑 while VIP is sold); x[3] 'beta': only in 跑車人生 測試版 while it is tried out
@@ -7585,7 +7684,7 @@ function uiListed(x){ return x[3]!=='beta' || betaOn(); }
 function uiOn(k){ return (state.ui && (k in state.ui)) ? state.ui[k]!==false : UI_DEFAULT_OFF.indexOf(k)<0; }
 // sections that only have data when another feature is on
 function uiShow(k){
-  if(k==='tripEff' || k==='hotspot') return uiOn(k) && uiOn('trips');
+  if(k==='tripEff' || k==='hotspot' || k==='dropStat') return uiOn(k) && uiOn('trips');
   if(k==='health') return uiOn(k) && uiOn('toilet');
   if(k==='efficiency') return uiOn(k) && (uiOn('shift') || uiOn('km'));
   if(k==='dayReport' || k==='shiftFix' || k==='liveRate' || k==='restRemind') return uiOn(k) && uiOn('shift');
@@ -8117,6 +8216,7 @@ var HELP = [
     ['上車 / 下車', '客人上車按「上車」,下車按「下車」→ 選平台、打車資;還不知道車資可以「稍後再填」。位置只在按下那一刻記一次。', 'trips'],
     ['接到單了(前往接客)', '⚙️「隱私與分享」→「進階:記錄接單時間」打勾後出現(上下車滿 30 趟也會提示一次),分析頁會分出等單和接駁各花多久;活動追蹤也用這個時間算趟數。載客中就接到下一單:按行程卡上的「📲 接到下一單」,下車後直接按「上車」(無縫接單,等單算 0)。'],
     ['📍 上車熱區', '分析頁看你最常上車的地方,可篩白天 / 晚上 / 深夜,點 ✏️ 取名。「⏰ 現在」看過去 12 週同一個星期幾、現在前後一小時最常上車的地方。', 'hotspot'],
+    ['📍 下車地統計', '分析頁「上車熱區」下面:最近 90 天(可改 30 天、180 天、1 年)你最常在哪裡下車(前 10 名),每一區下車後平均多久才接到下一單;「死區提醒」列下車後最久才接到下一單的前 5 區(同一區至少 3 次才列)。空檔是估算:下車到按「接到單了」(沒按就到下一趟上車),每天最後一趟、下班前最後一趟、休息中都不算。要按上車／下車並允許定位才有資料,只在手機上算。', 'dropStat', 'vip', 'beta'],
     ['👥 車友熱區', '同意分享上車熱區才能看附近車友都在哪裡上車,每個地點也會顯示你自己在那裡載過幾趟、平均實收多少;只分享約 1 公里一格,不含精確位置、金額;取消分享會刪除你分享過的資料。'],
     ['即時路況', '記帳頁「看即時路況」開 Google 地圖;常用地點可以新增、排序。停車或紅燈時再看。', 'traffic']
   ]],
@@ -8572,12 +8672,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.19.11';
+var APP_VERSION = '2026.11.19.12';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.19.12', '📍 測試版新功能:分析頁「下車地統計」,看客人常把你載去哪裡(下車熱區前 10 名),以及在哪裡下車後最久才接到下一單(死區前 5 名)。最近 90 天,只在手機上算。上架後是 VIP 功能', 'beta'],
   ['2026.11.19.11', '📏 測試版新的選填欄位「每趟公里數」(到 ⚙️ 功能開關打開):記車資時填車隊 App 上這趟的里程,算各車隊實際的每公里實收。預設關閉,不想填的不用開', 'beta'],
   ['2026.11.19.11', '🏁 測試版:我的車隊收益比較改用你填的每趟公里數(沒填的才用上下車直線距離);上班、休息的打卡時間開始記下來,每小時實收的第一趟從打卡算起', 'beta'],
   ['2026.11.19.10', '🏁 測試版新功能(到 ⚙️ 功能開關打開):分析頁「我的車隊收益比較」,用你自己的紀錄比各車隊的手續費率、每小時和每公里實收、各時段哪家最好、多久入帳;還能試算「這些單如果在別家跑」實收差多少、車資要差多少才打平。上架後是 VIP 功能', 'beta'],
@@ -9609,6 +9710,8 @@ document.addEventListener('click', function(e){
   else if(cmd==='disp-save'){ saveDispSettings(); }
   else if(cmd==='vc-vip'){ openVipIntro('車輛成本與保養預測'); }
   else if(cmd==='fc-vip'){ openVipIntro('我的車隊收益比較'); }
+  else if(cmd==='ds-vip'){ openVipIntro('下車地統計'); }
+  else if(cmd==='ds-days'){ var dsN = +arg; if(DS_DAYS.indexOf(dsN)>=0){ dsDays = dsN; renderAll(); } }
   else if(cmd==='fc-tab'){ fcTab = arg==='whatif' ? 'whatif' : 'real'; renderAll(); }
   else if(cmd==='fc-settings'){ openFcSettings(); }
   else if(cmd==='fc-save'){ saveFcSettings(false); }
