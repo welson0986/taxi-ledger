@@ -55,8 +55,8 @@ const TDX_ROADS = [['Freeway', FAST], ['Highway', FAST]];
 const TDX_TYPE = { 1: '事故', 2: '道路施工', 3: '阻塞', 4: '交通管制', 5: '其他', 6: '災害', 7: '交通管制', 8: '交通障礙' };
 
 // ---------- 連外 ----------
-async function get(url, init) {
-  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+async function get(url, init, ms) {
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), ms || TIMEOUT_MS);
   try { return await fetch(url, Object.assign({ signal: ctl.signal }, init || {})); } finally { clearTimeout(t); }
 }
 // 失敗原因只留英數字（例如 token 401、tdx 429），不會含金鑰
@@ -124,10 +124,26 @@ function parsePbs(text, now, pick) {
   });
   return keepNewest(list);
 }
-async function fetchPbs() {
-  const res = await get(PBS_URL, { headers: { 'Accept': '*/*' } });   // 警廣回 text/plain，只收 JSON 會被拒（406）
-  if (!res.ok) throw new Error('pbs ' + res.status);
-  return res.text();
+// ms：等多久算逾時。排程 Worker 不一定在台灣的機房跑，警廣 460 KB 傳過去可能比較慢，給長一點
+async function fetchPbs(ms) {
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), ms || TIMEOUT_MS);
+  try {
+    const res = await fetch(PBS_URL, { signal: ctl.signal, headers: { 'Accept': '*/*' } });   // 警廣回 text/plain，只收 JSON 會被拒（406）
+    if (!res.ok) throw new Error('pbs ' + res.status);
+    return await res.text();   // 讀完內容才算數（逾時也要算到這裡）
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw new Error('pbs timeout');
+    throw e;
+  } finally { clearTimeout(t); }
+}
+// Pages 中繼和排程 Worker 共用 KV 裡的同一張 TDX Token（少向 TDX 要 Token，避免被擋 429）
+async function readToken(kv, now) {
+  if (!kv) return null;
+  try { const t = await kv.get(TOKEN_KEY, 'json'); return t && t.tk && t.until > now ? t.tk : null; } catch (e) { return null; }
+}
+async function saveToken(kv, tk, now) {
+  if (!kv) return;
+  try { await kv.put(TOKEN_KEY, JSON.stringify({ tk, until: now + 23 * HOUR })); } catch (e) {}
 }
 
 // ---------- TDX ----------
@@ -298,15 +314,23 @@ function forget(key) {
 
 // ---------- 自己抓（其他縣市；快照不能用時雙北也走這裡）----------
 async function loadPbs() { return { ok: true, at: Date.now(), items: parsePbs(await fetchPbs(), Date.now()) }; }
+// Token 先看 KV 裡有沒有（排程 Worker 或別台中繼拿過的），沒有才向 TDX 要，要到也放進 KV 給大家用
+let badTk = null;
 async function tdxToken(env) {
-  const v = await cached('tdx-token', TOKEN_TTL, async () => ({ ok: true, at: Date.now(), tk: await fetchTdxToken(env) }));
+  const v = await cached('tdx-token', TOKEN_TTL, async () => {
+    const now = Date.now(), kvTk = await readToken(env.ROADS_KV, now);
+    if (kvTk && kvTk !== badTk) return { ok: true, at: now, tk: kvTk };
+    const tk = await fetchTdxToken(env);
+    await saveToken(env.ROADS_KV, tk, now);
+    return { ok: true, at: now, tk };
+  });
   if (!(v && v.ok)) throw new Error((v && v.err) || 'token');   // 把真正原因（例如 token 401）往上傳
   return v.tk;
 }
 async function loadTdx(ep, env, cityKey) {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const r = await fetchTdxRaw(ep, await tdxToken(env));
-    if (r.status === 401 && attempt === 0) { await forget('tdx-token'); continue; }
+    const tk = await tdxToken(env), r = await fetchTdxRaw(ep, tk);
+    if (r.status === 401 && attempt === 0) { badTk = tk; await forget('tdx-token'); continue; }
     if (!r.json) throw new Error('tdx ' + r.status);
     return { ok: true, at: Date.now(), items: parseTdx(r.json, cityKey, Date.now()) };
   }
@@ -376,9 +400,11 @@ export async function onRequest(context) {
 
   const now = Date.now();
   const inSnap = sel.filter(k => SNAP_CITIES.indexOf(k) >= 0), others = sel.filter(k => SNAP_CITIES.indexOf(k) < 0);
-  const snap = inSnap.length ? await readSnap(env, now) : null;
+  let snap = inSnap.length ? await readSnap(env, now) : null, fs = null;
+  // 快照裡警廣沒有可用的資料、或 TDX 開著卻一個都沒有 → 這次雙北也自己抓（App 不會因為 Worker 抓不到而空白）
+  if (snap) { fs = fromSnap(snap, inSnap, now); if (!fs.pbs.ok || (fs.tdxOn && !fs.tdx.some(g => g.ok))) { snap = null; fs = null; } }
   const parts = [];
-  if (snap) parts.push(fromSnap(snap, inSnap, now));
+  if (fs) parts.push(fs);
   const liveSel = snap ? others : sel;
   if (liveSel.length) parts.push(await live(liveSel, env));
 
