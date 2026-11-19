@@ -48,8 +48,8 @@ const TDX_ROADS = [['Freeway', FAST], ['Highway', FAST]];
 const TDX_TYPE = { 1: '事故', 2: '道路施工', 3: '阻塞', 4: '交通管制', 5: '其他', 6: '災害', 7: '交通管制', 8: '交通障礙' };
 
 // ---------- 連外 ----------
-async function get(url, init) {
-  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+async function get(url, init, ms) {
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), ms || TIMEOUT_MS);
   try { return await fetch(url, Object.assign({ signal: ctl.signal }, init || {})); } finally { clearTimeout(t); }
 }
 // 失敗原因只留英數字（例如 token 401、tdx 429），不會含金鑰
@@ -117,10 +117,26 @@ function parsePbs(text, now, pick) {
   });
   return keepNewest(list);
 }
-async function fetchPbs() {
-  const res = await get(PBS_URL, { headers: { 'Accept': '*/*' } });   // 警廣回 text/plain，只收 JSON 會被拒（406）
-  if (!res.ok) throw new Error('pbs ' + res.status);
-  return res.text();
+// ms：等多久算逾時。排程 Worker 不一定在台灣的機房跑，警廣 460 KB 傳過去可能比較慢，給長一點
+async function fetchPbs(ms) {
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), ms || TIMEOUT_MS);
+  try {
+    const res = await fetch(PBS_URL, { signal: ctl.signal, headers: { 'Accept': '*/*' } });   // 警廣回 text/plain，只收 JSON 會被拒（406）
+    if (!res.ok) throw new Error('pbs ' + res.status);
+    return await res.text();   // 讀完內容才算數（逾時也要算到這裡）
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw new Error('pbs timeout');
+    throw e;
+  } finally { clearTimeout(t); }
+}
+// Pages 中繼和排程 Worker 共用 KV 裡的同一張 TDX Token（少向 TDX 要 Token，避免被擋 429）
+async function readToken(kv, now) {
+  if (!kv) return null;
+  try { const t = await kv.get(TOKEN_KEY, 'json'); return t && t.tk && t.until > now ? t.tk : null; } catch (e) { return null; }
+}
+async function saveToken(kv, tk, now) {
+  if (!kv) return;
+  try { await kv.put(TOKEN_KEY, JSON.stringify({ tk, until: now + 23 * HOUR })); } catch (e) {}
 }
 
 // ---------- TDX ----------
