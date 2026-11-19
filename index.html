@@ -547,7 +547,11 @@ var CATS = [
   {key:'fees',label:'規費',icon:'🏛️'},
   {key:'other',label:'其他',icon:'📝'}
 ];
-var CAT_SUBS_DEFAULT = {repair:['輪胎','機油','定期保養','鈑金烤漆'], fees:['牌照稅','燃料稅','保險']};
+var CAT_SUBS_DEFAULT = {repair:['機油','定期保養','輪胎','煞車','電瓶','鈑金烤漆','其他維修'], fees:['牌照稅','燃料稅','保險']};
+// the lists the app used to start with: a list saved by the settings sheet that still is one of these was never
+// the driver's own (the sheet saves every category's list), so it follows the new default. Names stay the same,
+// so old records (機油, 定期保養…) keep matching.
+var CAT_SUBS_OLD = {repair:['輪胎','機油','定期保養','鈑金烤漆']};
 var DOW = ['一','二','三','四','五','六','日'];
 
 /* ---------- Taiwan 2026 official public holidays (行政院人事行政總處) ---------- */
@@ -766,8 +770,9 @@ function allCats(){
 }
 function visibleCats(){ return allCats().filter(function(c){ return !c.hidden; }); }
 function catSubs(key){
-  var m = state.catSubs || {};
-  return m[key]!=null ? m[key] : (CAT_SUBS_DEFAULT[key] || []);
+  var m = state.catSubs || {}, s = Array.isArray(m[key]) ? m[key] : null;
+  if(s && CAT_SUBS_OLD[key] && s.join(',')===CAT_SUBS_OLD[key].join(',')) s = null;
+  return s ? s : (CAT_SUBS_DEFAULT[key] || []);
 }
 function expLabel(e){ return catInfo(e.category).label + (e.sub ? ' · '+e.sub : ''); }
 function catInfo(key){
@@ -2072,6 +2077,9 @@ function vehDue(){
   });
   // once a month: read the dashboard, since off-duty driving is not in the daily km
   if(v.odo && v.odo.at && Date.now()-v.odo.at > 30*86400000 && (m.next>0)) out.push({kind:'odo', urgent:false, text:'📏 一個月沒有校正里程了,看一下儀表板,讓保養提醒更準', act:'veh-odo', btn:'校正里程'});
+  if(vcOn()) vcSubDue().forEach(function(d){
+    if(!d.none && d.pct>=0.9) out.push({kind:'sub', urgent:d.pct>=1, text:'🔧 '+esc(vcSubLabel(d.sub))+(d.pct>=1?'已超過':'快到了')+':上次 '+mdStr(d.last)+' 之後開了約 '+vcKm(d.since)+' 公里(你設定 '+vcKm(d.every)+',估算)', act:'open-vcost', btn:'查看'});
+  });
   out.sort(function(a,b){ return (b.urgent?1:0)-(a.urgent?1:0); });
   return out;
 }
@@ -3670,6 +3678,7 @@ function renderExpenseTab(){
     h += '</div></div>';
   }
 
+  h += vcCardHtml();
   h += vehCardHtml();
   h += '<div class="section"><div class="section-title">明細</div><div class="card">';
   h += exps.length ? exps.map(function(e){
@@ -4266,6 +4275,7 @@ function renderAnalytics(){
   if(fuel.cost>0) h += '<div class="stat-tile"><div class="lbl">每公里油錢</div><div class="val expense num">'+(km>0?fmtMoney2(fuel.cost/km):'—')+'</div></div>';
   var chg = chargeStatsInRange(range.from, range.to);
   if(chg.cost>0) h += '<div class="stat-tile"><div class="lbl">每公里電費</div><div class="val expense num">'+(km>0?fmtMoney2(chg.cost/km):'—')+'</div></div>';
+  if(vcOn()){ var vpk = vcPeriodPerKm(range.from, range.to, km); if(vpk!=null) h += '<div class="stat-tile"><div class="lbl">每公里總成本(估)</div><div class="val expense num">'+fmtMoney2(vpk)+'</div></div>'; }
   if(chg.kwh>0){
     h += '<div class="stat-tile"><div class="lbl">每度電可跑</div><div class="val num">'+(km>0?fmtNum(km/chg.kwh,2)+' km':'—')+'</div></div>';
     h += '<div class="stat-tile"><div class="lbl">平均每度電價</div><div class="val num">'+fmtMoney2(chg.costKwh/chg.kwh)+'</div></div>';
@@ -4537,7 +4547,8 @@ var VIP_FEATURES = [
   ['⭐', '可保存的分析組合', '分析頁篩選平台、星期、時段,常看的條件存起來,點一下就打開'],
   ['🔥', '人潮情報', '雙北演唱會、展覽、比賽的散場時間與地點,每週更新'],
   ['💰', '可支配所得', '實收扣掉支出、固定成本和你想先存的錢,看本週、本月真正落袋多少,還有照目前速度的月底預測'],
-  ['⏱️', '目標還要跑多久', '今日、本月目標還差多少錢,照你的平均時薪和每趟實收,算出還要跑幾小時、幾趟']
+  ['⏱️', '目標還要跑多久', '今日、本月目標還差多少錢,照你的平均時薪和每趟實收,算出還要跑幾小時、幾趟'],
+  ['🚗', '車輛成本與保養預測', '每開 1 公里車子花你多少(油錢、保養、折舊),回本進度、下次保養大概幾天後到、花多少,輪胎等分項更換提醒']
 ];
 var VIP_PERIODS = {year:1, custom:1, all:1};
 function vipGated(){ return VIP_GATE || betaOn(); }
@@ -5008,21 +5019,26 @@ var DISP_MAINT_MAX = 100, DISP_TAX_MAX = 50;
 function dispRes(){
   var r = state.dispReserve && typeof state.dispReserve==='object' ? state.dispReserve : {};
   function num(v, max){ v = +v; return isFinite(v) && v>0 ? Math.min(v, max) : 0; }
-  return {maintOn: r.maintOn===true, maintPerKm: num(r.maintPerKm, DISP_MAINT_MAX), taxOn: r.taxOn===true, taxPct: num(r.taxPct, DISP_TAX_MAX)};
+  return {maintOn: r.maintOn===true, maintPerKm: num(r.maintPerKm, DISP_MAINT_MAX), replOn: r.replOn===true, taxOn: r.taxOn===true, taxPct: num(r.taxPct, DISP_TAX_MAX)};
 }
-function dispReserves(R, net, km){
-  var maint = R.maintOn && R.maintPerKm>0 ? km*R.maintPerKm : 0;
+// 保養 uses ② 車輛成本's per-km cost when the ledger has enough (else the driver's own number); 換車 uses ②'s 折舊
+function dispReserves(R, net, km, rates){
+  rates = rates || vcRates();
+  var maint = R.maintOn && rates.maint>0 ? km*rates.maint : 0;
+  var repl = R.replOn && rates.repl>0 ? km*rates.repl : 0;
   var tax = R.taxOn && R.taxPct>0 && net>0 ? net*R.taxPct/100 : 0;
-  return {maint:maint, tax:tax};
+  return {maint:maint, repl:repl, tax:tax};
 }
-function dispCalc(from, to){
+function dispCalc(from, to, bare){
   var t = todayStr(), end = to>t ? t : to;
   if(end<from) return null;
   var net = sumNetIncome(recordsInRange(from, end)).total, exps = expensesInRange(from, end), tollRef = tollRefundInRange(from, end);
   var varExp = sumExpense(exps) - tollRef, fixed = fixedTotalForRange(from, end), km = totalKmInRange(from, end);
-  var R = dispRes(), rs = dispReserves(R, net, km);
-  return {from:from, to:end, running:end<to, net:net, varExp:varExp, tollRef:tollRef, expCount:exps.length, fixed:fixed, km:km,
-    R:R, maint:rs.maint, tax:rs.tax, disp:net-varExp-fixed-rs.maint-rs.tax};
+  // bare: no reserves (回本 counts what was really earned); 車貸 from ② only when no 固定成本 already has it
+  var loan = vcAvailable() ? vcLoanForRange(from, end) : 0;
+  var R = dispRes(), rates = vcRates(), rs = bare ? {maint:0, repl:0, tax:0} : dispReserves(R, net, km, rates);
+  return {from:from, to:end, running:end<to, net:net, varExp:varExp, tollRef:tollRef, expCount:exps.length, fixed:fixed, km:km, loan:loan,
+    R:R, rates:rates, maint:rs.maint, repl:rs.repl, tax:rs.tax, disp:net-varExp-fixed-loan-rs.maint-rs.repl-rs.tax};
 }
 var DISP_FORECAST_FROM_DAY = 4;  // 規格: not in the first 3 days of the month, the average says too little yet
 function dispForecast(from, to){
@@ -5031,8 +5047,9 @@ function dispForecast(from, to){
   if(dom<DISP_FORECAST_FROM_DAY) return {wait:true};
   var c = dispCalc(from, t);
   if(!(c.net>0)) return {wait:true};
-  var k = mDays/dom, net = c.net*k, km = c.km*k, rs = dispReserves(c.R, net, km);
-  return {net:net, disp:net - c.varExp*k - fixedTotalForRange(from, to) - rs.maint - rs.tax};
+  var k = mDays/dom, net = c.net*k, km = c.km*k, rs = dispReserves(c.R, net, km, c.rates);
+  var loan = vcAvailable() ? vcLoanForRange(from, to) : 0;
+  return {net:net, disp:net - c.varExp*k - fixedTotalForRange(from, to) - loan - rs.maint - rs.repl - rs.tax};
 }
 function dispPreviewHtml(){
   return '<div class="section"><div class="card" style="padding:12px 14px;display:flex;gap:10px;align-items:center"><div style="flex:1;font-size:13px;line-height:1.5"><b>💰 可支配所得 👑</b>'+
@@ -5054,13 +5071,16 @@ function dispCardHtml(range, kind){
   h += row('實收(扣完平台手續費,含小費)', fmtMoney(c.net));
   h += row('已記的支出'+(c.expCount?'('+c.expCount+' 筆)':''), minus(c.varExp), c.tollRef>0 ? '已扣掉平台退的過路費 '+fmtMoney(c.tollRef) : '');
   h += row('固定成本(依天數分攤)', minus(c.fixed), c.running ? '算到今天的天數,整個月的在下面月底預測' : '');
-  if(c.R.maintOn) h += row('保養預留', minus(c.maint), '每公里 '+fmtMoney2(c.R.maintPerKm)+' × '+fmtNum(c.km,1)+' 公里');
+  if(c.loan>0) h += row('車貸(🚗 車輛成本填的,依天數分攤)', minus(c.loan), '固定成本裡沒有車貸,所以在這裡扣');
+  if(c.R.maintOn) h += row('保養預留', minus(c.maint), c.rates.maint>0 ? '每公里 '+fmtMoney2(c.rates.maint)+(c.rates.maintSrc==='data' ? '(車輛成本:近 12 個月保養維修 ÷ 里程)' : '(你填的)')+' × '+fmtNum(c.km,1)+' 公里' : '還沒有每公里金額');
+  if(c.R.replOn && c.rates.repl>0) h += row('換車預留', minus(c.repl), '每公里折舊 '+fmtMoney2(c.rates.repl)+' × '+fmtNum(c.km,1)+' 公里');
   if(c.R.taxOn) h += row('稅金預留', minus(c.tax), '實收 × '+c.R.taxPct+'%');
   h += '<div style="display:flex;justify-content:space-between;gap:10px;padding:8px 0 2px;font-size:14px;font-weight:700"><span>＝ 可支配所得</span><span class="num">'+fmtMoney(c.disp)+'</span></div>';
   var warn = [];
   if(!c.expCount) warn.push('你還沒記支出,這個數字會偏高');
   if(!state.fixedCosts.length) warn.push('你還沒填固定成本(靠行費、保險、車貸…),這個數字會偏高。到 ⚙️「固定成本」填');
-  if(c.R.maintOn && c.R.maintPerKm>0 && !(c.km>0)) warn.push('這段期間沒記里程,保養預留沒有扣到');
+  if(((c.R.maintOn && c.rates.maint>0) || (c.R.replOn && c.rates.repl>0)) && !(c.km>0)) warn.push('這段期間沒記里程,保養、換車預留沒有扣到');
+  if(c.R.maintOn && !(c.rates.maint>0)) warn.push('保養預留還沒有每公里金額,到「⚙️ 預留款設定」填');
   if(warn.length) h += '<div style="font-size:12px;color:var(--expense);line-height:1.6;margin-top:8px">'+warn.map(function(w){ return '⚠️ '+esc(w); }).join('<br>')+'</div>';
   if(kind==='month'){
     var fc = dispForecast(range.from, range.to);
@@ -5069,22 +5089,26 @@ function dispCardHtml(range, kind){
       '實收約 <b class="num">'+fmtMoney(fc.net)+'</b>、可支配所得約 <b class="num">'+fmtMoney(fc.disp)+'</b>'+
       '<div style="font-size:11px;color:var(--text-muted);margin-top:2px">用本月 1 號到今天平均每天的實收、支出、里程推到月底;固定成本算整個月。之後跑多跑少,數字會跟著變。</div></div>';
   }
-  var anyRes = c.R.maintOn || c.R.taxOn;
+  var anyRes = c.R.maintOn || c.R.taxOn || (c.R.replOn && c.rates.repl>0);
   h += '<div class="btn-row" style="margin-top:10px"><button class="btn btn-ghost" data-act="disp-settings">⚙️ 預留款設定'+(anyRes?'':'(目前都不扣)')+'</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin-top:6px">估算:可支配所得 ＝ 實收 − 已記的支出 − 固定成本(依天數分攤) − 你開啟的預留款。預留款是還沒發生、但之後要付的錢,先扣掉提醒自己存起來。</div>';
   return h + '</div></div>';
 }
 function openDispSettings(){
   if(!isVip()){ openVipIntro('可支配所得'); return; }
-  var R = dispRes(), cb = 'width:18px;height:18px;flex:none', note = 'font-size:11.5px;color:var(--text-muted);line-height:1.65;margin:4px 0 0 26px';
+  var R = dispRes(), rates = vcRates(), fromVc = rates.maintSrc==='data', cb = 'width:18px;height:18px;flex:none', note = 'font-size:11.5px;color:var(--text-muted);line-height:1.65;margin:4px 0 0 26px';
   var numIn = 'width:80px;display:inline-block;text-align:center;padding:6px';
   var h = '<div class="modal-title">💰 預留款設定<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
   h += '<div style="font-size:12.5px;line-height:1.7;margin-bottom:10px">預留款是「還沒發生、但之後一定要付」的錢,先從可支配所得扣掉,提醒自己存起來。<b>三項預設都不扣</b>,你自己決定要不要開。這些都是<b>估算</b>:開了之後可支配所得會變少,但比較接近真正能花的錢。</div>';
   h += '<div class="card" style="padding:10px 12px;margin-bottom:10px"><label style="display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700"><input type="checkbox" id="f-disp-maint" style="'+cb+'"'+(R.maintOn?' checked':'')+'>🔧 保養預留</label>'+
-    '<div style="'+note+'">每次保養花多少,要看里程和保養內容,每次都不一樣,所以先不幫你扣。想每個月先存一點,就填「每開 1 公里先存幾元」:這段期間記的里程 × 這個金額 ＝ 保養預留。例如你算過大約每 5,000 公里花 5,000 元,就是每公里 1 元。要記每日里程才算得出來。</div>'+
-    '<div style="margin:8px 0 0 26px;font-size:13px">每公里 <input id="f-disp-maint-km" type="number" min="0" max="'+DISP_MAINT_MAX+'" step="0.1" inputmode="decimal" style="'+numIn+'" value="'+(R.maintPerKm||'')+'"> 元</div></div>';
-  h += '<div class="card" style="padding:10px 12px;margin-bottom:10px;opacity:.6"><label style="display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700"><input type="checkbox" disabled style="'+cb+'">🚗 換車預留(折舊)</label>'+
-    '<div style="'+note+'">需先填車輛成本。之後「🚗 車輛成本」功能加入,填了購車價、預計開到幾公里換車,這裡就能用每公里折舊幫你算。</div></div>';
+    '<div style="'+note+'">每次保養花多少,要看里程和保養內容,每次都不一樣,所以先不幫你扣。想每個月先存一點,就填「每開 1 公里先存幾元」:這段期間記的里程 × 這個金額 ＝ 保養預留。例如你算過大約每 5,000 公里花 5,000 元,就是每公里 1 元。要記每日里程才算得出來。'+
+    (fromVc ? '<br><b>現在用 🚗 車輛成本算出的每公里 '+fmtMoney2(rates.maint)+'</b>(近 12 個月保養維修 ÷ 同期里程),下面的金額只在資料不到 3 個月時用。' : vcAvailable() ? '<br>每日里程記滿 3 個月、有記保養維修以後,會改用你自己的紀錄算(🚗 車輛成本)。' : '')+'</div>'+
+    '<div style="margin:8px 0 0 26px;font-size:13px">'+(fromVc ? '資料不足時每公里 ' : '每公里 ')+'<input id="f-disp-maint-km" type="number" min="0" max="'+DISP_MAINT_MAX+'" step="0.1" inputmode="decimal" style="'+numIn+'" value="'+(R.maintPerKm||'')+'"> 元</div></div>';
+  if(rates.repl>0) h += '<div class="card" style="padding:10px 12px;margin-bottom:10px"><label style="display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700"><input type="checkbox" id="f-disp-repl" style="'+cb+'"'+(R.replOn?' checked':'')+'>🚗 換車預留(折舊)</label>'+
+    '<div style="'+note+'">用 🚗 車輛成本的每公里折舊 '+fmtMoney2(rates.repl)+' × 這段期間記的里程,先存起來當下一台車的錢。還在繳車貸的話,可以等繳完再開。</div></div>';
+  else h += '<div class="card" style="padding:10px 12px;margin-bottom:10px"><label style="display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700;opacity:.6"><input type="checkbox" disabled style="'+cb+'">🚗 換車預留(折舊)</label>'+
+    '<div style="'+note+';opacity:.75">需先填車輛成本(購車價、預計開到幾公里或幾年換車),這裡就能用每公里折舊幫你算。</div>'+
+    (vcAvailable() ? '<div style="margin:8px 0 0 26px"><button class="btn btn-ghost" data-act="open-vcost">🚗 填車輛成本</button></div>' : '')+'</div>';
   h += '<div class="card" style="padding:10px 12px;margin-bottom:10px"><label style="display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700"><input type="checkbox" id="f-disp-tax" style="'+cb+'"'+(R.taxOn?' checked':'')+'>🧾 稅金預留</label>'+
     '<div style="'+note+'">你自己決定每賺 100 元(實收)先存幾元,這裡只幫你從可支配所得扣掉、提醒你存起來。</div>'+
     '<div style="margin:8px 0 0 26px;font-size:13px">實收的 <input id="f-disp-tax-pct" type="number" min="0" max="'+DISP_TAX_MAX+'" step="0.5" inputmode="decimal" style="'+numIn+'" value="'+(R.taxPct||'')+'"> %</div></div>';
@@ -5094,13 +5118,313 @@ function openDispSettings(){
 function saveDispSettings(){
   var g = function(id){ return document.getElementById(id); };
   var mOn = !!(g('f-disp-maint') && g('f-disp-maint').checked), tOn = !!(g('f-disp-tax') && g('f-disp-tax').checked);
-  var mKm = parseFloat(g('f-disp-maint-km') ? g('f-disp-maint-km').value : ''), tPct = parseFloat(g('f-disp-tax-pct') ? g('f-disp-tax-pct').value : '');
-  if(mOn && !(mKm>0 && mKm<=DISP_MAINT_MAX)){ showToast('保養預留:請填每公里 0.1～'+DISP_MAINT_MAX+' 元'); return; }
+  var mTxt = g('f-disp-maint-km') ? g('f-disp-maint-km').value.trim() : '';
+  var mKm = parseFloat(mTxt), tPct = parseFloat(g('f-disp-tax-pct') ? g('f-disp-tax-pct').value : '');
+  // with ② 車輛成本 working the rate out, the driver's own number may stay empty
+  var fromVc = vcRates().maintSrc==='data' && mTxt==='';
+  if(mOn && !fromVc && !(mKm>0 && mKm<=DISP_MAINT_MAX)){ showToast('保養預留:請填每公里 0.1～'+DISP_MAINT_MAX+' 元'); return; }
   if(tOn && !(tPct>0 && tPct<=DISP_TAX_MAX)){ showToast('稅金預留:請填 0.5～'+DISP_TAX_MAX+' %'); return; }
   var old = dispRes();
   // a number typed in but left switched off is kept, so turning it on later needs no retyping
-  state.dispReserve = {maintOn:mOn, maintPerKm: mKm>0 && mKm<=DISP_MAINT_MAX ? mKm : old.maintPerKm, taxOn:tOn, taxPct: tPct>0 && tPct<=DISP_TAX_MAX ? tPct : old.taxPct};
+  var rEl = g('f-disp-repl');
+  state.dispReserve = {maintOn:mOn, maintPerKm: mKm>0 && mKm<=DISP_MAINT_MAX ? mKm : old.maintPerKm, replOn: rEl ? !!rEl.checked : old.replOn, taxOn:tOn, taxPct: tPct>0 && tPct<=DISP_TAX_MAX ? tPct : old.taxPct};
   save(); closeModal(); renderAll(); showToast('✓ 預留款設定已儲存');
+}
+/* ---------- VIP 2.0 ②: 🚗 車輛成本與保養預測 (VIP; only in 跑車人生 測試版 while it is tried out) ----------
+   "Every km you drive, what does the car itself cost you": 油(電)錢 + 保養維修 + 折舊, each per km, from the ledger.
+   Everything the driver types in is optional and sits in state.vehicle.cost (the 車輛提醒 object already travels with
+   backups, restores and the cloud copy). The driver's own 每公里保養估計 is the one number ① 預留款 already keeps
+   (state.dispReserve.maintPerKm), so there is only one place it lives. Worked out on the phone, nothing is sent.
+   - 每公里保養: 近 12 個月「保養維修」÷ the km recorded in the same days; under 3 months of km (or no repair at all)
+     it falls back to the driver's estimate, and says so.
+   - 每公里折舊: (購車價 − 殘值) ÷ (預計開到 − 購車時里程); with 年 instead of km, the km come from how far the car has
+     gone per day since it was bought.
+   - 回本 (規格 (g)): only the 購車價, against 累計可支配所得 from the later of 購車日 / 開始記帳日; reserves left out.
+   - 車貸: shown, and taken off 可支配所得 only when no 固定成本 already carries it (named 車貸/貸款, or ticked). */
+function vcObj(x){ return !!x && typeof x==='object' && !Array.isArray(x); }
+function vcAvailable(){ return betaOn(); }
+function vcOn(){ return vcAvailable() && uiShow('vehCost') && isVip(); }
+var VC_MIN_DAYS = 90, VC_MONEY_MAX = 20000000, VC_KM_MAX = 3000000, VC_YEARS_MAX = 30, VC_LOAN_MAX = 240;
+var VC_MAINT_SUBS = ['機油', '定期保養'];  // 小保養 / 大保養: either one moves 下次保養 on, and 下次保養 is priced from them
+function vcost(){
+  var c = vcObj(veh().cost) ? veh().cost : {};
+  function n(v, max){ v = +v; return isFinite(v) && v>0 && v<=max ? v : 0; }
+  var every = {}, ev = vcObj(c.every) ? c.every : {};
+  Object.keys(ev).forEach(function(k){ var x = Math.round(n(ev[k], VC_KM_MAX)); if(x) every[k] = x; });
+  return {price:n(c.price, VC_MONEY_MAX), buyDate: typeof c.buyDate==='string' && /^\d{4}-\d{2}-\d{2}$/.test(c.buyDate) ? c.buyDate : '',
+    buyOdo:Math.round(n(c.buyOdo, VC_KM_MAX)), lifeKm:Math.round(n(c.lifeKm, VC_KM_MAX)), lifeYears:n(c.lifeYears, VC_YEARS_MAX), residual:n(c.residual, VC_MONEY_MAX),
+    loanMonthly:n(c.loanMonthly, VC_MONEY_MAX), loanLeft:Math.round(n(c.loanLeft, VC_LOAN_MAX)), loanAsOf: typeof c.loanAsOf==='string' && /^\d{4}-\d{2}$/.test(c.loanAsOf) ? c.loanAsOf : '',
+    loanTicked: c.loanInFixed===true, every:every};
+}
+function vcFilled(C){ return !!(C.price || C.lifeKm || C.lifeYears || C.loanMonthly || Object.keys(C.every).length); }
+function vcYm(d){ return d.getFullYear()+'-'+pad(d.getMonth()+1); }
+function vcAddMonths(ym, n){ return vcYm(new Date(+ym.slice(0,4), +ym.slice(5,7)-1+n, 1)); }
+function vcMonthDiff(a, b){ return (+b.slice(0,4) - +a.slice(0,4))*12 + (+b.slice(5,7) - +a.slice(5,7)); }
+// a 固定成本 that already is the car loan: then 車貸 is never taken off a second time
+function vcLoanFixedName(){ var f = state.fixedCosts.filter(function(fc){ return /車貸|貸款/.test(fc.name||''); })[0]; return f ? f.name : ''; }
+function vcLoanInFixed(C){ return C.loanTicked || !!vcLoanFixedName(); }
+// the months the loan is paid in: 剩幾期 counts this month, from the month it was typed in
+function vcLoanSpan(C){
+  if(!(C.loanMonthly>0 && C.loanLeft>0 && C.loanAsOf)) return null;
+  var first = C.buyDate && C.buyDate.slice(0,7) < C.loanAsOf ? C.buyDate.slice(0,7) : C.loanAsOf;
+  return {first:first, last:vcAddMonths(C.loanAsOf, C.loanLeft-1)};
+}
+function vcLoanLeftNow(C){
+  var L = vcLoanSpan(C); if(!L) return 0;
+  var n = vcMonthDiff(todayStr().slice(0,7), L.last) + 1;
+  return n>0 ? Math.min(n, C.loanLeft) : 0;
+}
+// 車貸 spread by days over from..to (like 固定成本), 0 when a 固定成本 already has it
+function vcLoanForRange(from, to){
+  var C = vcost(), L = vcLoanSpan(C); if(!L || vcLoanInFixed(C)) return 0;
+  var total = 0, fromD = new Date(from+'T00:00:00'), toD = new Date(to+'T00:00:00');
+  monthsBetween(from, to).forEach(function(ym){
+    if(ym<L.first || ym>L.last) return;
+    var y = +ym.slice(0,4), m = +ym.slice(5,7)-1, mDays = new Date(y,m+1,0).getDate();
+    var a = fromD > new Date(y,m,1) ? fromD : new Date(y,m,1), b = toD < new Date(y,m,mDays) ? toD : new Date(y,m,mDays);
+    var days = Math.round((b-a)/86400000)+1; if(days>0) total += C.loanMonthly*days/mDays;
+  });
+  return total;
+}
+// 近 12 個月, starting no earlier than the first day a km was recorded (the km are the divisor)
+function vcWindow(){
+  var t = todayStr(), d = new Date(t+'T00:00:00'); d.setDate(d.getDate()-364);
+  var from = toDateStr(d), firstKm = null;
+  Object.keys(state.dailyMeta).forEach(function(k){ if(+state.dailyMeta[k].km>0 && k<=t && (!firstKm || k<firstKm)) firstKm = k; });
+  if(!firstKm) return {from:from, to:t, days:0, km:0};
+  if(firstKm>from) from = firstKm;
+  return {from:from, to:t, days:Math.round((new Date(t+'T00:00:00') - new Date(from+'T00:00:00'))/86400000)+1, km:totalKmInRange(from, t)};
+}
+function vcRepairs(from, to){ return state.expenses.filter(function(e){ return e.category==='repair' && inRange(e.date, from, to); }); }
+// 每公里保養: the ledger's own when there are 3 months of km and some repair in them, else the driver's estimate
+function vcMaint(W){
+  W = W || vcWindow();
+  var sum = sumExpense(vcRepairs(W.from, W.to)), est = dispRes().maintPerKm;
+  if(W.days>=VC_MIN_DAYS && W.km>0 && sum>0) return {perKm:sum/W.km, src:'data', sum:sum, km:W.km, from:W.from};
+  var why = !(W.km>0) ? '還沒記每日里程' : W.days<VC_MIN_DAYS ? ('記里程才 '+W.days+' 天,不到 3 個月') : '近 12 個月沒有記保養維修';
+  return est>0 ? {perKm:est, src:'est', why:why} : {perKm:null, src:'', why:why};
+}
+function vcDepr(C){
+  if(!(C.price>0)) return {perKm:null, why:'沒填購車價'};
+  var base = C.price - C.residual;
+  if(!(base>0)) return {perKm:null, why:'殘值不能比購車價高'};
+  if(C.lifeKm>0){
+    var span = C.lifeKm - C.buyOdo;
+    return span>0 ? {perKm:base/span, mode:'km', span:span, base:base} : {perKm:null, why:'預計開到的里程要比購車時里程大'};
+  }
+  if(C.lifeYears>0){
+    var est = vehOdoEstimate();
+    if(!est || !C.buyDate) return {perKm:null, why:'用「幾年」算,要先填購車日期和「車輛提醒」的目前里程'};
+    var days = Math.round((new Date(todayStr()+'T00:00:00') - new Date(C.buyDate+'T00:00:00'))/86400000), driven = est.km - C.buyOdo;
+    if(days<30 || !(driven>0)) return {perKm:null, why:'買車還不到 30 天,還算不出平均每天開多少'};
+    var span2 = driven/days*365*C.lifeYears;
+    return {perKm:base/span2, mode:'years', span:span2, base:base, perDay:driven/days};
+  }
+  return {perKm:null, why:'沒填預計開到幾公里(或幾年)'};
+}
+// the per-km rates ① 可支配所得 reserves use
+function vcRates(){
+  if(!vcAvailable()) return {maint:dispRes().maintPerKm || null, maintSrc: dispRes().maintPerKm>0 ? 'est' : '', repl:null};
+  var M = vcMaint(), D = vcDepr(vcost());
+  return {maint:M.perKm, maintSrc:M.src, repl:D.perKm};
+}
+function vcCalc(){
+  var C = vcost(), W = vcWindow();
+  var energy = fuelStatsInRange(W.from, W.to).cost + chargeStatsInRange(W.from, W.to).cost;
+  var fuel = W.km>0 && energy>0 ? energy/W.km : null, M = vcMaint(W), D = vcDepr(C);
+  var any = fuel!=null || M.perKm!=null || D.perKm!=null;
+  return {C:C, W:W, energy:energy, fuel:fuel, M:M, D:D, total: any ? (fuel||0)+(M.perKm||0)+(D.perKm||0) : null};
+}
+// the analysis page's 每公里總成本: this period's 油(電)錢 per km + the 12-month 保養 + 折舊
+function vcPeriodPerKm(from, to, km){
+  if(!(km>0)) return null;
+  var energy = fuelStatsInRange(from, to).cost + chargeStatsInRange(from, to).cost, M = vcMaint(), D = vcDepr(vcost());
+  if(!(energy>0) && M.perKm==null && D.perKm==null) return null;
+  return energy/km + (M.perKm||0) + (D.perKm||0);
+}
+function vcPayback(){
+  var C = vcost(); if(!(C.price>0)) return null;
+  var first = dataFirstDate(), t = todayStr(); if(!first) return {none:true};
+  var start = C.buyDate && C.buyDate>first ? C.buyDate : first;
+  if(start>t) return {none:true};
+  var cum = dispCalc(start, t, true).disp, pct = cum/C.price;
+  var d = new Date(t+'T00:00:00'); d.setDate(d.getDate()-89);
+  var f = toDateStr(d); if(f<start) f = start;
+  var days = Math.round((new Date(t+'T00:00:00') - new Date(f+'T00:00:00'))/86400000)+1;
+  var perDay = days>=30 ? dispCalc(f, t, true).disp/days : null, eta = null;
+  if(cum<C.price && perDay>0){ var e = new Date(t+'T00:00:00'); e.setDate(e.getDate()+Math.ceil((C.price-cum)/perDay)); eta = e.getFullYear()+' 年 '+(e.getMonth()+1)+' 月'; }
+  return {start:start, cum:cum, pct:pct, perDay:perDay, eta:eta, done:cum>=C.price};
+}
+// 下次保養: km left, days at the last 30 days' pace, and what 小保養 / 大保養 cost before
+function vcNextMaint(){
+  var m = veh().maint || {}, est = vehOdoEstimate(), t = todayStr();
+  var avg = [];
+  VC_MAINT_SUBS.forEach(function(sub){
+    var list = state.expenses.filter(function(e){ return e.category==='repair' && e.sub===sub && +e.amount>0; }).sort(function(a,b){ return a.date<b.date?1:-1; }).slice(0,6);
+    if(list.length) avg.push({sub:sub, avg:sumExpense(list)/list.length, n:list.length});
+  });
+  if(!(m.next>0) || !est) return {need:true, avg:avg};
+  var d = new Date(t+'T00:00:00'); d.setDate(d.getDate()-29);
+  var perDay = totalKmInRange(toDateStr(d), t)/30, left = m.next - est.km;
+  return {left:left, next:m.next, km:est.km, perDay:perDay, days: left>0 && perDay>0 ? Math.ceil(left/perDay) : null, avg:avg};
+}
+// 分項: each 保養維修 細項 over the same 12 months; 不指定 and no 細項 go together
+function vcSubStats(W){
+  var by = {}, none = 0, total = 0;
+  vcRepairs(W.from, W.to).forEach(function(e){
+    var a = +e.amount||0; total += a;
+    if(e.sub){ by[e.sub] = by[e.sub] || {sub:e.sub, amt:0, n:0}; by[e.sub].amt += a; by[e.sub].n++; } else none += a;
+  });
+  var order = catSubs('repair');
+  var list = Object.keys(by).map(function(k){ return by[k]; }).sort(function(a,b){ var ia = order.indexOf(a.sub), ib = order.indexOf(b.sub); return (ia<0?99:ia)-(ib<0?99:ib); });
+  return {list:list, none:none, total:total};
+}
+// 更換提醒: km since the last time a 細項 was recorded (its own 儀表板里程 when typed in, else the km recorded since)
+function vcSubDue(){
+  var C = vcost(), est = vehOdoEstimate(), out = [];
+  Object.keys(C.every).forEach(function(sub){
+    var last = null;
+    state.expenses.forEach(function(e){ if(e.category==='repair' && e.sub===sub && (!last || e.date>last.date || (e.date===last.date && (e.ts||0)>(last.ts||0)))) last = e; });
+    if(!last){ out.push({sub:sub, every:C.every[sub], none:true}); return; }
+    var since = last.odo>0 && est ? est.km - last.odo : totalKmInRange(addDaysStr(last.date, 1), todayStr());
+    since = Math.max(0, Math.round(since));
+    out.push({sub:sub, every:C.every[sub], last:last.date, since:since, pct:since/C.every[sub]});
+  });
+  return out;
+}
+function addDaysStr(ds, n){ var d = new Date(ds+'T00:00:00'); d.setDate(d.getDate()+n); return toDateStr(d); }
+function vcKm(x){ return x>=10000 ? (Math.round(x/1000)/10)+' 萬' : fmtNum(x, 0); }
+var VC_SUB_LABEL = {'機油':'機油(小保養)', '定期保養':'定期保養(大保養)'};
+function vcSubLabel(s){ return VC_SUB_LABEL[s] || s; }
+function vcPreviewHtml(){
+  return '<div class="section"><div class="card" style="padding:12px 14px;display:flex;gap:10px;align-items:center"><div style="flex:1;font-size:13px;line-height:1.5"><b>🚗 車輛成本 👑</b>'+
+    '<div style="font-size:12px;color:var(--text-muted)">每開 1 公里車子花你多少(油錢、保養、折舊),回本進度和下次保養大概花多少</div></div>'+
+    '<button class="btn btn-ghost" style="flex:none" data-act="vc-vip">看看</button></div></div>';
+}
+function vcCardHtml(){
+  if(!vcAvailable() || !uiShow('vehCost')) return '';
+  if(!isVip()) return vcPreviewHtml();
+  var X = vcCalc(), C = X.C, muted = 'font-size:11.5px;color:var(--text-muted);line-height:1.6';
+  var row = function(k, v, sub){ return '<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px"><span style="color:var(--text-muted)">'+k+(sub?'<div style="font-size:11px">'+sub+'</div>':'')+'</span><span class="num" style="text-align:right;white-space:nowrap">'+v+'</span></div>'; };
+  var per = function(x){ return x!=null ? fmtMoney2(x)+' /公里' : '—'; };
+  var h = '<div class="section"><div class="section-title"><span>🚗 車輛成本(估算)</span></div><div class="card" style="padding:12px 14px">';
+  h += '<div style="font-size:12px;color:var(--text-muted)">每開 1 公里,車子本身花你約</div>';
+  h += '<div class="num" style="font-size:26px;font-weight:800;margin:2px 0 8px">'+(X.total!=null ? fmtMoney2(X.total) : '—')+'</div>';
+  var span = X.W.km>0 ? mdStr(X.W.from)+' 起 '+fmtNum(X.W.km,0)+' 公里' : '';
+  h += row('⛽ 油(電)錢', per(X.fuel), X.fuel!=null ? '加油、充電 '+fmtMoney(X.energy)+' ÷ '+span : (X.W.km>0 ? '近 12 個月沒記加油、充電' : '要記每日里程才算得出來'));
+  h += row('🔧 保養維修', per(X.M.perKm), X.M.src==='data' ? '近 12 個月保養維修 '+fmtMoney(X.M.sum)+' ÷ '+span : X.M.src==='est' ? '用你填的估計('+esc(X.M.why)+')' : esc(X.M.why)+',可以在設定填估計值');
+  h += row('📉 折舊', per(X.D.perKm), X.D.perKm!=null ? (X.D.mode==='km' ? '(購車價 − 殘值)'+fmtMoney(X.D.base)+' ÷ '+fmtNum(X.D.span,0)+' 公里' : '(購車價 − 殘值) ÷ 照每天約 '+fmtNum(X.D.perDay,0)+' 公里開 '+fmtNum(C.lifeYears,1)+' 年') : esc(X.D.why));
+  if(X.W.km>0 && X.W.days<VC_MIN_DAYS) h += '<div style="'+muted+';margin-top:6px">⚠️ 每日里程才記 '+X.W.days+' 天,每公里的數字還不穩,記滿 3 個月比較準。</div>';
+  // 回本
+  var P = vcPayback();
+  if(P && !P.none){
+    var pc = Math.max(0, Math.min(100, Math.round(P.pct*100)));
+    h += '<div class="progress-wrap" style="margin-top:12px"><div class="progress-lbl"><span class="p"><b>回本進度</b> '+fmtMoney(P.cum)+' / 購車價 '+fmtMoney(C.price)+'</span><span class="v num">'+(P.cum<0?'0':Math.round(P.pct*100))+'%</span></div>'+
+      '<div class="progress-bar"><div class="progress-fill" style="width:'+pc+'%"></div></div></div>';
+    h += '<div style="'+muted+';margin-top:4px">從 '+P.start.replace(/-/g,'/')+(C.buyDate && P.start===C.buyDate ? ' 購車日' : ' 開始記帳')+'起算的累計可支配所得(不扣預留款;固定成本已經扣過,不再算進「本」)。'+
+      (P.done ? ' ✓ 已經回本了。' : P.eta ? ' 照最近 90 天的平均,約 <b>'+P.eta+'</b> 回本(估算)。' : P.perDay!=null && !(P.perDay>0) ? ' 最近 90 天的可支配所得是負的,估不出回本時間。' : ' 記滿 30 天後估回本時間。')+'</div>';
+  }
+  // 車貸
+  if(C.loanMonthly>0 && C.loanLeft>0){
+    var left = vcLoanLeftNow(C), fixName = vcLoanFixedName();
+    h += '<div style="font-size:13px;line-height:1.6;margin-top:12px"><b>🏦 車貸</b> 每月 '+fmtMoney(C.loanMonthly)+(left>0 ? ',還剩 '+left+' 期,約 <b class="num">'+fmtMoney(left*C.loanMonthly)+'</b> 要還' : ',已經繳完')+'</div>';
+    h += '<div style="'+muted+'">'+(fixName ? '你的固定成本裡已經有「'+esc(fixName)+'」,可支配所得不會再扣一次。' : C.loanTicked ? '你勾了「已經記在固定成本裡」,可支配所得不會再扣一次。' : '可支配所得會依天數扣這筆車貸(固定成本裡沒有車貸)。')+'</div>';
+  }
+  // 下次保養
+  var N = vcNextMaint();
+  var avgTxt = N.avg.map(function(a){ return vcSubLabel(a.sub)+'平均 '+fmtMoney(a.avg)+'('+a.n+' 次)'; }).join('、');
+  h += '<div style="font-size:13px;line-height:1.6;margin-top:12px"><b>🔧 下次保養</b> ';
+  if(N.need) h += '<span style="'+muted+'">到「🔧 車輛提醒」填目前里程和下次保養里程,就能估還有幾天。</span>';
+  else h += N.left>0 ? '還有約 '+fmtNum(N.left,0)+' 公里'+(N.days!=null ? ',照近 30 天每天約 '+fmtNum(N.perDay,0)+' 公里,約 <b>'+N.days+' 天後</b>到' : '(近 30 天沒記里程,估不出幾天)') : '已經超過保養里程 '+fmtNum(-N.left,0)+' 公里';
+  h += '</div><div style="'+muted+'">'+(avgTxt ? '預估金額:'+avgTxt+'(最近幾次的平均)' : '記保養時細項選「機油」或「定期保養」,就能估下次大概花多少。')+'</div>';
+  // 分項 & 更換提醒
+  var S = vcSubStats(X.W), due = vcSubDue();
+  if(S.list.length){
+    h += '<div style="font-size:13px;font-weight:700;margin-top:12px">分項(近 12 個月保養維修 '+fmtMoney(S.total)+')</div>';
+    S.list.forEach(function(s){ h += row(esc(vcSubLabel(s.sub))+' · '+s.n+' 次', fmtMoney(s.amt)+(X.W.km>0 ? ' · '+fmtMoney2(s.amt/X.W.km)+'/公里' : '')); });
+    if(S.none>0) h += row('沒選細項', fmtMoney(S.none));
+    h += '<div style="'+muted+';margin-top:4px">每公里保養用的是保養維修總額,不受細項影響。</div>';
+  }
+  if(due.length){
+    h += '<div style="font-size:13px;font-weight:700;margin-top:12px">更換提醒(估算)</div>';
+    due.forEach(function(d){
+      var tag = d.none ? '' : d.pct>=1 ? ' <b style="color:var(--expense)">已超過</b>' : d.pct>=0.9 ? ' <b style="color:var(--expense)">快到了</b>' : '';
+      h += '<div style="font-size:12.5px;line-height:1.6;padding:4px 0">'+esc(vcSubLabel(d.sub))+':'+(d.none ? '還沒記過這個細項,記了才開始算(你設定每 '+vcKm(d.every)+' 公里)' : '上次 '+mdStr(d.last)+',之後開了約 '+vcKm(d.since)+' 公里(你設定 '+vcKm(d.every)+')'+tag)+'</div>';
+    });
+    h += '<div style="'+muted+'">上次更換的里程用那天的儀表板里程(有填的話)或之後每天記的里程推估,下班私人用車不會算到。</div>';
+  }
+  if(!uiOn('expSub')) h += '<div style="font-size:12px;line-height:1.6;margin-top:10px;padding:8px 10px;border-radius:8px;background:var(--surface-sunken)">💡 打開支出細項,可以分開看輪胎、煞車等各項成本,也能設定更換提醒。隨時可以在 ⚙️ 功能開關關掉。<div class="btn-row" style="margin-top:6px"><button class="btn btn-ghost" data-act="vc-subs-on">打開支出細項</button></div></div>';
+  if(!vcFilled(C)) h += '<div style="'+muted+';margin-top:10px">填購車價、預計開到幾公里換車,就能算折舊和回本;租車的不用填,一樣看得到油錢和保養。</div>';
+  h += '<div class="btn-row" style="margin-top:10px"><button class="btn btn-ghost" data-act="open-vcost">⚙️ 車輛成本設定</button></div>';
+  h += '<div style="'+muted+';margin-top:6px">估算:每公里總成本 ＝ 油(電)錢 ＋ 保養維修 ＋ 折舊,里程用你每天記的里程。只在手機上算,不會上傳。</div>';
+  return h + '</div></div>';
+}
+function openVcostModal(){
+  if(!isVip()){ openVipIntro('車輛成本與保養預測'); return; }
+  var C = vcost(), raw = vcObj(veh().cost) ? veh().cost : {}, R = dispRes(), fixName = vcLoanFixedName();
+  var inp = function(id, val, ph, step){ return '<input class="num-input" id="'+id+'" type="number" min="0" step="'+(step||1)+'" inputmode="'+(step?'decimal':'numeric')+'" placeholder="'+(ph||'')+'" value="'+(val?esc(String(val)):'')+'">'; };
+  var note = 'font-size:11.5px;color:var(--text-muted);line-height:1.6;margin-top:4px';
+  var h = '<div class="modal-title">🚗 車輛成本<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div style="font-size:12.5px;line-height:1.7;margin-bottom:10px">每一格都<b>選填</b>,不填的就不算。只存在你的帳本裡,跟著備份、雲端同步走。</div>';
+  h += '<div class="section-title" style="margin-top:4px">買車(算折舊、回本)</div><div class="card" style="padding:10px 14px;margin-bottom:12px">';
+  h += '<div class="form-grid2"><div class="form-row"><label>購車價格(元)</label>'+inp('f-vc-price', C.price, '例如 900000')+'</div>'+
+    '<div class="form-row" style="min-width:0"><label>購車日期</label><input type="date" id="f-vc-buydate" value="'+C.buyDate+'" style="width:100%;min-width:0;box-sizing:border-box"></div></div>';
+  h += '<div class="form-grid2"><div class="form-row"><label>購車時里程(公里)</label>'+inp('f-vc-buyodo', C.buyOdo, '新車填 0')+'</div>'+
+    '<div class="form-row"><label>預計賣掉的殘值(元)</label>'+inp('f-vc-residual', C.residual, '不填當 0')+'</div></div>';
+  h += '<div class="form-grid2"><div class="form-row"><label>預計開到幾公里換車</label>'+inp('f-vc-lifekm', C.lifeKm, '例如 500000')+'</div>'+
+    '<div class="form-row"><label>或開幾年換車</label>'+inp('f-vc-lifeyears', C.lifeYears, '例如 8', '0.5')+'</div></div>';
+  h += '<div style="'+note+'">每公里折舊 ＝(購車價 − 殘值)÷(預計開到的里程 − 購車時里程)。兩個都填時用公里;只填年,就用買車以來平均每天開多少推算。</div></div>';
+  h += '<div class="section-title">車貸</div><div class="card" style="padding:10px 14px;margin-bottom:12px">';
+  h += '<div class="form-grid2"><div class="form-row"><label>每月繳(元)</label>'+inp('f-vc-loanm', C.loanMonthly, '沒有就不填')+'</div>'+
+    '<div class="form-row"><label>還剩幾期(含這個月)</label>'+inp('f-vc-loanleft', vcLoanLeftNow(C) || '', '例如 36')+'</div></div>';
+  h += fixName ? '<div style="'+note+'">你的固定成本裡已經有「'+esc(fixName)+'」,這裡只顯示還剩多少要還,可支配所得不會再扣一次。</div>'
+    : '<label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.5;margin-top:6px"><input type="checkbox" id="f-vc-loanfixed"'+(C.loanTicked?' checked':'')+' style="margin-top:3px">車貸已經記在固定成本裡(用別的名稱),不要再扣</label>'+
+      '<div style="'+note+'">沒勾的話,可支配所得會依天數扣這筆車貸;已經在固定成本記了就勾起來,才不會扣兩次。</div>';
+  h += '</div>';
+  h += '<div class="section-title">保養</div><div class="card" style="padding:10px 14px;margin-bottom:12px">';
+  h += '<div class="form-row"><label>每公里保養估計(元,資料不足時用)</label>'+inp('f-vc-maintest', R.maintPerKm, '例如 1', '0.1')+
+    '<div style="'+note+'">每公里保養平常用你記的:近 12 個月「保養維修」÷ 同期里程。每日里程記不到 3 個月時,先用這個數字(跟「💰 預留款設定」的保養每公里是同一個)。</div></div>';
+  var subs = catSubs('repair').slice();
+  Object.keys(C.every).forEach(function(k){ if(subs.indexOf(k)<0) subs.push(k); });
+  if(subs.length){
+    h += '<div style="font-size:12.5px;font-weight:700;margin:8px 0 4px">更換提醒:每幾公里換一次</div><div style="'+note+';margin-top:0;margin-bottom:6px">照你的車和習慣自己填,不填就不提醒。依「上次記這個細項那天」之後開的里程提醒。</div>';
+    subs.forEach(function(s, i){
+      h += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="flex:1;min-width:0;font-size:13px">'+esc(vcSubLabel(s))+'</span><div class="form-row" style="flex:none;width:130px;margin:0">'+inp('f-vc-every-'+i, C.every[s], '公里')+'</div></div>';
+    });
+  }
+  h += '</div><div class="btn-row"><button class="btn btn-ghost" data-act="close-modal">取消</button><button class="btn btn-primary" data-act="vc-save">儲存</button></div>';
+  vcSubsShown = subs;
+  openModal(h);
+}
+var vcSubsShown = [];
+function saveVcost(){
+  var g = function(id){ var el = document.getElementById(id); return el ? el.value.trim() : ''; };
+  var bad = null;
+  function num(id, max, label){ var x = g(id); if(x==='') return 0; var v = +x; if(!isFinite(v) || v<0 || v>max){ bad = bad || label; return 0; } return v; }
+  var c = {price:num('f-vc-price', VC_MONEY_MAX, '購車價格'), buyOdo:Math.round(num('f-vc-buyodo', VC_KM_MAX, '購車時里程')), residual:num('f-vc-residual', VC_MONEY_MAX, '殘值'),
+    lifeKm:Math.round(num('f-vc-lifekm', VC_KM_MAX, '預計開到幾公里')), lifeYears:num('f-vc-lifeyears', VC_YEARS_MAX, '開幾年(最多 '+VC_YEARS_MAX+' 年)'),
+    loanMonthly:num('f-vc-loanm', VC_MONEY_MAX, '車貸每月'), loanLeft:Math.round(num('f-vc-loanleft', VC_LOAN_MAX, '車貸期數(最多 '+VC_LOAN_MAX+' 期)'))};
+  var est = num('f-vc-maintest', DISP_MAINT_MAX, '每公里保養估計(最多 '+DISP_MAINT_MAX+' 元)');
+  var every = {};
+  vcSubsShown.forEach(function(s, i){ var v = Math.round(num('f-vc-every-'+i, VC_KM_MAX, vcSubLabel(s)+'的更換里程')); if(v>0) every[s] = v; });
+  var bd = g('f-vc-buydate');
+  if(bad){ showToast(bad+':請填 0 或正確的數字'); return; }
+  if(bd && bd>todayStr()){ showToast('購車日期不能在今天以後'); return; }
+  if(c.price>0 && c.residual>=c.price){ showToast('殘值要比購車價低'); return; }
+  if(c.lifeKm>0 && c.lifeKm<=c.buyOdo){ showToast('預計開到的里程要比購車時里程大'); return; }
+  if((c.loanMonthly>0) !== (c.loanLeft>0)){ showToast('車貸:每月金額和還剩幾期要一起填'); return; }
+  var out = {};
+  Object.keys(c).forEach(function(k){ if(c[k]>0) out[k] = c[k]; });
+  if(bd) out.buyDate = bd;
+  if(out.loanLeft) out.loanAsOf = todayStr().slice(0,7);
+  var lf = document.getElementById('f-vc-loanfixed'); if(lf && lf.checked) out.loanInFixed = true;
+  else if(!lf && vcost().loanTicked) out.loanInFixed = true;
+  if(Object.keys(every).length) out.every = every;
+  state.vehicle = Object.assign({}, veh(), {cost:out});
+  // the estimate is ①'s 保養每公里: one number, kept in one place
+  var r = Object.assign({}, vcObj(state.dispReserve) ? state.dispReserve : {});
+  if(est>0 || r.maintPerKm){ r.maintPerKm = est>0 ? est : 0; state.dispReserve = r; }
+  save(); closeModal(); renderAll(); showToast('✓ 車輛成本已儲存');
 }
 /* ---------- PDF 經營報告 (VIP; only in 跑車人生 測試版 while it is tried out) ---------- */
 // The report is one HTML page of fixed A4 sheets (版型 2-A 插圖版). In the app the phone turns it into a PDF file
@@ -6486,11 +6810,11 @@ function closeModal(){ settingsSnap = null; pendingIncomeTripId = null; document
   if(back){ try{ back.focus({preventScroll:true}); }catch(e){} }
   modalOpener = null; modalOpenerAct = null; setTimeout(function(){ if(typeof checkRestReminder==='function') checkRestReminder(); }, 800); }
 
-function chipRowHtml(groupId, options, selectedDefault){
+function chipRowHtml(groupId, options, selectedDefault, labels){
   var h = '<div class="chip-row" data-group="'+groupId+'">';
   options.forEach(function(opt){
     var sel = opt===selectedDefault ? ' selected' : '';
-    h += '<button type="button" class="chip-opt'+sel+'" data-act="chip:'+groupId+':'+esc(opt)+'" data-group="'+groupId+'">'+esc(opt)+'</button>';
+    h += '<button type="button" class="chip-opt'+sel+'" data-act="chip:'+groupId+':'+esc(opt)+'" data-group="'+groupId+'">'+esc(labels && labels[opt] || opt)+'</button>';
   });
   h += '</div><input type="hidden" id="chip-'+groupId+'" value="'+esc(selectedDefault)+'">';
   return h;
@@ -6736,11 +7060,11 @@ function openExpenseModal(catKey, editId){
   if((catKey==='fuel' || catKey==='repair' || catKey==='charge') && vehOn()){
     var estO = vehOdoEstimate();
     h += '<div class="form-row"><label>儀表板里程(選填,校正保養提醒)</label><input class="num-input" id="f-exp-odo" type="number" min="0" step="1" inputmode="numeric" placeholder="'+(estO?('推估 '+estO.km):'例如 125000')+'" value="'+((existing&&existing.odo)||'')+'">'+
-      (catKey==='repair' ? '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">細項選「定期保養」又填了里程,下次保養里程會自動往後算。</div>' : '')+'</div>';
+      (catKey==='repair' ? '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">細項選「機油(小保養)」或「定期保養(大保養)」又填了里程,下次保養里程會自動往後算。</div>' : '')+'</div>';
   }
   var subs = catSubs(catKey).slice(), curSub = existing && existing.sub;
   if(curSub && subs.indexOf(curSub)<0) subs.push(curSub);
-  if(subs.length && uiOn('expSub')) h += '<div class="form-row"><label>細項(選填)</label>'+chipRowHtml('expsub', ['不指定'].concat(subs), curSub||'不指定')+'</div>';
+  if(subs.length && uiOn('expSub')) h += '<div class="form-row"><label>細項(選填)</label>'+chipRowHtml('expsub', ['不指定'].concat(subs), curSub||'不指定', catKey==='repair' ? VC_SUB_LABEL : null)+'</div>';
   h += '<div class="form-row"><label>備註(選填)</label><input id="f-note" type="text" placeholder="" value="'+esc((existing&&existing.note)||'')+'"></div>';
   h += '<div class="form-save"><div class="btn-row">';
   if(existing) h += '<button class="btn btn-danger" data-act="del-expense-close:'+existing.id+'">刪除這筆</button>';
@@ -6774,7 +7098,7 @@ function saveExpense(catKey, editId){
       state.vehicle = Object.assign({}, veh());
       if(vehSetOdo(odoV, rec.date)){
         odoMsg = ' · 里程已校正';
-        if(catKey==='repair' && rec.sub==='定期保養'){ var mm = Object.assign({interval:5000, warn:300}, state.vehicle.maint||{}); mm.next = odoV + (+mm.interval||5000); state.vehicle.maint = mm; odoMsg = ' · 下次保養 '+fmtNum(mm.next,0)+' 公里'; }
+        if(catKey==='repair' && VC_MAINT_SUBS.indexOf(rec.sub)>=0){ var mm = Object.assign({interval:5000, warn:300}, state.vehicle.maint||{}); mm.next = odoV + (+mm.interval||5000); state.vehicle.maint = mm; odoMsg = ' · 下次保養 '+fmtNum(mm.next,0)+' 公里'; }
       }
     }
     rec.odo = odoV;
@@ -6914,7 +7238,7 @@ function wireFeePlatToggle(){
 /* ---------- 顯示模式與功能開關 ---------- */
 var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/悠遊卡/愛心卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['paperSlip','紙本簽單(企業簽單是紙本,要拿回車隊換現金)'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(Uber 小黃)'],['tip','小費'],['tripToll','過路費(Uber、BOLT 記車資時順手填)'],['fxTip','外幣小費(美金、日圓…自動換算台幣)'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
 var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日、本月目標進度(還差多少錢)'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['liveRate','今日行車顯示目前時薪'],['restRemind','休息提醒(連續開太久、今天上班太久)'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告'],['fareCompare','🧮 各車隊實收比較(輸入車資看各車隊實拿多少)'],['targetCalc','目標還要跑多久(依平均時薪算還要幾小時、幾趟)','vip']];
-var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度'],['dispIncome','💰 可支配所得(本週、本月真正落袋)','vip','beta']];
+var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度'],['dispIncome','💰 可支配所得(本週、本月真正落袋)','vip','beta'],['vehCost','🚗 車輛成本(每公里成本、回本、保養預估)','vip','beta']];
 var UI_DEFAULT_OFF = ['shiftFix','campaign','restRemind','fxTip','fareCompare','targetCalc'];  // extras nobody sees unless they turn them on
 var UI_SIMPLE_OFF = ['liveRate','subtype','fareType','payment','discount','markup','addOn','coupon','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
 // x[2] 'vip': a VIP feature (👑 while VIP is sold); x[3] 'beta': only in 跑車人生 測試版 while it is tried out
@@ -7434,9 +7758,10 @@ var HELP = [
   ['記支出', [
     ['記一筆支出', '記帳頁下方點項目(加油、停車、保養…)→ 打金額 → 儲存。'],
     ['公升數、充電度數', '選填,填了才能算油耗、電耗。', 'fuelQty'],
-    ['支出細項', '例如保養維修 → 輪胎、機油。⚙️ 支出項目管理可以設定。', 'expSub'],
+    ['支出細項', '例如保養維修 → 機油(小保養)、定期保養(大保養)、輪胎、煞車、電瓶、鈑金烤漆、其他維修。⚙️ 支出項目管理可以自己改。', 'expSub'],
     ['固定成本', '「支出」頁新增靠行費、保險、月費等,每月自動算進成本。'],
-    ['車輛提醒', '「支出」頁上方「🔧 車輛提醒」:設定保養里程、驗車日、各張保單到期日,快到時首頁提醒。目前里程會加上每天記的里程;記加油、保養維修時可以填儀表板里程校正,細項選「定期保養」會自動算下次保養。']
+    ['車輛提醒', '「支出」頁上方「🔧 車輛提醒」:設定保養里程、驗車日、各張保單到期日,快到時首頁提醒。目前里程會加上每天記的里程;記加油、保養維修時可以填儀表板里程校正,細項選「機油」或「定期保養」會自動算下次保養。'],
+    ['🚗 車輛成本', '「支出」頁「🔧 車輛提醒」上面:每開 1 公里車子花你多少(油錢、保養維修、折舊),回本進度,車貸還剩多少,下次保養約幾天後到、大概花多少;打開支出細項還能看輪胎、煞車等分項成本和更換提醒。購車價、車貸都是選填,只在手機上算。', 'vehCost', 'vip', 'beta']
   ]],
   ['上班與工時', [
     ['上下班打卡、休息', '記帳頁「今日行車」按上班打卡 / 下班打卡,休息按休息開始 / 結束。忘了打下班卡,下次打開會問你。', 'shift'],
@@ -7820,6 +8145,7 @@ function openSettingsModal(){
     h += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="font-size:12.5px;flex:none;width:92px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+iconHtml(c.icon)+' '+esc(c.label)+'</span>'+
       '<input type="text" id="f-cat-subs-'+c.key+'" value="'+esc(catSubs(c.key).join(','))+'" placeholder="例如:輪胎,機油" style="flex:1;min-width:0;background:var(--surface-sunken);border:1px solid var(--border);border-radius:8px;padding:7px 9px;font-size:13px;color:var(--text)"></div>';
   });
+  h += '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.6">保養維修的「機油」是小保養、「定期保養」是大保養;記保養時選「機油」或「定期保養」又填儀表板里程,下次保養里程會自動往後算。</div>';
   h += '</div><div style="height:8px"></div>';
 
   S.expenses = h; h = '';
@@ -7900,12 +8226,15 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.19.7';
+var APP_VERSION = '2026.11.19.8';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.19.8', '🔧 支出細項「保養維修」預設多了煞車、電瓶、其他維修,機油標「小保養」、定期保養標「大保養」(兩個填了儀表板里程都會自動算下次保養);自己改過細項的不會變'],
+  ['2026.11.19.8', '🚗 測試版新功能:「支出」頁多一張「車輛成本」,算每開 1 公里車子花你多少(油錢、保養、折舊)、回本進度、下次保養約幾天後到、大概花多少;購車價、車貸都是選填。上架後是 VIP 功能', 'beta'],
+  ['2026.11.19.8', '💰 測試版:可支配所得的保養預留改用車輛成本算出的每公里保養成本(資料不到 3 個月才用你填的),換車預留填了車輛成本就能開', 'beta'],
   ['2026.11.19.7', '🎯 記帳首頁的「本月目標」進度條和還差多少錢,現在設了每月目標就直接顯示(原本要打開「目標還要跑多久」才看得到)'],
   ['2026.11.19.7', '💰 測試版新功能:分析頁選本週或本月,多一張「可支配所得」,實收扣掉支出、固定成本和你自己開啟的預留款(保養、稅金,預設都不扣),看真正落袋多少,本月還有月底預測。上架後是 VIP 功能', 'beta'],
   ['2026.11.19.7', '⏱️ 測試版:目標下面的「還要跑幾小時、幾趟」上架後改成 VIP 功能,目標進度條和還差多少錢一樣免費。測試版沒開「VIP 測試」時會看到「👑 想知道還要跑多久?」', 'beta'],
@@ -8324,7 +8653,7 @@ function ledgerProblem(p, strictDates){
     objValues(p.dailyMeta||{}, '每日工時與里程') || objValues(p.payoutSettings||{}, '撥款設定') ||
     ((p.tollRefunds!=null && (typeof p.tollRefunds!=='object' || Array.isArray(p.tollRefunds))) ? '「過路費退款」的格式不對' : objValues(p.tollRefunds||{}, '過路費退款')) ||
     ((p.metroWallet!=null && (typeof p.metroWallet!=='object' || Array.isArray(p.metroWallet))) ? '「大都會錢包」的格式不對' : '') ||
-    ((p.vehicle!=null && (typeof p.vehicle!=='object' || Array.isArray(p.vehicle) || (p.vehicle.policies!=null && !Array.isArray(p.vehicle.policies)))) ? '「車輛提醒」的格式不對' : '') ||
+    ((p.vehicle!=null && (typeof p.vehicle!=='object' || Array.isArray(p.vehicle) || (p.vehicle.policies!=null && !Array.isArray(p.vehicle.policies)) || (p.vehicle.cost!=null && !isObj(p.vehicle.cost)))) ? '「車輛提醒」的格式不對' : '') ||
     ((p.analysisPresets!=null && !Array.isArray(p.analysisPresets)) ? '「分析組合」的格式不對' : objList(p.analysisPresets||[], '分析組合')) ||
     numValues(p.feeRules||{}, '手續費設定') || numValues(p.targets||{}, '目標') ||
     ((p.activeTrip!=null && !isObj(p.activeTrip)) ? '「載客中的行程」格式不對' : '');
@@ -8928,6 +9257,10 @@ document.addEventListener('click', function(e){
   else if(cmd==='pace-vip'){ openVipIntro('目標還要跑多久'); }
   else if(cmd==='disp-settings'){ openDispSettings(); }
   else if(cmd==='disp-save'){ saveDispSettings(); }
+  else if(cmd==='vc-vip'){ openVipIntro('車輛成本與保養預測'); }
+  else if(cmd==='open-vcost'){ openVcostModal(); }
+  else if(cmd==='vc-save'){ saveVcost(); }
+  else if(cmd==='vc-subs-on'){ state.ui = Object.assign({}, state.ui||{}, {expSub:true}); save(); renderAll(); showToast('✓ 已打開支出細項,記保養維修時可以選'); }
   else if(cmd==='vip-test-on'){ state.vipTest = true; vipTurnOnAsked(); save(); closeModal(); if(vipPendingPeriod) analyticsPeriod = vipPendingPeriod; vipPendingPeriod = null; renderAll(); showToast('👑 已開啟 VIP 測試'); }
   else if(cmd==='year'){ uiMonth.setFullYear(uiMonth.getFullYear()+(+arg)); renderAll(); }
   else if(cmd==='hot-slot'){ hotspotSlot=arg; renderAll(); }
