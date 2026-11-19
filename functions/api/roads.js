@@ -196,7 +196,8 @@ async function loadTdx(ep, env, cityKey) {
       const end = isoTime(x.ExpireTime) || (dur && isoTime(dur.DurationEndTime)) || null;
       let ty = TDX_TYPE[x.EventType] || '其他';
       if (x.EventSubType === 805) ty = '號誌故障';
-      const tx = cleanText([x.EventTitle, x.Description].filter((v, i, a) => v && a.indexOf(v) === i).join(' '));
+      // TDX 的說明有時夾著系統內部編號（例如「事故-17951081390001654222000112124」），12 位以上的純數字對司機沒用，拿掉
+      const tx = cleanText([x.EventTitle, x.Description].filter((v, i, a) => v && a.indexOf(v) === i).join(' ').replace(/[-_#:：]?\d{12,}/g, ''));
       const it = { id: 't' + x.EventID, s: 'tdx', ty, st: x.EventSubType || null, ar: cleanText(tdxArea(x.Location)).slice(0, 60), tx, la: r5(ll[0]), lo: r5(ll[1]), m, so: cleanText(x.Source).slice(0, 40), c: cityKey || tdxCity(x.Location), end: end };
       if (!fresh(it, now)) return;
       if (seen[it.id] && seen[it.id].m >= m) return;   // TDX 同一個 EventID 會重複出現很多次（2026-11-20 實測 699 筆只有 164 件），只留一筆
