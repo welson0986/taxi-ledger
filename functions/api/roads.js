@@ -130,7 +130,7 @@ function fresh(it, now) {
 
 // ---------- 警廣 ----------
 async function loadPbs() {
-  const res = await get(PBS_URL, { headers: { 'Accept': 'application/json' } });
+  const res = await get(PBS_URL, { headers: { 'Accept': '*/*' } });
   if (!res.ok) throw new Error('pbs ' + res.status);
   const d = JSON.parse(await res.text());
   const now = Date.now(), seen = {}, items = [];
