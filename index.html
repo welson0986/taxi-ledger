@@ -3249,6 +3249,13 @@ function targetPaceHtml(left, from, to){
   if(per) parts.push('約 <b>'+Math.ceil(left/per)+' 趟</b>');
   return '<div style="font-size:12px;margin-top:4px;line-height:1.6">⏱️ 照'+(src||'目前')+'的'+(rate?('平均時薪 '+fmtMoney(rate)):'')+(rate&&per?'、':'')+(per?('每趟 '+fmtMoney(per)):'')+',還要跑'+parts.join('、')+'</div>';
 }
+// 「還要跑多久」 is VIP (VIP 2.0, 規格第 2 節); the bar and 還差多少 above it stay free. A driver without VIP gets one
+// 👑 line instead, once per screen (previewShown: it is already under the day's bar).
+function targetPaceSlot(left, from, to, previewShown){
+  if(!(left>0)) return '';
+  if(isVip()) return uiShow('targetCalc') ? targetPaceHtml(left, from, to) : '';
+  return previewShown ? '' : '<div style="font-size:12px;margin-top:4px"><span data-act="pace-vip" style="cursor:pointer;color:var(--accent);font-weight:700">👑 想知道還要跑多久?</span></div>';
+}
 function isFleetKey(key){ var def = platformDef(key); return !(def.tipOnly || def.bonus || key==='bonus' || NOT_A_FLEET.indexOf(key)>=0); }
 function previewNet(key, fare, pay){
   var fees = resolvedFeeRules(), def = platformDef(key);
@@ -3378,7 +3385,7 @@ function renderEntry(){
   if(dailyTarget>0 && uiShow('todayTarget')){
     var tPct = Math.min(100, Math.round(net.total/dailyTarget*100));
     var tLeft = dailyTarget-net.total;
-    var tCalc = uiShow('targetCalc') ? targetPaceHtml(tLeft, t, t) : '';
+    var tCalc = targetPaceSlot(tLeft, t, t, false);
     B.target = '<div class="section"><div class="card"><div class="progress-wrap">'+
       '<div class="progress-lbl"><span class="p">今日目標 '+fmtMoney(net.total)+' / '+fmtMoney(dailyTarget)+'</span><span class="v num">'+tPct+'%</span></div>'+
       '<div class="progress-bar"><div class="progress-fill" style="width:'+tPct+'%"></div></div>'+
@@ -3386,13 +3393,14 @@ function renderEntry(){
       '</div></div></div>';
   }
   var monthlyTarget = (state.targets&&state.targets.monthly)||0;
-  if(monthlyTarget>0 && uiShow('targetCalc') && uiShow('todayTarget')){
+  // the month's bar and 還差多少 are free (VIP 2.0); before, the whole card came with 「目標還要跑多久」
+  if(monthlyTarget>0 && uiShow('todayTarget')){
     var mr = monthRange(new Date(t+'T00:00:00')), mNet = sumNetIncome(recordsInRange(mr.from, t)).total, mLeft = monthlyTarget-mNet;
     var mPct = Math.min(100, Math.round(mNet/monthlyTarget*100));
     B.target += '<div class="section"><div class="card"><div class="progress-wrap">'+
       '<div class="progress-lbl"><span class="p">本月目標 '+fmtMoney(mNet)+' / '+fmtMoney(monthlyTarget)+'</span><span class="v num">'+mPct+'%</span></div>'+
       '<div class="progress-bar"><div class="progress-fill" style="width:'+mPct+'%"></div></div>'+
-      '<div style="font-size:12px;color:var(--text-muted);margin-top:6px">'+(mLeft>0?('還差 '+fmtMoney(mLeft)):'🎉 本月目標達成')+'</div>'+targetPaceHtml(mLeft, mr.from, t)+
+      '<div style="font-size:12px;color:var(--text-muted);margin-top:6px">'+(mLeft>0?('還差 '+fmtMoney(mLeft)):'🎉 本月目標達成')+'</div>'+targetPaceSlot(mLeft, mr.from, t, dailyTarget>0 && tLeft>0)+
       '</div></div></div>';
   }
 
@@ -4216,6 +4224,7 @@ function renderAnalytics(){
   }
   h += '</div>';
   }
+  if(!F && (analyticsPeriod==='week' || analyticsPeriod==='month')) h += dispCardHtml(range, analyticsPeriod);
   if(uiShow('compare')) h += comparisonHtml(range, F);
 
   var wholeDays = !F || fm.dayOnly;  // the punched hours and the day's km still apply
@@ -4526,7 +4535,9 @@ var VIP_FEATURES = [
   ['🗓️', '定期經營摘要', '每週、每月自動整理,時薪跟你自己前幾週、去年同期比'],
   ['📄', 'PDF 經營報告', '月報、年報、自訂期間排成有質感的 A4 報告,可以存檔、分享、列印'],
   ['⭐', '可保存的分析組合', '分析頁篩選平台、星期、時段,常看的條件存起來,點一下就打開'],
-  ['🔥', '人潮情報', '雙北演唱會、展覽、比賽的散場時間與地點,每週更新']
+  ['🔥', '人潮情報', '雙北演唱會、展覽、比賽的散場時間與地點,每週更新'],
+  ['💰', '可支配所得', '實收扣掉支出、固定成本和你想先存的錢,看本週、本月真正落袋多少,還有照目前速度的月底預測'],
+  ['⏱️', '目標還要跑多久', '今日、本月目標還差多少錢,照你的平均時薪和每趟實收,算出還要跑幾小時、幾趟']
 ];
 var VIP_PERIODS = {year:1, custom:1, all:1};
 function vipGated(){ return VIP_GATE || betaOn(); }
@@ -4795,7 +4806,14 @@ function vipUnlocked(toast){
   vipBusy = ''; vipMsg = '';
   closeModal();
   if(vipPendingPeriod) analyticsPeriod = vipPendingPeriod;
+  if(vipTurnOnAsked()) save();
   vipPendingPeriod = null; renderAll(); showToast(toast);
+}
+// the driver tapped 「想知道還要跑多久?」 and unlocked it: show it straight away, its switch is off by default
+function vipTurnOnAsked(){
+  if(vipPaywallFeature!=='目標還要跑多久' || uiOn('targetCalc')) return false;
+  state.ui = Object.assign({}, state.ui||{}, {targetCalc:true});
+  return true;
 }
 function vipBuy(productId){
   if(vipBusy) return;
@@ -4972,8 +4990,117 @@ function summaryHomeHtml(){
   var S = buildSummary(pick);
   if(!S){ return ''; }
   var sub = S.s.rate!=null ? '時薪 '+fmtMoney(S.s.rate)+(S.verdict ? (S.verdict.mood==='good' ? ' 👍 比平常高 '+Math.abs(Math.round(S.verdict.diff*100))+'%' : S.verdict.mood==='low' ? ' 🤔 比平常低 '+Math.abs(Math.round(S.verdict.diff*100))+'%' : ' 👌 跟平常差不多') : '') : '實收 '+fmtMoney(S.s.net);
+  if(dispOn()){ var dm = monthRange(new Date(t+'T00:00:00')), dc = dispCalc(dm.from, dm.to); if(dc) sub += '<br>本月可支配所得(估) '+fmtMoney(dc.disp); }
   return '<div class="card" style="margin-bottom:12px;padding:12px 14px;display:flex;gap:10px;align-items:center"><div style="flex:1;font-size:13px;line-height:1.5"><b>📊 '+name+'出爐了</b><div style="font-size:12.5px;color:var(--text-muted)">'+sub+'</div></div>'+
     '<button class="btn btn-primary" style="flex:none" data-act="open-summary-home:'+pick.kind+'">看摘要</button><button class="btn btn-ghost" style="flex:none;padding:6px 10px" data-act="summary-dismiss:'+pick.kind+'" aria-label="關閉">✕</button></div>';
+}
+/* ---------- 💰 可支配所得 (VIP 2.0; only in 跑車人生 測試版 while it is tried out) ----------
+   What is really the driver's for a week or a month: 實收 (fees taken off, tips in) − the expenses written down
+   (less the tolls a fleet paid back, as 淨利 does) − fixed costs spread by days (fixedTotalForRange, so the month's
+   own 固定成本覆寫 counts) − the reserves the driver chose to put aside. A period still running counts up to today;
+   the month-end forecast carries today's pace to the end of the month. Worked out on the phone, nothing is sent.
+   The reserves are off until the driver turns them on (規格 (a)): maintenance as an amount per km (until ② 車輛成本
+   brings its own per-km cost), tax as a % of 實收. 換車預留 waits for ②. They sit in state.dispReserve, so they go
+   along with backups, restores and the cloud copy like every other ledger setting. */
+function dispAvailable(){ return betaOn(); }
+function dispOn(){ return dispAvailable() && uiShow('dispIncome') && isVip(); }
+var DISP_MAINT_MAX = 100, DISP_TAX_MAX = 50;
+function dispRes(){
+  var r = state.dispReserve && typeof state.dispReserve==='object' ? state.dispReserve : {};
+  function num(v, max){ v = +v; return isFinite(v) && v>0 ? Math.min(v, max) : 0; }
+  return {maintOn: r.maintOn===true, maintPerKm: num(r.maintPerKm, DISP_MAINT_MAX), taxOn: r.taxOn===true, taxPct: num(r.taxPct, DISP_TAX_MAX)};
+}
+function dispReserves(R, net, km){
+  var maint = R.maintOn && R.maintPerKm>0 ? km*R.maintPerKm : 0;
+  var tax = R.taxOn && R.taxPct>0 && net>0 ? net*R.taxPct/100 : 0;
+  return {maint:maint, tax:tax};
+}
+function dispCalc(from, to){
+  var t = todayStr(), end = to>t ? t : to;
+  if(end<from) return null;
+  var net = sumNetIncome(recordsInRange(from, end)).total, exps = expensesInRange(from, end), tollRef = tollRefundInRange(from, end);
+  var varExp = sumExpense(exps) - tollRef, fixed = fixedTotalForRange(from, end), km = totalKmInRange(from, end);
+  var R = dispRes(), rs = dispReserves(R, net, km);
+  return {from:from, to:end, running:end<to, net:net, varExp:varExp, tollRef:tollRef, expCount:exps.length, fixed:fixed, km:km,
+    R:R, maint:rs.maint, tax:rs.tax, disp:net-varExp-fixed-rs.maint-rs.tax};
+}
+var DISP_FORECAST_FROM_DAY = 4;  // 規格: not in the first 3 days of the month, the average says too little yet
+function dispForecast(from, to){
+  var t = todayStr(); if(!(from<=t && t<=to)) return null;
+  var dom = +t.slice(8,10), mDays = +to.slice(8,10);
+  if(dom<DISP_FORECAST_FROM_DAY) return {wait:true};
+  var c = dispCalc(from, t);
+  if(!(c.net>0)) return {wait:true};
+  var k = mDays/dom, net = c.net*k, km = c.km*k, rs = dispReserves(c.R, net, km);
+  return {net:net, disp:net - c.varExp*k - fixedTotalForRange(from, to) - rs.maint - rs.tax};
+}
+function dispPreviewHtml(){
+  return '<div class="section"><div class="card" style="padding:12px 14px;display:flex;gap:10px;align-items:center"><div style="flex:1;font-size:13px;line-height:1.5"><b>💰 可支配所得 👑</b>'+
+    '<div style="font-size:12px;color:var(--text-muted)">實收扣掉支出、固定成本和你想先存的錢,看這段期間真正落袋多少,還有月底預測</div></div>'+
+    '<button class="btn btn-ghost" style="flex:none" data-act="disp-vip">看看</button></div></div>';
+}
+function dispCardHtml(range, kind){
+  if(!dispAvailable() || !uiShow('dispIncome')) return '';
+  if(!isVip()) return dispPreviewHtml();
+  var c = dispCalc(range.from, range.to);
+  if(!c) return '';
+  var row = function(k, v, sub){ return '<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px"><span style="color:var(--text-muted)">'+k+(sub?'<div style="font-size:11px">'+sub+'</div>':'')+'</span><span class="num" style="text-align:right;white-space:nowrap">'+v+'</span></div>'; };
+  var minus = function(x){ return '<span style="color:var(--expense)">−'+fmtMoney(x)+'</span>'; };
+  var label = kind==='week' ? '本週' : '本月';
+  var span = c.running ? '到 '+mdStr(c.to)+' 為止' : mdStr(c.from)+'–'+mdStr(c.to);
+  var h = '<div class="section"><div class="section-title"><span>💰 可支配所得(估算)</span></div><div class="card" style="padding:12px 14px">';
+  h += '<div style="font-size:12px;color:var(--text-muted)">'+(c.running ? label : '這段期間')+'真正落袋('+span+')</div>';
+  h += '<div class="num" style="font-size:26px;font-weight:800;margin:2px 0 8px;color:'+(c.disp>=0?'var(--income)':'var(--expense)')+'">'+fmtMoney(c.disp)+'</div>';
+  h += row('實收(扣完平台手續費,含小費)', fmtMoney(c.net));
+  h += row('已記的支出'+(c.expCount?'('+c.expCount+' 筆)':''), minus(c.varExp), c.tollRef>0 ? '已扣掉平台退的過路費 '+fmtMoney(c.tollRef) : '');
+  h += row('固定成本(依天數分攤)', minus(c.fixed), c.running ? '算到今天的天數,整個月的在下面月底預測' : '');
+  if(c.R.maintOn) h += row('保養預留', minus(c.maint), '每公里 '+fmtMoney2(c.R.maintPerKm)+' × '+fmtNum(c.km,1)+' 公里');
+  if(c.R.taxOn) h += row('稅金預留', minus(c.tax), '實收 × '+c.R.taxPct+'%');
+  h += '<div style="display:flex;justify-content:space-between;gap:10px;padding:8px 0 2px;font-size:14px;font-weight:700"><span>＝ 可支配所得</span><span class="num">'+fmtMoney(c.disp)+'</span></div>';
+  var warn = [];
+  if(!c.expCount) warn.push('你還沒記支出,這個數字會偏高');
+  if(!state.fixedCosts.length) warn.push('你還沒填固定成本(靠行費、保險、車貸…),這個數字會偏高。到 ⚙️「固定成本」填');
+  if(c.R.maintOn && c.R.maintPerKm>0 && !(c.km>0)) warn.push('這段期間沒記里程,保養預留沒有扣到');
+  if(warn.length) h += '<div style="font-size:12px;color:var(--expense);line-height:1.6;margin-top:8px">'+warn.map(function(w){ return '⚠️ '+esc(w); }).join('<br>')+'</div>';
+  if(kind==='month'){
+    var fc = dispForecast(range.from, range.to);
+    if(fc && fc.wait) h += '<div style="font-size:12px;color:var(--text-muted);margin-top:10px">📈 月底預測:每月 '+DISP_FORECAST_FROM_DAY+' 號起、本月有實收後顯示(月初資料太少,估不準)。</div>';
+    else if(fc) h += '<div class="card" style="margin-top:10px;padding:10px 12px;font-size:13px;line-height:1.7;background:var(--surface-sunken)"><b>📈 照目前速度,月底(估算)</b><br>'+
+      '實收約 <b class="num">'+fmtMoney(fc.net)+'</b>、可支配所得約 <b class="num">'+fmtMoney(fc.disp)+'</b>'+
+      '<div style="font-size:11px;color:var(--text-muted);margin-top:2px">用本月 1 號到今天平均每天的實收、支出、里程推到月底;固定成本算整個月。之後跑多跑少,數字會跟著變。</div></div>';
+  }
+  var anyRes = c.R.maintOn || c.R.taxOn;
+  h += '<div class="btn-row" style="margin-top:10px"><button class="btn btn-ghost" data-act="disp-settings">⚙️ 預留款設定'+(anyRes?'':'(目前都不扣)')+'</button></div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin-top:6px">估算:可支配所得 ＝ 實收 − 已記的支出 − 固定成本(依天數分攤) − 你開啟的預留款。預留款是還沒發生、但之後要付的錢,先扣掉提醒自己存起來。</div>';
+  return h + '</div></div>';
+}
+function openDispSettings(){
+  if(!isVip()){ openVipIntro('可支配所得'); return; }
+  var R = dispRes(), cb = 'width:18px;height:18px;flex:none', note = 'font-size:11.5px;color:var(--text-muted);line-height:1.65;margin:4px 0 0 26px';
+  var numIn = 'width:80px;display:inline-block;text-align:center;padding:6px';
+  var h = '<div class="modal-title">💰 預留款設定<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div style="font-size:12.5px;line-height:1.7;margin-bottom:10px">預留款是「還沒發生、但之後一定要付」的錢,先從可支配所得扣掉,提醒自己存起來。<b>三項預設都不扣</b>,你自己決定要不要開。這些都是<b>估算</b>:開了之後可支配所得會變少,但比較接近真正能花的錢。</div>';
+  h += '<div class="card" style="padding:10px 12px;margin-bottom:10px"><label style="display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700"><input type="checkbox" id="f-disp-maint" style="'+cb+'"'+(R.maintOn?' checked':'')+'>🔧 保養預留</label>'+
+    '<div style="'+note+'">每次保養花多少,要看里程和保養內容,每次都不一樣,所以先不幫你扣。想每個月先存一點,就填「每開 1 公里先存幾元」:這段期間記的里程 × 這個金額 ＝ 保養預留。例如你算過大約每 5,000 公里花 5,000 元,就是每公里 1 元。要記每日里程才算得出來。</div>'+
+    '<div style="margin:8px 0 0 26px;font-size:13px">每公里 <input id="f-disp-maint-km" type="number" min="0" max="'+DISP_MAINT_MAX+'" step="0.1" inputmode="decimal" style="'+numIn+'" value="'+(R.maintPerKm||'')+'"> 元</div></div>';
+  h += '<div class="card" style="padding:10px 12px;margin-bottom:10px;opacity:.6"><label style="display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700"><input type="checkbox" disabled style="'+cb+'">🚗 換車預留(折舊)</label>'+
+    '<div style="'+note+'">需先填車輛成本。之後「🚗 車輛成本」功能加入,填了購車價、預計開到幾公里換車,這裡就能用每公里折舊幫你算。</div></div>';
+  h += '<div class="card" style="padding:10px 12px;margin-bottom:10px"><label style="display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700"><input type="checkbox" id="f-disp-tax" style="'+cb+'"'+(R.taxOn?' checked':'')+'>🧾 稅金預留</label>'+
+    '<div style="'+note+'">你自己決定每賺 100 元(實收)先存幾元,這裡只幫你從可支配所得扣掉、提醒你存起來。</div>'+
+    '<div style="margin:8px 0 0 26px;font-size:13px">實收的 <input id="f-disp-tax-pct" type="number" min="0" max="'+DISP_TAX_MAX+'" step="0.5" inputmode="decimal" style="'+numIn+'" value="'+(R.taxPct||'')+'"> %</div></div>';
+  h += '<div class="btn-row"><button class="btn btn-ghost" data-act="close-modal">取消</button><button class="btn btn-primary" data-act="disp-save">儲存</button></div>';
+  openModal(h);
+}
+function saveDispSettings(){
+  var g = function(id){ return document.getElementById(id); };
+  var mOn = !!(g('f-disp-maint') && g('f-disp-maint').checked), tOn = !!(g('f-disp-tax') && g('f-disp-tax').checked);
+  var mKm = parseFloat(g('f-disp-maint-km') ? g('f-disp-maint-km').value : ''), tPct = parseFloat(g('f-disp-tax-pct') ? g('f-disp-tax-pct').value : '');
+  if(mOn && !(mKm>0 && mKm<=DISP_MAINT_MAX)){ showToast('保養預留:請填每公里 0.1～'+DISP_MAINT_MAX+' 元'); return; }
+  if(tOn && !(tPct>0 && tPct<=DISP_TAX_MAX)){ showToast('稅金預留:請填 0.5～'+DISP_TAX_MAX+' %'); return; }
+  var old = dispRes();
+  // a number typed in but left switched off is kept, so turning it on later needs no retyping
+  state.dispReserve = {maintOn:mOn, maintPerKm: mKm>0 && mKm<=DISP_MAINT_MAX ? mKm : old.maintPerKm, taxOn:tOn, taxPct: tPct>0 && tPct<=DISP_TAX_MAX ? tPct : old.taxPct};
+  save(); closeModal(); renderAll(); showToast('✓ 預留款設定已儲存');
 }
 /* ---------- PDF 經營報告 (VIP; only in 跑車人生 測試版 while it is tried out) ---------- */
 // The report is one HTML page of fixed A4 sheets (版型 2-A 插圖版). In the app the phone turns it into a PDF file
@@ -6786,10 +6913,12 @@ function wireFeePlatToggle(){
 }
 /* ---------- 顯示模式與功能開關 ---------- */
 var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/悠遊卡/愛心卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['paperSlip','紙本簽單(企業簽單是紙本,要拿回車隊換現金)'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(Uber 小黃)'],['tip','小費'],['tripToll','過路費(Uber、BOLT 記車資時順手填)'],['fxTip','外幣小費(美金、日圓…自動換算台幣)'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
-var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日目標'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['liveRate','今日行車顯示目前時薪'],['restRemind','休息提醒(連續開太久、今天上班太久)'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告'],['fareCompare','🧮 各車隊實收比較(輸入車資看各車隊實拿多少)'],['targetCalc','目標還要跑多久(依平均時薪算還要幾小時、幾趟)']];
-var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度']];
+var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日、本月目標進度(還差多少錢)'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['liveRate','今日行車顯示目前時薪'],['restRemind','休息提醒(連續開太久、今天上班太久)'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告'],['fareCompare','🧮 各車隊實收比較(輸入車資看各車隊實拿多少)'],['targetCalc','目標還要跑多久(依平均時薪算還要幾小時、幾趟)','vip']];
+var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度'],['dispIncome','💰 可支配所得(本週、本月真正落袋)','vip','beta']];
 var UI_DEFAULT_OFF = ['shiftFix','campaign','restRemind','fxTip','fareCompare','targetCalc'];  // extras nobody sees unless they turn them on
 var UI_SIMPLE_OFF = ['liveRate','subtype','fareType','payment','discount','markup','addOn','coupon','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
+// x[2] 'vip': a VIP feature (👑 while VIP is sold); x[3] 'beta': only in 跑車人生 測試版 while it is tried out
+function uiListed(x){ return x[3]!=='beta' || betaOn(); }
 function uiOn(k){ return (state.ui && (k in state.ui)) ? state.ui[k]!==false : UI_DEFAULT_OFF.indexOf(k)<0; }
 // sections that only have data when another feature is on
 function uiShow(k){
@@ -6961,7 +7090,7 @@ function uiSettingsHtml(part){
   var cb = 'display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text);margin:0 0 7px';
   function group(title, list){
     return '<div style="font-size:12px;font-weight:700;color:var(--text-muted);margin:10px 0 6px">'+title+'</div>'+
-      list.map(function(x){ return '<label style="'+cb+'"><input type="checkbox" id="f-ui-'+x[0]+'" style="width:17px;height:17px;flex:none"'+(uiOn(x[0])?' checked':'')+'>'+esc(x[1])+'</label>'; }).join('');
+      list.filter(uiListed).map(function(x){ return '<label style="'+cb+'"><input type="checkbox" id="f-ui-'+x[0]+'" style="width:17px;height:17px;flex:none"'+(uiOn(x[0])?' checked':'')+'>'+esc(x[1])+(x[2]==='vip' && vipGated() ? ' 👑' : '')+'</label>'; }).join('');
   }
   var h = '<div class="form-row"><label>🧩 顯示模式與功能開關</label></div>', hb = '';
   h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-4px 0 8px;line-height:1.6">用不到的功能可以關掉,畫面會更簡單。<b>關掉不會刪資料</b>,之後再打開就回來了。目前:<b id="uiModeLbl">'+uiModeLabel(state.ui||{})+'</b></div>';
@@ -7332,8 +7461,9 @@ var HELP = [
     ['效率指標', '時薪、每公里成本、每公里實收、油耗。', 'efficiency'],
     ['平台佔比、平台效率', '各平台賺多少、每趟平均;佔比圖右上角可切長條 / 圓餅。', 'platShare'],
     ['時段、星期、月份', '哪個時段、星期幾最好賺。', 'timeslot'],
-    ['收入目標', '⚙️「收入目標」設定每天 / 每月目標,記帳頁和分析頁顯示進度。', 'todayTarget'],
-    ['目標還要跑多久', '打開後,今日／本月目標下面會依目前的平均時薪和每趟實收,算出還要跑幾小時、幾趟;每記一筆就自動更新。剛開始跑還沒資料時,用近 30 天平均。', 'targetCalc'],
+    ['收入目標', '⚙️「收入目標」設定每天 / 每月目標,記帳頁顯示今日、本月目標進度和還差多少錢,分析頁也有目標進度。', 'todayTarget'],
+    ['目標還要跑多久', '打開後,今日／本月目標下面會依目前的平均時薪和每趟實收,算出還要跑幾小時、幾趟;每記一筆就自動更新。剛開始跑還沒資料時,用近 30 天平均。', 'targetCalc', 'vip'],
+    ['💰 可支配所得', '分析頁選本週或本月:實收扣掉已記的支出、固定成本(依天數分攤)和你自己開啟的預留款(保養、稅金,預設都不扣),看真正落袋多少;本月還有「照目前速度」的月底預測(每月 4 號起)。都是估算,只在手機上算。', 'dispIncome', 'vip', 'beta'],
     ['每公里油錢、電費', '分析頁效率指標:記加油的金額算每公里油錢;電動車記充電時填度數,算每公里電費和每度電可跑幾公里。', 'efficiency'],
     ['📊 年度報表', '⚙️「年度報表」,可以匯出 CSV 檔,用 Excel、Numbers 或 Google 試算表都能打開。']
   ]],
@@ -7370,9 +7500,10 @@ var HELP = [
   ]]
 ];
 function helpItemHtml(it){
+  if(it[4]==='beta' && !betaOn()) return '';
   var key = it[2], off = key && !uiOn(key);
   return '<div class="help-item" style="padding:9px 0;border-bottom:1px solid var(--border)">'+
-    '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="font-size:13.5px">'+esc(it[0])+'</b>'+
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="font-size:13.5px">'+esc(it[0])+(it[3]==='vip' && vipGated() ? ' 👑' : '')+'</b>'+
     (off ? '<button class="btn" style="width:auto;padding:4px 10px;font-size:11.5px" data-act="help-on:'+key+'">目前關閉 · 打開</button>' : '')+'</div>'+
     '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.65;margin-top:3px">'+esc(it[1])+'</div></div>';
 }
@@ -7769,12 +7900,15 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.19.6';
+var APP_VERSION = '2026.11.19.7';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.19.7', '🎯 記帳首頁的「本月目標」進度條和還差多少錢,現在設了每月目標就直接顯示(原本要打開「目標還要跑多久」才看得到)'],
+  ['2026.11.19.7', '💰 測試版新功能:分析頁選本週或本月,多一張「可支配所得」,實收扣掉支出、固定成本和你自己開啟的預留款(保養、稅金,預設都不扣),看真正落袋多少,本月還有月底預測。上架後是 VIP 功能', 'beta'],
+  ['2026.11.19.7', '⏱️ 測試版:目標下面的「還要跑幾小時、幾趟」上架後改成 VIP 功能,目標進度條和還差多少錢一樣免費。測試版沒開「VIP 測試」時會看到「👑 想知道還要跑多久?」', 'beta'],
   ['2026.11.19.6', '🔒 隱私權政策更新:不具名使用統計多送兩項,你在路況卡「我主要跑」自己勾的城市(不是定位)、是否訂閱 VIP 與方案,讓我們知道新功能該先支援哪些城市;一樣不含金額、平台、精確位置。不想參與,到 ⚙️「隱私與分享」取消勾選'],
   ['2026.11.19.6', '⭐ 路況卡勾了好幾個城市時,「編輯常用地點」可以點一個設成最主要的城市(預設是第一個勾的)'],
   ['2026.11.19.5', '🧭 新安裝的設定引導多一步「你主要在哪個城市跑?」,選了「即時路況」就直接是那個城市的地點,不用再自己去改'],
@@ -7875,7 +8009,7 @@ function maybeShowWhatsNew(){
   if(!hasMeaningfulData()){ state.seenVersion = APP_VERSION; saveQuiet(); return false; }
   // only what is new since the version this phone last showed; nothing new for this driver: no pop-up
   var seen = state.seenVersion || '0';
-  var news = WHATS_NEW.filter(function(x){ return versionAfter(x[0], seen) && (x[2]!=='app' || isNativeApp()); });
+  var news = WHATS_NEW.filter(function(x){ return versionAfter(x[0], seen) && (x[2]!=='app' || isNativeApp()) && (x[2]!=='beta' || betaOn()); });
   state.seenVersion = APP_VERSION; saveQuiet();
   if(!news.length) return false;
   var shown = news.slice(0, WHATS_NEW_MAX), more = news.length - shown.length;
@@ -8790,7 +8924,11 @@ document.addEventListener('click', function(e){
     if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(vid).then(vok, vfail);
     else { try{ var vta = document.createElement('textarea'); vta.value = vid; document.body.appendChild(vta); vta.select(); var vdone = document.execCommand('copy'); document.body.removeChild(vta); (vdone ? vok : vfail)(); }catch(err){ vfail(); } }
   }
-  else if(cmd==='vip-test-on'){ state.vipTest = true; save(); closeModal(); if(vipPendingPeriod) analyticsPeriod = vipPendingPeriod; vipPendingPeriod = null; renderAll(); showToast('👑 已開啟 VIP 測試'); }
+  else if(cmd==='disp-vip'){ openVipIntro('可支配所得'); }
+  else if(cmd==='pace-vip'){ openVipIntro('目標還要跑多久'); }
+  else if(cmd==='disp-settings'){ openDispSettings(); }
+  else if(cmd==='disp-save'){ saveDispSettings(); }
+  else if(cmd==='vip-test-on'){ state.vipTest = true; vipTurnOnAsked(); save(); closeModal(); if(vipPendingPeriod) analyticsPeriod = vipPendingPeriod; vipPendingPeriod = null; renderAll(); showToast('👑 已開啟 VIP 測試'); }
   else if(cmd==='year'){ uiMonth.setFullYear(uiMonth.getFullYear()+(+arg)); renderAll(); }
   else if(cmd==='hot-slot'){ hotspotSlot=arg; renderAll(); }
   else if(cmd==='hot-src'){ hotSource=arg; renderAll(); }
