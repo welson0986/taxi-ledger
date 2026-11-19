@@ -5724,7 +5724,7 @@ if(state.catOrder && state.catOrder.indexOf('fees')<0){
   var feesAt = state.catOrder.indexOf('other');
   if(feesAt<0) state.catOrder.push('fees'); else state.catOrder.splice(feesAt, 0, 'fees');
 }
-// default spots per city; coordinates checked one by one against OpenStreetMap and Google Maps (2026-11-18, 新北/基隆/宜蘭 11-19)
+// default spots per city; coordinates checked one by one against OpenStreetMap and Google Maps (2026-11-18, 其他縣市 11-19)
 var TRAFFIC_CITIES = [
   {key:'tpe', name:'台北市', short:'台北', spots:TRAFFIC_SPOTS_DEFAULT},
   {key:'ntpc', name:'新北市', short:'新北', spots:[
@@ -5769,6 +5769,14 @@ var TRAFFIC_CITIES = [
     {name:'竹科 新安路口', lat:24.7817, lng:121.0059},
     {name:'遠百竹北・縣體育館', lat:24.8214, lng:121.0213}
   ]},
+  {key:'mlc', name:'苗栗縣', short:'苗栗', spots:[
+    {name:'高鐵苗栗站', lat:24.6056, lng:120.8251},
+    {name:'竹南車站', lat:24.6866, lng:120.8806},
+    {name:'苗栗車站・英才夜市', lat:24.5700, lng:120.8216},
+    {name:'大千醫院', lat:24.5499, lng:120.8149},
+    {name:'尚順・為恭醫院', lat:24.6880, lng:120.9060},
+    {name:'竹南科學園區', lat:24.7073, lng:120.9229}
+  ]},
   {key:'txg', name:'台中市', short:'台中', spots:[
     {name:'高鐵台中站', lat:24.1117, lng:120.6158},
     {name:'台中車站', lat:24.1371, lng:120.6869},
@@ -5776,6 +5784,40 @@ var TRAFFIC_CITIES = [
     {name:'台中榮總', lat:24.1841, lng:120.6048},
     {name:'新光三越・大遠百', lat:24.1647, lng:120.6440},
     {name:'逢甲夜市', lat:24.1775, lng:120.6466}
+  ]},
+  {key:'chw', name:'彰化縣', short:'彰化', spots:[
+    {name:'彰化車站', lat:24.0816, lng:120.5384},
+    {name:'彰化基督教醫院', lat:24.0712, lng:120.5443},
+    {name:'彰化秀傳', lat:24.0648, lng:120.5378},
+    {name:'員林車站・員基', lat:23.9611, lng:120.5684},
+    {name:'高鐵彰化站', lat:23.8745, lng:120.5741},
+    {name:'彰濱秀傳', lat:24.0785, lng:120.4107}
+  ]},
+  {key:'nto', name:'南投縣', short:'南投', spots:[
+    {name:'南投醫院', lat:23.9140, lng:120.6849},
+    {name:'草屯轉運站', lat:23.9746, lng:120.6821},
+    {name:'佑民醫院(草屯)', lat:23.9606, lng:120.6817},
+    {name:'埔里轉運站', lat:23.9636, lng:120.9692},
+    {name:'埔里基督教醫院', lat:23.9705, lng:120.9463},
+    {name:'竹山秀傳', lat:23.8001, lng:120.7140}
+  ]},
+  {key:'yun', name:'雲林縣', short:'雲林', spots:[
+    {name:'高鐵雲林站', lat:23.7366, lng:120.4167},
+    {name:'斗六車站', lat:23.7119, lng:120.5408},
+    {name:'台大雲林(斗六)', lat:23.6965, lng:120.5261},
+    {name:'台大雲林(虎尾)', lat:23.7350, lng:120.4269},
+    {name:'斗南車站', lat:23.6726, lng:120.4810},
+    {name:'北港朝天宮', lat:23.5681, lng:120.3047}
+  ]},
+  {key:'cyi', name:'嘉義市(含嘉義縣)', short:'嘉義', spots:[
+    {name:'嘉義車站・轉運站', lat:23.4795, lng:120.4407},
+    {name:'文化路夜市', lat:23.4779, lng:120.4498},
+    {name:'嘉基・耐斯', lat:23.4979, lng:120.4511},
+    {name:'聖馬爾定醫院', lat:23.4762, lng:120.4678},
+    {name:'高鐵嘉義站', lat:23.4590, lng:120.3229},
+    {name:'嘉義長庚(朴子)', lat:23.4626, lng:120.2861},
+    {name:'大林慈濟', lat:23.5960, lng:120.4573},
+    {name:'民雄車站', lat:23.5552, lng:120.4316}
   ]},
   {key:'tnn', name:'台南市', short:'台南', spots:[
     {name:'台南車站', lat:22.9971, lng:120.2130},
@@ -5792,6 +5834,30 @@ var TRAFFIC_CITIES = [
     {name:'巨蛋・漢神・瑞豐', lat:22.6683, lng:120.3017},
     {name:'高醫附醫', lat:22.6460, lng:120.3096},
     {name:'夢時代', lat:22.5949, lng:120.3058}
+  ]},
+  {key:'pif', name:'屏東縣', short:'屏東', spots:[
+    {name:'屏東車站・轉運站', lat:22.6690, lng:120.4858},
+    {name:'太平洋・觀光夜市', lat:22.6724, lng:120.4911},
+    {name:'屏東榮總', lat:22.6629, lng:120.4754},
+    {name:'屏東基督教醫院', lat:22.6821, lng:120.5026},
+    {name:'潮州車站', lat:22.5501, lng:120.5360},
+    {name:'東港東琉線碼頭', lat:22.4685, lng:120.4450}
+  ]},
+  {key:'hun', name:'花蓮縣', short:'花蓮', spots:[
+    {name:'花蓮車站・轉運站', lat:23.9930, lng:121.6024},
+    {name:'花蓮慈濟', lat:23.9957, lng:121.5926},
+    {name:'門諾醫院', lat:23.9883, lng:121.6267},
+    {name:'東大門夜市', lat:23.9731, lng:121.6113},
+    {name:'遠百花蓮', lat:23.9783, lng:121.5997},
+    {name:'花蓮機場', lat:24.0253, lng:121.6146}
+  ]},
+  {key:'ttt', name:'台東縣', short:'台東', spots:[
+    {name:'台東車站', lat:22.7937, lng:121.1231},
+    {name:'台東馬偕', lat:22.7511, lng:121.1408},
+    {name:'台東基督教醫院', lat:22.7639, lng:121.1461},
+    {name:'轉運站・觀光夜市', lat:22.7533, lng:121.1483},
+    {name:'台東機場', lat:22.7563, lng:121.1071},
+    {name:'富岡漁港', lat:22.7916, lng:121.1925}
   ]}
 ];
 // no GPS guess: the driver picks the city; old users (no pick) count as 台北市
@@ -7427,9 +7493,9 @@ function openModeChooser(){
   h += '<button style="'+big+'" data-act="ui-choose:full"><b style="font-size:15px">🔵 完整分析</b><br><span style="font-size:12px;color:var(--text-muted)">記車種、付款方式、上下車時間,分析時薪、熱區、載客率。</span></button>';
   openModal(h);
 }
-var OB_TOTAL = 6;
+var OB_TOTAL = 7;
 function onboardStep(n, title){
-  return '<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:2px">第 '+n+' / '+OB_TOTAL+' 步'+(n>3?'(選填)':'')+'</div><div class="modal-title">'+title+'</div>';
+  return '<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:2px">第 '+n+' / '+OB_TOTAL+' 步'+(n>4?'(選填)':'')+'</div><div class="modal-title">'+title+'</div>';
 }
 // every step can be skipped, and the whole guide can be left at any step
 function onboardSkipHtml(skipAct){
@@ -7437,7 +7503,7 @@ function onboardSkipHtml(skipAct){
     (skipAct ? '<button type="button" class="btn btn-ghost" style="flex:1" data-act="'+skipAct+'">跳過這步</button>' : '')+
     '<button type="button" class="btn btn-ghost" style="flex:1" data-act="ob-done">後面先不用了,開始記帳</button></div>';
 }
-// steps 4-6: each opens the real settings; when that sheet closes the guide goes on to the next step
+// steps 5-7: each opens the real settings; when that sheet closes the guide goes on to the next step
 var OB_EXTRA = [
   ['fees', '每家平台抽多少?', '記帳時會自動扣手續費,算出實收。已經先填好各車隊常見的費率,跟你的合約不一樣再改。', '💰 設定手續費'],
   ['payout', '車隊什麼時候撥款?', '「撥款」頁會算出每家哪天入帳、入多少,方便對帳。已經先填好各車隊公布的撥款日,收款帳戶可以在這裡選。', '🏦 設定撥款'],
@@ -7447,7 +7513,7 @@ var obResume = null;
 function openOnboardExtra(i){
   if(i>=OB_EXTRA.length){ finishOnboard(); return; }
   var x = OB_EXTRA[i];
-  var h = onboardStep(4+i, x[1]);
+  var h = onboardStep(5+i, x[1]);
   h += '<div style="font-size:13px;line-height:1.7;margin-bottom:14px">'+x[2]+'</div>';
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="ob-x-go:'+i+'">'+x[3]+'</button></div>';
   h += onboardSkipHtml('ob-x:'+(i+1));
@@ -7464,6 +7530,20 @@ function openOnboardCar(){
   h += onboardSkipHtml('ob-car-skip');
   openModal(h);
 }
+// step 2: the cities the live-traffic card starts with; nothing is ticked for a new driver (skip = 台北 as before)
+var obCities = null;
+function openOnboardCity(){
+  if(obCities===null) obCities = (state.trafficCity || state.trafficCities) ? trafficPicks() : [];
+  var h = onboardStep(2, '你主要在哪個城市跑?');
+  h += '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 10px;line-height:1.6">「即時路況」會先放這個城市的車站、醫院、商圈。常跑好幾個城市就多勾幾個,路況卡上可以切換。不會用定位判斷。</div>';
+  h += '<div class="chip-row" style="margin-bottom:14px">'+TRAFFIC_CITIES.map(function(c){
+    return '<button type="button" class="chip-opt'+(obCities.indexOf(c.key)>=0?' selected':'')+'" data-act="ob-city:'+c.key+'">'+esc(c.name)+'</button>';
+  }).join('')+'</div>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">之後可以在記帳頁路況卡的「編輯常用地點」改。'+(uiShow('traffic') ? '' : '簡單記帳預設沒有打開「看即時路況」,要用時到 ⚙️ 打開。')+'</div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="ob-city-next">下一步</button></div>';
+  h += onboardSkipHtml('ob-city-skip');
+  openModal(h);
+}
 // fleets and ways of getting passengers the driver can switch off at the start
 function onboardPlatKeys(){
   return allPlatforms().filter(function(p){ return !p.custom && !p.tipOnly && p.key!=='bonus' && !(isRental() && RENTAL_HIDE.indexOf(p.key)>=0); }).map(function(p){ return p.key; });
@@ -7476,7 +7556,7 @@ function openOnboardPlats(){
   var keys = onboardPlatKeys();
   var fleet = keys.filter(function(k){ return OB_FLEET_KEYS.indexOf(k)>=0; });
   var own = keys.filter(function(k){ return OB_FLEET_KEYS.indexOf(k)<0; });
-  var h = onboardStep(2, '你有在跑哪些?');
+  var h = onboardStep(3, '你有在跑哪些?');
   h += '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 10px;line-height:1.6">勾選你有在跑的,記帳頁只會出現勾選的項目。小費、活動獎勵會一直都在。</div>';
   function group(title, list){
     if(!list.length) return '';
@@ -7499,7 +7579,7 @@ function openOnboardPlats(){
 function openOnboardFont(){
   var cur = fontScaleLabel();
   var b = 'flex:1;padding:12px 0;border-radius:12px;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-weight:700;cursor:pointer;font-family:inherit';
-  var h = onboardStep(3, '字會不會太小?');
+  var h = onboardStep(4, '字會不會太小?');
   h += '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 10px;line-height:1.6">點一下馬上換,選看得最清楚的。之後可以在 ⚙️「字體大小」改。</div><div style="display:flex;gap:6px;margin-bottom:14px">';
   FONT_SCALES.forEach(function(x, i){ h += '<button data-act="ob-font:'+x[0]+'" style="'+b+';font-size:'+(13+i*2)+'px'+(x[0]===cur?';border:2px solid var(--accent-strong);background:var(--accent-soft)':'')+'">'+x[0]+'</button>'; });
   h += '</div><div class="btn-row"><button class="btn btn-primary" data-act="ob-x:0">下一步</button></div>';
@@ -7658,12 +7738,14 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.19.3';
+var APP_VERSION = '2026.11.19.5';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.19.5', '🧭 新安裝的設定引導多一步「你主要在哪個城市跑?」,選了「即時路況」就直接是那個城市的地點,不用再自己去改'],
+  ['2026.11.19.4', '🚦 路況地點的城市加到全台:新增苗栗、彰化、南投、雲林、嘉義(含嘉義縣)、屏東、花蓮、台東,每個城市都有車站和大醫院,到「編輯常用地點」勾你常跑的城市'],
   ['2026.11.19.3', '🚦 常用路況地點的「我主要跑」可以複選了:例如勾台北和新北,路況卡上會出現城市按鈕,送客到板橋時點一下就換成新北的地點。每個城市改過的清單各自記住。也新增了新北市(板橋車站、亞東、中和環球、雙和、裕隆城、宏匯、林口三井、淡水)'],
   ['2026.11.19.2', '🚦 路況地點的城市多了「基隆市」和「宜蘭縣」:基隆有車站・東岸郵輪、廟口、部立基隆醫院、長庚等;宜蘭有礁溪、宜蘭車站・陽明附醫、羅東車站、博愛・聖母醫院、羅東夜市等'],
   ['2026.11.19.1', '🚦 各城市的預設路況地點更新:每個城市都加進大型醫院(林口長庚、新竹馬偕、中國醫、台中榮總、成大、奇美、高醫),靠很近的地點合成一格(例如「高鐵桃園・華泰」「巨蛋・漢神・瑞豐」);你自己改過的清單不會動'],
@@ -8978,7 +9060,22 @@ document.addEventListener('click', function(e){
     state.ui = uiPreset(arg); state.uiMode = arg; save(); renderAll();
     if(!state.onboarded) openOnboardCar(); else closeModal();
   }
-  else if(cmd==='ob-car'){ state.carType = arg==='yellow'||arg==='rental' ? arg : 'multi'; save(); renderAll(); openOnboardPlats(); }
+  else if(cmd==='ob-car'){ state.carType = arg==='yellow'||arg==='rental' ? arg : 'multi'; save(); renderAll(); openOnboardCity(); }
+  else if(cmd==='ob-city'){
+    if(obCities===null) obCities = [];
+    var oci = obCities.indexOf(arg);
+    if(oci>=0) obCities.splice(oci,1); else if(TRAFFIC_CITIES.some(function(c){ return c.key===arg; })) obCities.push(arg);
+    openOnboardCity();
+  }
+  else if(cmd==='ob-city-next'){
+    // nothing ticked counts as skipping; edited lists of each city are kept (trafficShow)
+    if(obCities && obCities.length){
+      var oc = TRAFFIC_CITIES.filter(function(c){ return obCities.indexOf(c.key)>=0; }).map(function(c){ return c.key; });
+      trafficShow(oc[0]); state.trafficCities = oc; save(); renderAll();
+    }
+    openOnboardPlats();
+  }
+  else if(cmd==='ob-city-skip'){ openOnboardPlats(); }
   else if(cmd==='ob-plats'){
     var anyPicked = onboardPlatKeys().some(function(k){ var el = document.getElementById('ob-plat-'+k); return el && el.checked; });
     if(!anyPicked){ var obm = document.getElementById('ob-plat-msg'); if(obm) obm.textContent = '請至少勾選一項你有在跑的'; return; }
@@ -8991,7 +9088,7 @@ document.addEventListener('click', function(e){
   }
   else if(cmd==='ob-font'){ setFontScale(arg, true); renderAll(); openOnboardFont(); }
   else if(cmd==='ob-done'){ finishOnboard(); }
-  else if(cmd==='ob-car-skip'){ openOnboardPlats(); }
+  else if(cmd==='ob-car-skip'){ openOnboardCity(); }
   else if(cmd==='ob-plats-skip'){ save(); renderAll(); openOnboardFont(); }
   else if(cmd==='ob-x'){ openOnboardExtra(+arg); }
   else if(cmd==='ob-x-go'){
@@ -9000,7 +9097,7 @@ document.addEventListener('click', function(e){
     else { settingsOpenSec = ox[0]==='fees' ? 'platforms' : 'basic'; openSettingsModal(); }
     obResume = oi+1;
   }
-  else if(cmd==='ob-rerun'){ obPlatsChosen = true; openOnboardCar(); }
+  else if(cmd==='ob-rerun'){ obPlatsChosen = true; obCities = null; openOnboardCar(); }
   else if(cmd==='paper-cashed'){
     var pr = state.records.filter(function(r){ return String(r.id)===arg; })[0];
     if(pr){ pr.paperCashed = todayStr(); save(); renderAll(); showToast('📄 已兌現 '+fmtMoney(computeNetRevenue(pr)+(+pr.tip||0))); }
