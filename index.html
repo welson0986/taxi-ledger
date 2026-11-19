@@ -5724,10 +5724,20 @@ if(state.catOrder && state.catOrder.indexOf('fees')<0){
   var feesAt = state.catOrder.indexOf('other');
   if(feesAt<0) state.catOrder.push('fees'); else state.catOrder.splice(feesAt, 0, 'fees');
 }
-// default spots per city; coordinates checked one by one against OpenStreetMap and Google Maps (2026-11-18)
+// default spots per city; coordinates checked one by one against OpenStreetMap and Google Maps (2026-11-18, 新北/基隆/宜蘭 11-19)
 var TRAFFIC_CITIES = [
-  {key:'tpe', name:'台北市(含新北)', spots:TRAFFIC_SPOTS_DEFAULT},
-  {key:'tyc', name:'桃園市', spots:[
+  {key:'tpe', name:'台北市', short:'台北', spots:TRAFFIC_SPOTS_DEFAULT},
+  {key:'ntpc', name:'新北市', short:'新北', spots:[
+    {name:'板橋車站・環球', lat:25.0142, lng:121.4636},
+    {name:'亞東醫院', lat:24.9971, lng:121.4529},
+    {name:'中和環球', lat:25.0072, lng:121.4748},
+    {name:'雙和醫院', lat:24.9926, lng:121.4936},
+    {name:'新店裕隆城', lat:24.9781, lng:121.5465},
+    {name:'新莊宏匯廣場', lat:25.0596, lng:121.4495},
+    {name:'林口三井 Outlet', lat:25.0708, lng:121.3633},
+    {name:'淡水捷運站・老街', lat:25.1680, lng:121.4457}
+  ]},
+  {key:'tyc', name:'桃園市', short:'桃園', spots:[
     {name:'桃園機場 T1・T2', lat:25.0795, lng:121.2348},
     {name:'高鐵桃園・華泰', lat:25.0142, lng:121.2142},
     {name:'桃園車站', lat:24.9889, lng:121.3144},
@@ -5735,7 +5745,23 @@ var TRAFFIC_CITIES = [
     {name:'林口長庚', lat:25.0610, lng:121.3679},
     {name:'桃園藝文特區', lat:25.0174, lng:121.2985}
   ]},
-  {key:'hsz', name:'新竹市(含竹北)', spots:[
+  {key:'kel', name:'基隆市', short:'基隆', spots:[
+    {name:'基隆車站・東岸郵輪', lat:25.1320, lng:121.7413},
+    {name:'廟口夜市', lat:25.1282, lng:121.7436},
+    {name:'部立基隆醫院', lat:25.1306, lng:121.7485},
+    {name:'基隆長庚(麥金路)', lat:25.1207, lng:121.7224},
+    {name:'長庚情人湖院區', lat:25.1490, lng:121.7077},
+    {name:'七堵車站', lat:25.0930, lng:121.7139}
+  ]},
+  {key:'ila', name:'宜蘭縣', short:'宜蘭', spots:[
+    {name:'礁溪轉運站・車站', lat:24.8291, lng:121.7765},
+    {name:'宜蘭車站・陽明附醫', lat:24.7521, lng:121.7583},
+    {name:'新月廣場', lat:24.7541, lng:121.7512},
+    {name:'羅東車站・轉運站', lat:24.6776, lng:121.7769},
+    {name:'博愛・聖母醫院', lat:24.6718, lng:121.7723},
+    {name:'羅東夜市', lat:24.6759, lng:121.7694}
+  ]},
+  {key:'hsz', name:'新竹市(含竹北)', short:'新竹', spots:[
     {name:'新竹車站・轉運站', lat:24.8016, lng:120.9716},
     {name:'高鐵新竹・台大生醫', lat:24.8069, lng:121.0424},
     {name:'巨城購物中心', lat:24.8101, lng:120.9743},
@@ -5743,7 +5769,7 @@ var TRAFFIC_CITIES = [
     {name:'竹科 新安路口', lat:24.7817, lng:121.0059},
     {name:'遠百竹北・縣體育館', lat:24.8214, lng:121.0213}
   ]},
-  {key:'txg', name:'台中市', spots:[
+  {key:'txg', name:'台中市', short:'台中', spots:[
     {name:'高鐵台中站', lat:24.1117, lng:120.6158},
     {name:'台中車站', lat:24.1371, lng:120.6869},
     {name:'中國醫藥大學附醫', lat:24.1572, lng:120.6804},
@@ -5751,7 +5777,7 @@ var TRAFFIC_CITIES = [
     {name:'新光三越・大遠百', lat:24.1647, lng:120.6440},
     {name:'逢甲夜市', lat:24.1775, lng:120.6466}
   ]},
-  {key:'tnn', name:'台南市', spots:[
+  {key:'tnn', name:'台南市', short:'台南', spots:[
     {name:'台南車站', lat:22.9971, lng:120.2130},
     {name:'高鐵台南・三井', lat:22.9250, lng:120.2869},
     {name:'成大醫院', lat:23.0023, lng:120.2194},
@@ -5759,7 +5785,7 @@ var TRAFFIC_CITIES = [
     {name:'南紡購物中心', lat:22.9907, lng:120.2330},
     {name:'花園夜市', lat:23.0112, lng:120.2002}
   ]},
-  {key:'khh', name:'高雄市', spots:[
+  {key:'khh', name:'高雄市', short:'高雄', spots:[
     {name:'高鐵左營・新光三越', lat:22.6871, lng:120.3077},
     {name:'高雄車站', lat:22.6395, lng:120.3026},
     {name:'小港機場', lat:22.5706, lng:120.3446},
@@ -5774,6 +5800,29 @@ function trafficCity(){
   return TRAFFIC_CITIES[0];
 }
 function trafficSpots(){ return state.trafficSpots || trafficCity().spots.map(function(s){ return {name:s.name, lat:s.lat, lng:s.lng}; }); }
+// cities the driver ticked (in menu order); the one shown always counts, so old users get [their city]
+function trafficPicks(){
+  var cur = trafficCity().key, p = state.trafficCities || [];
+  return TRAFFIC_CITIES.filter(function(c){ return c.key===cur || p.indexOf(c.key)>=0; }).map(function(c){ return c.key; });
+}
+// state.trafficSpots stays the hand-edited list of the city on screen; the other cities' edited lists wait in trafficSpotsBy
+function trafficShow(key){
+  var cur = trafficCity().key;
+  if(key===cur || !TRAFFIC_CITIES.some(function(c){ return c.key===key; })) return;
+  var by = state.trafficSpotsBy || {};
+  if(state.trafficSpots) by[cur] = state.trafficSpots; else delete by[cur];
+  if(by[key]) state.trafficSpots = by[key]; else delete state.trafficSpots;
+  delete by[key];
+  state.trafficSpotsBy = by;
+  state.trafficCity = key;
+}
+function trafficTabsHtml(picks){
+  var cur = trafficCity().key;
+  return '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px"><span style="font-size:11.5px;color:var(--text-muted)">城市</span>'+picks.map(function(k){
+    var c = TRAFFIC_CITIES.filter(function(x){ return x.key===k; })[0];
+    return '<button type="button" class="chip-opt'+(k===cur?' selected':'')+'" style="font-size:12px;padding:4px 10px" data-act="traffic-show:'+k+'">'+esc(c.short||c.name)+'</button>';
+  }).join('')+'</div>';
+}
 function trafficUrl(lat, lng){
   var u = 'https://www.google.com/maps/@?api=1&map_action=map&layer=traffic&zoom=16';
   return (lat!=null && lng!=null) ? u+'&center='+lat+','+lng : u;
@@ -5781,6 +5830,8 @@ function trafficUrl(lat, lng){
 function trafficCardHtml(){
   var h = '<div class="section"><div class="card" style="padding:12px 14px">';
   h += '<button class="btn btn-ghost" style="width:100%;font-weight:700" data-act="traffic-here">🚦 看即時路況(我附近)</button>';
+  var picks = trafficPicks();
+  if(picks.length>1) h += '<div style="margin-top:10px">'+trafficTabsHtml(picks)+'</div>';
   var spots = trafficSpots();
   if(spots.length){
     h += '<div class="chip-row" style="margin-top:10px">'+spots.map(function(s){
@@ -5827,10 +5878,11 @@ function parseLatLng(s){
 function openTrafficSpotsModal(){
   var spots = trafficSpots();
   var h = '<div class="modal-title">常用路況地點<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
-  var city = trafficCity();
-  h += '<div class="form-row"><label>我主要跑</label><div class="chip-row">'+TRAFFIC_CITIES.map(function(c){
-    return '<button type="button" class="chip-opt'+(c.key===city.key?' selected':'')+'" data-act="traffic-city:'+c.key+'">'+esc(c.name)+'</button>';
-  }).join('')+'</div><div style="font-size:11px;color:var(--text-muted);line-height:1.5;margin-top:6px">'+(state.trafficSpots ? '你改過下面的清單,換城市前會先問你。' : '選城市就會換成那個城市的預設地點(機場、高鐵、車站、商圈)。')+'不會用定位判斷。</div></div>';
+  var city = trafficCity(), picks = trafficPicks();
+  h += '<div class="form-row"><label>我主要跑(可以複選)</label><div class="chip-row">'+TRAFFIC_CITIES.map(function(c){
+    return '<button type="button" class="chip-opt'+(picks.indexOf(c.key)>=0?' selected':'')+'" data-act="traffic-city:'+c.key+'">'+esc(c.name)+'</button>';
+  }).join('')+'</div><div style="font-size:11px;color:var(--text-muted);line-height:1.5;margin-top:6px">'+(picks.length>1 ? '路況卡上會出現城市按鈕,點一下就切換。每個城市改過的清單會各自記住。' : '常跑好幾個城市就多勾幾個,路況卡上會出現切換按鈕。')+'不會用定位判斷。</div></div>';
+  if(picks.length>1) h += '<div class="form-row"><label>下面是哪個城市的地點</label>'+trafficTabsHtml(picks)+'</div>';
   h += '<div class="card" style="margin-bottom:14px">';
   h += spots.length ? spots.map(function(s,i){
     return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(s.name)+'</div><div class="li-sub">'+s.lat+', '+s.lng+'</div></div>'+
@@ -7606,12 +7658,14 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.19.1';
+var APP_VERSION = '2026.11.19.3';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.19.3', '🚦 常用路況地點的「我主要跑」可以複選了:例如勾台北和新北,路況卡上會出現城市按鈕,送客到板橋時點一下就換成新北的地點。每個城市改過的清單各自記住。也新增了新北市(板橋車站、亞東、中和環球、雙和、裕隆城、宏匯、林口三井、淡水)'],
+  ['2026.11.19.2', '🚦 路況地點的城市多了「基隆市」和「宜蘭縣」:基隆有車站・東岸郵輪、廟口、部立基隆醫院、長庚等;宜蘭有礁溪、宜蘭車站・陽明附醫、羅東車站、博愛・聖母醫院、羅東夜市等'],
   ['2026.11.19.1', '🚦 各城市的預設路況地點更新:每個城市都加進大型醫院(林口長庚、新竹馬偕、中國醫、台中榮總、成大、奇美、高醫),靠很近的地點合成一格(例如「高鐵桃園・華泰」「巨蛋・漢神・瑞豐」);你自己改過的清單不會動'],
   ['2026.11.18.6', '🚦 常用路況地點可以選「我主要跑」哪個城市:台北(含新北)、桃園、新竹(含竹北)、台中、台南、高雄,選了就換成那個城市的機場、高鐵、車站、商圈;你自己改過的清單會先問你才換'],
   ['2026.11.18.4', '🔗 有打開「記錄接單時間」的車友:載客中就接到下一單,可以直接按行程卡上的「📲 接到下一單」,這趟下車後直接按「上車」就好;分析頁會算出無縫接單幾趟,這種趟次的等單算 0,接駁從上一趟下車算起'],
@@ -8779,12 +8833,22 @@ document.addEventListener('click', function(e){
     if(confirm('恢復成「'+rc.name+'」的預設 '+rc.spots.length+' 個地點?你自己加的地點會被移除。')){ delete state.trafficSpots; save(); openTrafficSpotsModal(); }
   }
   else if(cmd==='traffic-city'){
-    var tc = null;
-    TRAFFIC_CITIES.forEach(function(c){ if(c.key===arg) tc = c; });
-    if(!tc || tc.key===trafficCity().key) return;
-    // a list the driver built by hand is never replaced without asking
-    if(state.trafficSpots && !confirm('換成「'+tc.name+'」的預設 '+tc.spots.length+' 個地點?你自己加過或改過的地點會被換掉。')) return;
-    state.trafficCity = tc.key; delete state.trafficSpots; save(); openTrafficSpotsModal();
+    // tick / untick a city; nothing the driver edited is thrown away (it waits in trafficSpotsBy)
+    if(!TRAFFIC_CITIES.some(function(c){ return c.key===arg; })) return;
+    var tp = trafficPicks();
+    if(tp.indexOf(arg)>=0){
+      if(tp.length===1) return;  // at least one city stays ticked
+      tp = tp.filter(function(k){ return k!==arg; });
+      if(arg===trafficCity().key) trafficShow(tp[0]);
+    } else {
+      tp.push(arg); trafficShow(arg);
+    }
+    state.trafficCities = tp; save(); openTrafficSpotsModal();
+  }
+  else if(cmd==='traffic-show'){
+    if(trafficPicks().indexOf(arg)<0) return;
+    trafficShow(arg); save();
+    if(document.getElementById('f-spot-name')) openTrafficSpotsModal(); else renderAll();
   }
   else if(cmd==='trip-cancel'){ if(confirm('取消這趟上車紀錄?')){ state.activeTrip=null; save(); renderAll(); } }
   else if(cmd==='open-trip-link'){ openTripLinkModal(arg); }
