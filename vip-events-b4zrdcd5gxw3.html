@@ -1073,6 +1073,146 @@ var footerFine=document.querySelector('.footer-fine');if(footerFine)footerFine.t
   }
   updateNov18EventDetails();
 
+  // 11/19 官方更新：同一活動只修正原卡，缺漏的交管與活動才另建卡。
+  // 交通的「管制結束」不代表集會、路跑或典禮實際散場時間。
+  function mergeNov19OfficialUpdates() {
+    var official={
+      pink:'https://www.ntpc.gov.tw/ch/home.jsp?dataserno=1e4dba7444061b6132f461e07087eae1&id=e8ca970cde5c00e1',
+      cityRoad:'https://dot.gov.taipei/News_Content.aspx?n=C41A7FC0570A20B3&s=12EBE74C16A0CAF0&sms=72544237BBE4C5F6',
+      cityPolice:'https://www.cna.com.tw/news/aloc/202611180104.aspx',
+      nanshan:'https://dot.gov.taipei/News_Content.aspx?n=C41A7FC0570A20B3&s=D0A175F69A9CAEC7&sms=72544237BBE4C5F6',
+      horse:'https://www.gov.taipei/News_Content.aspx?n=EEC70A4186D4C828&s=9FE55C0D9007DE3B&sms=87415A8B9CE81B16',
+      horseParking:'https://www.tmc.taipei/tw/news/announcement/63thGHA-Parking-Lot-Notice',
+      river:'https://heo.gov.taipei/News_Content.aspx?n=1FE45A3FEA3D194E&s=D706A13F3EEE970F&sms=72544237BBE4C5F6',
+      mountain:'https://www.travel.taipei/zh-tw/news/details/68254',
+      uver:'https://www.zepp.co.jp/hall/newtaipei/schedule/single/?rid=160684'
+    };
+    function source(footer,label,url){
+      if(!footer||Array.prototype.some.call(footer.querySelectorAll('a'),function(a){return a.href===url;}))return;
+      var a=document.createElement('a');a.className='source-link';a.textContent=label+' ↗';
+      a.href=url;a.target='_blank';a.rel='noopener noreferrer';
+      footer.insertBefore(a,footer.querySelector('.nav-link')||null);
+    }
+    function replaceEvent(id,options){
+      var card=document.getElementById(id);if(!card)return;
+      if(options.time){var t=card.querySelector('.time-text');if(t)t.textContent=options.time;}
+      if(options.note){var n=card.querySelector('.event-note');if(n)n.textContent=options.note;}
+      if(options.place){var p=card.querySelector('.event-place');if(p){p.textContent='';var dot=document.createElement('span');dot.className='place-dot';dot.setAttribute('aria-hidden','true');p.appendChild(dot);p.appendChild(document.createTextNode(options.place));}}
+      if(options.unmap){card.removeAttribute('data-venue');}
+      if(options.link)source(card.querySelector('.event-footer'),options.label||'官方最新公告',options.link);
+    }
+    [20,21,22].forEach(function(day){
+      replaceEvent('ev-DLTA-PINK-'+day,{
+        time:day===20?'18:00～21:00（農業局正式公告）':'14:00～21:00（農業局正式公告）',
+        place:'板橋府中廣場（板橋區）',unmap:true,
+        note:'活動地點：板橋府中廣場。11/20（五）18:00～21:00、11/21（六）及11/22（日）14:00～21:00；含北海岸農產、親子手作與音樂演出。市集訪客分散離場，21:00不是全員同時散場。',
+        link:official.pink,label:'新北市農業局場地／每日時段'
+      });
+    });
+    replaceEvent('ev-NEXT-079',{
+      time:'17:30 入場／19:00 開演・散場未公布',
+      note:'Zepp New Taipei 本場演出：17:30 開放入場，19:00 正式開演。演出結束及散場時刻未公布；建議以現場人流及合法上下客位置安排接送。',
+      link:official.uver,label:'Zepp 場館本場演出詳頁'
+    });
+    replaceEvent('ev-NEXT-082',{
+      time:'05:30 起分組起跑・散場未公布',
+      note:'主辦05:30起分組起跑，官方報名限額共14,000名（非實到）。公運處11/18公告路跑將自11/21 23:00至11/22 08:30分階段交管，涵蓋凱道、仁愛路、信義路、新生高架、北安路、明水路、樂群一路等；49條公車改道、52處站位停靠受影響。實際放行依現場公告，管制結束非所有跑者散場。',
+      link:official.nanshan,label:'公運處最新路跑改道公告'
+    });
+    replaceEvent('ev-NEXT-087',{
+      note:'金馬獎星光大道17:00開始，頒獎典禮18:30開始，實際散場未公布。官方公告11/22 00:00～11/23 02:00北流周邊交通管制（含進撤場），且11/22北流B1～B3汽車停車場全天不開放臨時停車；請在管制範圍外合法上下客。',
+      link:official.horse,label:'臺北市府周邊管制公告'
+    });
+    function event(item){
+      var id='ev-20261119-'+item.key+'-'+item.day;
+      if(document.getElementById(id))return;
+      var stack=document.querySelector('#day-panel-'+item.day+' .event-stack');if(!stack)return;
+      var card=document.createElement('article');card.className='event-card event-a';card.id=id;
+      card.setAttribute('data-day',String(item.day));card.setAttribute('data-grade','A');card.setAttribute('data-source','OFFICIAL_20261119');
+      if(item.venue&&Object.prototype.hasOwnProperty.call(VENUE_COORDS,item.venue))card.setAttribute('data-venue',item.venue);
+      var top=document.createElement('div');top.className='event-top';
+      var time=document.createElement('span');time.className='time-text';time.textContent=item.time||'時刻未公布';top.appendChild(time);
+      var grade=document.createElement('span');grade.className='badge badge-a';grade.textContent='A 官方公告';top.appendChild(grade);card.appendChild(top);
+      var name=document.createElement('div');name.className='event-name';name.textContent=item.title;card.appendChild(name);
+      var place=document.createElement('div');place.className='event-place';var dot=document.createElement('span');dot.className='place-dot';dot.setAttribute('aria-hidden','true');place.appendChild(dot);place.appendChild(document.createTextNode(item.place));card.appendChild(place);
+      var note=document.createElement('p');note.className='event-note';note.textContent=item.note;card.appendChild(note);
+      var foot=document.createElement('div');foot.className='event-footer';source(foot,item.sourceName||'主辦官方資訊',item.source);
+      var nav=document.createElement('a');nav.className='nav-link';nav.textContent='📍 導航';
+      nav.href='https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(item.nav||item.place)+'&travelmode=driving';nav.target='_blank';nav.rel='noopener noreferrer';
+      foot.appendChild(nav);card.appendChild(foot);stack.appendChild(card);
+      var region=document.getElementById(item.region||'region-panel-5');
+      if(region){region.setAttribute('data-event-refs',((region.getAttribute('data-event-refs')||'')+' '+id).trim());region.removeAttribute('data-rendered');}
+    }
+    // 貓空與指南宮的三天系列活動經臺北旅遊網確認；沒有公布的單場鐘點不填推估。
+    event({key:'satoyama-festival',day:19,time:'祭典時刻未公布',title:'臺北里山川・指南宮山川祭典',place:'指南宮（文山區）',
+      note:'「2026臺北里山川公共藝術計畫」11/19在指南宮舉辦山川祭典；正式入場、結束時間及參與人數未公布。文山山區活動非大型市區封路，周邊請注意現場引導。',
+      nav:'臺北市文山區指南路三段157巷200號 指南宮',source:official.mountain,sourceName:'臺北旅遊網官方活動'});
+    [20,21].forEach(function(day){
+      event({key:'satoyama-market',day:day,time:'市集時刻未公布',title:'臺北里山川・貓空生態市集'+(day===21?'／《桃花後》環境劇場':''),
+        place:day===21?'指南宮與貓空圓滿森境（文山區）':'貓空周邊（文山區）',
+        note:day===21?'臺北旅遊網確認11/21有里山川生態市集與優人神鼓環境劇場《桃花後》，演出地點為圓滿森境；單場開演、結束及人數未公布。':'臺北旅遊網確認11/20～21在貓空一帶辦理里山川生態市集，兩日各攤位營業時刻與活動結束時間未公布。',
+        nav:'臺北市文山區貓空站',source:official.mountain,sourceName:'臺北旅遊網官方活動'});
+    });
+    // 集會當日只建立一張活動卡；跨至隔日的封路另以交通卡追蹤到管制結束。
+    event({key:'city-hall-rally',day:21,time:'活動開始／散場未公布（封路00:00起）',title:'11/21 市府路大型集會活動',
+      place:'臺北市政府前・市府路松高至松壽段（信義區）',
+      note:'公運處確認11/21 00:00～11/22 03:00市府路交通管制，15條公車路線改道、4處站位取消停靠。這是管制時間，不等於集會或散場時間；管制範圍內計程車招呼站及營業用共用臨停區暫停使用，勿於封閉路段候客。',
+      nav:'臺北市信義區市府路1號',source:official.cityRoad,sourceName:'臺北市公運處交管公告',region:'region-panel-0'});
+    var trafficList=document.querySelector('#traffic .traffic-list');
+    function traffic(id,title,status,time,body,links,until,venue){
+      if(!trafficList||document.getElementById(id))return;
+      var card=document.createElement('article');card.className='traffic-card';card.id=id;
+      card.setAttribute('data-source','OFFICIAL_20261119');
+      if(until)card.setAttribute('data-visible-until',until);
+      if(venue&&Object.prototype.hasOwnProperty.call(VENUE_COORDS,venue))card.setAttribute('data-venue',venue);
+      var hd=document.createElement('div');hd.className='traffic-head';var ico=document.createElement('span');ico.className='traffic-icon';ico.textContent='!';ico.setAttribute('aria-hidden','true');hd.appendChild(ico);var h3=document.createElement('h3');h3.textContent=title;hd.appendChild(h3);card.appendChild(hd);
+      [ ['traffic-status',status],['traffic-time',time],['traffic-body',body] ].forEach(function(p){var el=document.createElement('p');el.className=p[0];el.textContent=p[1];card.appendChild(el);});
+      var foot=document.createElement('div');foot.className='event-footer';links.forEach(function(l){source(foot,l[0],l[1]);});card.appendChild(foot);
+      trafficList.insertBefore(card,trafficList.firstChild);
+    }
+    traffic('traffic-20261119-mabachang','11/22 深夜～11/23 馬場町水防道路施工封閉','A 臺北市水利工程處；遇雨可能順延',
+      '11/22（日）22:00～11/23（一）18:00',
+      '馬場町河濱公園馬場町56燈桿至中正河濱公園停車場間水防道路銑刨加鋪，新一號（馬場町）疏散門配合封閉。這是週日夜間22:00才開始的施工，不影響週日上午；車輛依現場改道牌行駛。',
+      [['臺北市水利處工程公告',official.river]],'2026-11-23T18:00');
+    traffic('traffic-20261119-horse','11/22 金馬獎：北流周邊封路及停車場管制','A 臺北市政府文化局＋臺北流行音樂中心正式公告',
+      '11/22（日）00:00～11/23（一）02:00（含進撤場）；11/22 停車場全天不開放臨停',
+      '交通管制範圍位於南港路二段178巷以西、向陽路以東、南港路二段以南、市民大道八段以北的北流周邊道路；非上述範圍內每條路全程必定封閉。北流B1至B3汽車停車場11/22全面暫停臨時停車，建議於管制外合法接送。',
+      [['北市府管制範圍',official.horse],['北流停車場公告',official.horseParking]],'2026-11-23T02:00','北流');
+    traffic('traffic-20261119-city-hall','11/21～11/22 市府路集會：封路27小時、計程車站停用','A 臺北市公運處正式公告／警方交通資訊',
+      '市府路（松高～松壽）：11/21 00:00～11/22 03:00；新仁愛路（一號道路～市府路）：11/21 00:00～11/22 24:00',
+      '市府路松高路至松壽路段雙向管制；新仁愛路一號道路至市府路段另有例假日交管。15條公車線改道，4處站位取消停靠；管制路段內營業用共用臨停區、計程車招呼站及大客車停車格停用。活動開講與散場時間未公布；以現場警察指揮為準。',
+      [['臺北市公運處公告',official.cityRoad],['中央社警方交通說明',official.cityPolice]],'2026-11-23T00:00');
+    // 既有 NS RUN 卡片補充公運處 11/18 更新；不重複新增另一張同名交通卡。
+    Array.prototype.forEach.call(document.querySelectorAll('#traffic .traffic-card'),function(card){
+      var head=card.querySelector('h3');if(!head||head.textContent.indexOf('NS RUN 南山半馬')===-1)return;
+      var status=card.querySelector('.traffic-status');if(status)status.textContent='A 臺北市公共運輸處最新交管與公車改道公告';
+      var time=card.querySelector('.traffic-time');if(time)time.textContent='11/21（六）23:00～11/22（日）08:30 分階段管制（各段以官方圖為準）';
+      var body=card.querySelector('.traffic-body');if(body)body.textContent='凱達格蘭大道、仁愛路一至二段、信義路一段、金山南路、新生高架（南往北）、北安路、明水路、樂群一路等分階段管制；預計49條公車改道、52處站位取消停靠。現場視交通情況可提早或延後解除，不代表所有路段同一時間封閉或全員同時散場。';
+      source(card.querySelector('.event-footer'),'公運處11/18最新改道',official.nanshan);
+    });
+    // 只替換已過期的11/16推薦項目，並補充兩個既有推薦項目的新交管限制。
+    var ranks=document.querySelectorAll('#top10 .rank-card');
+    if(ranks.length>=7){
+      var old=ranks[6];
+      var rt=old.querySelector('.rank-time strong');if(rt)rt.textContent='11/21（六）傍晚～晚間・散場未公布';
+      var rl=old.querySelector('.rank-location');if(rl)rl.textContent='臺北市政府外圍道路（信義）';
+      var rr=old.querySelector('.rank-reason');if(rr)rr.textContent='市府路11/21 00:00～11/22 03:00封閉，15條公車改道、4處站位停靠受影響；招呼站及營業用臨停區停用。僅在外圍合法可停靠處接送，不可進入封路區候客。';
+      var rn=old.querySelector('.rank-navigation .nav-link');
+      if(rn)rn.href='https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent('臺北市信義區松仁路與松壽路口')+'&travelmode=driving';
+    }
+    if(ranks.length>=4){
+      var nr=ranks[3].querySelector('.rank-reason');
+      if(nr)nr.textContent='南山半馬05:30起分組起跑；管制自11/21 23:00至11/22 08:30分階段實施，49條公車改道、52站位受影響。此為交通調度，不是同時散場。';
+      var gh=ranks[2].querySelector('.rank-reason');
+      if(gh)gh.textContent='金馬獎17:00星光大道、18:30頒獎；11/22全天北流B1～B3停車場無臨停，周邊至11/23 02:00有交管，典禮散場未公布。';
+    }
+    var fine=document.querySelector('.footer-fine');
+    if(fine)fine.textContent='資訊更新：2026/11/19（台灣時間）｜活動與交管以官方公告及現場指揮為準。© 2026 跑車人生記帳本 · VIP 專屬';
+    var headerTime=document.querySelector('.update-stamp time');
+    if(headerTime){headerTime.setAttribute('datetime','2026-11-19');headerTime.textContent='最後更新 11/19｜活動及交通提醒';}
+  }
+  mergeNov19OfficialUpdates();
+
   // 交通管制項目只在標題能確定單一場館時對應；跨區遊行不任意選擇其中一個座標。
   function venueForTrafficCard(card) {
     var heading=card.querySelector('h3');
