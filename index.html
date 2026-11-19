@@ -6852,6 +6852,8 @@ var RN_URL = 'https://app.realway.com.tw/api/roads';
 var RN_WAIT_MS = 15000, RN_STALE_MS = 60000, RN_H = 3600000;
 var RN_MAJOR_WORDS = ['火災','翻覆','多車','封閉','封路','受困','傷亡','坍方','淹水','停電'];
 var RN_DONE_WORDS = ['已排除','已修復','已移除','已恢復','已解除'];
+// these make it NOT 重大 (「已解除封路」「未封路」「明日凌晨封路」) — the same list as the relay's NOT_MAJOR_WORDS
+var RN_NOT_MAJOR = ['解除','已排除','未','預計','明日','明天','今晚','預告'];
 // 警廣 often marks the end at the front instead, e.g. 「*1939新北交大:排除*」「*1520北市交控:車流恢復正常*」「*1600坪控:結束*」
 var RN_DONE_NOTE = /\*[^*]{0,30}(排除|恢復|結束|解除|移除|修復|處理完畢)[^*]{0,20}\*/;
 var RN_ICON = {'事故':'💥','阻塞':'🚗','交通障礙':'⚠️','交通管制':'⛔','號誌故障':'🚥','道路施工':'🚧','災害':'🌊','其他':'ℹ️'};
@@ -6883,6 +6885,7 @@ function rnIsDone(e){
 }
 function rnIsMajor(e){
   var t = (e.tx||'')+' '+(e.tx2||'');
+  if(RN_NOT_MAJOR.some(function(w){ return t.indexOf(w)>=0; })) return false;
   return e.ty==='災害' || e.st===105 || RN_MAJOR_WORDS.some(function(w){ return t.indexOf(w)>=0; });
 }
 // one (merged) item → null when it should not be shown, else {tab, done, major}
@@ -6974,8 +6977,11 @@ function rnBodyHtml(){
   if(rnErr) h += '<div style="font-size:12px;color:var(--expense);line-height:1.6;margin-bottom:6px">暫時讀不到最新路況,下面是 '+hhmm(rnData.at)+' 讀到的。</div>';
   else if(src.pbs && !src.pbs.ok) h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:6px">警廣暫時讀不到,先顯示交通部 TDX 的。</div>';
   else if(src.tdx && src.tdx.on && !src.tdx.ok) h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:6px">交通部 TDX 暫時讀不到'+(src.tdx.part ? '一部分' : '')+',先顯示警廣的。</div>';
+  // the server keeps the last good data when a source fails for a while; say how old it is
+  var stale = [['pbs','警廣'],['tdx','交通部 TDX']].filter(function(x){ return src[x[0]] && src[x[0]].ok && src[x[0]].stale && src[x[0]].at; });
+  if(!rnErr && stale.length) h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:6px">'+stale.map(function(x){ return x[1]+'暫時讀不到最新的,先顯示 '+hhmm(src[x[0]].at)+' 的'; }).join(';')+'。</div>';
   h += '<div class="segmented" style="margin-bottom:8px"><button class="'+(rnTab==='live'?'active':'')+'" data-act="rn-tab:live">即時路況('+v.live.length+')</button><button class="'+(rnTab==='work'?'active':'')+'" data-act="rn-tab:work">🚧 施工('+v.work.length+')</button></div>';
-  if(!list.length) h += '<div style="'+NOTE+'">'+(rnTab==='work' ? '最近 7 天沒有'+esc(rnCityNames(keys))+'的施工消息。' : '目前沒有'+esc(rnCityNames(keys))+'的事故、壅塞、封路消息。')+'</div>';
+  if(!list.length) h += '<div style="'+NOTE+'">'+(rnTab==='work' ? '最近 7 天沒有'+esc(rnCityNames(keys))+'的施工消息。' : '目前沒有收到通報（不代表道路通暢）')+'</div>';
   h += list.map(function(e){ return rnItemHtml(e, now); }).join('');
   h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:10px">'+(rnTab==='work'
     ? '施工收在這裡,顯示最近 7 天有更新的。'
@@ -8860,12 +8866,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.19.13';
+var APP_VERSION = '2026.11.20.1';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.20.1', '🚦 測試版:路況快報的「重大」標示更準,寫著「已解除、未封路、預計、明日、今晚、預告」的不再標重大;沒有消息時改寫「目前沒有收到通報（不代表道路通暢）」;台北、新北改由伺服器每 3 分鐘自動整理,打開更快', 'beta'],
   ['2026.11.19.13', '🚦 測試版新功能:記帳頁「看即時路況」下面多了「路況快報」,依你勾的我主要跑城市,列出警廣和交通部公布的事故、壅塞、封路、施工,點一則看地圖路況。只送出城市、不送你的位置;打開才讀,不推播。上架後是 VIP 功能', 'beta'],
   ['2026.11.19.12', '📍 測試版新功能:分析頁「下車地統計」,看客人常把你載去哪裡(下車熱區前 10 名),以及在哪裡下車後最久才接到下一單(死區前 5 名)。最近 90 天,只在手機上算。上架後是 VIP 功能', 'beta'],
   ['2026.11.19.11', '📏 測試版新的選填欄位「每趟公里數」(到 ⚙️ 功能開關打開):記車資時填車隊 App 上這趟的里程,算各車隊實際的每公里實收。預設關閉,不想填的不用開', 'beta'],
