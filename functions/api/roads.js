@@ -187,7 +187,7 @@ async function loadTdx(ep, env, cityKey) {
     if (!res.ok) throw new Error('tdx ' + res.status);
     const d = await res.json();
     const list = Array.isArray(d) ? d : (d.Items || d.LiveEvents || d.Events || []);
-    const now = Date.now(), items = [];
+    const now = Date.now(), seen = {}, items = [];
     list.forEach(x => {
       const m = isoTime(x.LastUpdateTime) || isoTime(x.PublishTime);
       if (!m || !x.EventID) return;
@@ -198,8 +198,11 @@ async function loadTdx(ep, env, cityKey) {
       if (x.EventSubType === 805) ty = '號誌故障';
       const tx = cleanText([x.EventTitle, x.Description].filter((v, i, a) => v && a.indexOf(v) === i).join(' '));
       const it = { id: 't' + x.EventID, s: 'tdx', ty, st: x.EventSubType || null, ar: cleanText(tdxArea(x.Location)).slice(0, 60), tx, la: r5(ll[0]), lo: r5(ll[1]), m, so: cleanText(x.Source).slice(0, 40), c: cityKey || tdxCity(x.Location), end: end };
-      if (fresh(it, now)) items.push(it);
+      if (!fresh(it, now)) return;
+      if (seen[it.id] && seen[it.id].m >= m) return;   // TDX 同一個 EventID 會重複出現很多次（2026-11-20 實測 699 筆只有 164 件），只留一筆
+      seen[it.id] = it;
     });
+    for (const k in seen) items.push(seen[k]);
     return { ok: true, at: now, items };
   }
   throw new Error('tdx 401');
