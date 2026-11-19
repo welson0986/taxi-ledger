@@ -130,7 +130,7 @@ function fresh(it, now) {
 
 // ---------- 警廣 ----------
 async function loadPbs() {
-  const res = await get(PBS_URL, { headers: { 'Accept': '*/*' } });
+  const res = await get(PBS_URL, { headers: { 'Accept': '*/*' } });   // 警廣回 text/plain，只收 JSON 會被拒（406）
   if (!res.ok) throw new Error('pbs ' + res.status);
   const d = JSON.parse(await res.text());
   const now = Date.now(), seen = {}, items = [];
@@ -150,14 +150,15 @@ async function loadPbs() {
 // ---------- TDX ----------
 async function tdxToken(env) {
   const v = await cached('tdx-token', TOKEN_TTL, async () => {
-    const body = 'grant_type=client_credentials&client_id=' + encodeURIComponent(env.TDX_CLIENT_ID) + '&client_secret=' + encodeURIComponent(env.TDX_CLIENT_SECRET);
+    const body = 'grant_type=client_credentials&client_id=' + encodeURIComponent(String(env.TDX_CLIENT_ID).trim()) + '&client_secret=' + encodeURIComponent(String(env.TDX_CLIENT_SECRET).trim());   // 貼上時多的空白、換行去掉
     const res = await get(TDX_TOKEN_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
     if (!res.ok) throw new Error('token ' + res.status);
     const j = await res.json();
     if (!j.access_token) throw new Error('token none');
     return { ok: true, at: Date.now(), tk: j.access_token };
   });
-  return v && v.ok ? v.tk : null;
+  if (!(v && v.ok)) throw new Error((v && v.err) || 'token');   // 把真正原因（例如 token 401）往上傳
+  return v.tk;
 }
 function tdxArea(L) {
   L = L || {};
@@ -238,9 +239,11 @@ export async function onRequest(context) {
   items = items.map(it => { const o = Object.assign({}, it); delete o.c; return o; });
   const tdxOk = tdxOn && tdx.length > 0 && tdx.every(g => g && g.ok);
   const tdxAt = tdx.filter(g => g && g.ok).reduce((a, g) => Math.max(a, g.at), 0) || null;
+  // 失敗原因只留英數字（例如 token 401、tdx 429），不會含金鑰
+  const bad = tdx.find(g => !(g && g.ok)), tdxErr = bad ? String((bad && bad.err) || 'fail').replace(/[^A-Za-z0-9 ]/g, '').slice(0, 30) : null;
   return reply(req, 200, {
     ok: !!(pbs && pbs.ok) || tdx.some(g => g && g.ok), v: 1, t: Date.now(), cities: sel,
-    src: { pbs: { ok: !!(pbs && pbs.ok), at: pbs && pbs.ok ? pbs.at : null }, tdx: { on: tdxOn, ok: tdxOk, part: tdxOn && !tdxOk && tdx.some(g => g && g.ok), at: tdxAt } },
+    src: { pbs: { ok: !!(pbs && pbs.ok), at: pbs && pbs.ok ? pbs.at : null }, tdx: { on: tdxOn, ok: tdxOk, part: tdxOn && !tdxOk && tdx.some(g => g && g.ok), at: tdxAt, err: tdxErr } },
     items
   });
 }
