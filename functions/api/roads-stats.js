@@ -89,6 +89,10 @@ function lonLat(s) {
 }
 function r5(n) { return n == null ? null : Math.round(n * 1e5) / 1e5; }
 // 太舊的先丟掉，回給 App 的資料小一點（App 會再照顯示規則篩一次）
+// 資料來源留下的測試資料（2026-11-20 紅米實測看到施工第一則「全區道路APP測試」），不給司機看
+// 只認「APP／系統／平台／資料＋測試」「測試資料／測試用／測試案件」或整段以「測試」開頭，一般施工、號誌維修不受影響
+const TEST_ITEM = /(APP|App|app|系統|平台|資料)\s*測試|測試\s*(資料|用|案件|事件|帳號)|^\s*測試/;
+function isTestItem(ar, tx) { return TEST_ITEM.test(String(ar || '')) || TEST_ITEM.test(String(tx || '')); }
 function freshItem(it, now) {
   if (it.end && it.end > now) return true;
   return now - it.m <= (it.ty === '道路施工' ? 8 * DAY : 2 * DAY);
@@ -113,6 +117,7 @@ function parsePbs(text, now, pick) {
     const it = { id: 'p' + x.UID, s: 'pbs', ty, la: r5(num(x.y1)), lo: r5(num(x.x1)), m: m, c: cityOfName(x.areaNm) };
     if (pick && !pick(it)) return;
     it.ar = cleanText(x.areaNm).slice(0, 60); it.tx = cleanText(x.comment); it.so = cleanText(x.srcdetail).slice(0, 40); it.di = cleanText(x.direction).slice(0, 10);
+    if (isTestItem(it.ar, it.tx)) return;
     list.push(it);
   });
   return keepNewest(list);
@@ -187,7 +192,9 @@ function parseTdx(d, cityKey, now, pick) {
     if (pick && !pick({ c, la: r5(ll[0]), lo: r5(ll[1]) })) return;
     // TDX 的說明有時夾著系統內部編號（例如「事故-17951081390001654222000112124」），12 位以上的純數字對司機沒用，拿掉
     const tx = cleanText([x.EventTitle, x.Description].filter((v, i, a) => v && a.indexOf(v) === i).join(' ').replace(/[-_#:：]?\d{12,}/g, ''));
-    list.push({ id: 't' + x.EventID, s: 'tdx', ty, st: x.EventSubType || null, ar: cleanText(tdxArea(x.Location)).slice(0, 60), tx, la: r5(ll[0]), lo: r5(ll[1]), m, so: cleanText(x.Source).slice(0, 40), c, end: end });
+    const ar = cleanText(tdxArea(x.Location)).slice(0, 60);
+    if (isTestItem(ar, tx)) return;
+    list.push({ id: 't' + x.EventID, s: 'tdx', ty, st: x.EventSubType || null, ar, tx, la: r5(ll[0]), lo: r5(ll[1]), m, so: cleanText(x.Source).slice(0, 40), c, end: end });
   });
   return keepNewest(list);
 }
@@ -216,8 +223,10 @@ function mergeSources(items) {
       const e = out[i];
       if (e.srcs.indexOf(it.s) < 0 && (GROUP[e.ty] || 'obs') === g && Math.abs(e.m - it.m) <= 30 * MIN && dist(e, it) <= 300) hit = e;
     }
-    if (!hit) { out.push({ id: it.id, ids: [it.id], ty: it.ty, st: it.st || null, ar: it.ar || '', tx: it.tx || '', tx2: '', la: it.la, lo: it.lo, m: it.m, srcs: [it.s], so: [it.so || ''].filter(Boolean) }); return; }
+    if (!hit) { out.push({ id: it.id, ids: [it.id], ty: it.ty, st: it.st || null, ar: it.ar || '', tx: it.tx || '', tx2: '', la: it.la, lo: it.lo, m: it.m, srcs: [it.s], so: [it.so || ''].filter(Boolean), c: it.c || null, di: it.di || '' }); return; }
     hit.ids.push(it.id); hit.srcs.push(it.s);
+    if (!hit.c && it.c) hit.c = it.c;
+    if (!hit.di && it.di) hit.di = it.di;
     if (it.so && hit.so.indexOf(it.so) < 0) hit.so.push(it.so);
     if (it.s === 'pbs') { hit.tx2 = hit.tx; hit.tx = it.tx || hit.tx; if (it.ar) hit.ar = it.ar; } else hit.tx2 = it.tx || '';
     if (it.m > hit.m) hit.m = it.m;
@@ -360,7 +369,8 @@ function simulate(state, events, now, base) {
   for (const id in seen) if (now - (seen[id].l || 0) > 2 * DAY) delete seen[id];
   Object.keys(days).sort().slice(0, -KEEP_DAYS).forEach(k => { delete days[k]; });
   state.lastRun = now;
-  return { state, day, cands: cands.length };
+  // push：這一輪「新變成重大、而且新鮮」的事件（還沒套虛擬司機的 10 分鐘、每天 5 批）；真推播（push.js）對每位司機各自再套一次
+  return { state, day, cands: cands.length, push: cands.map(c => c.e) };
 }
 
 // ===== 主程式 =====
