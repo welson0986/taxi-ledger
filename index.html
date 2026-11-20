@@ -3217,6 +3217,7 @@ var TRIP_SHEET_HEADER = ['上車時間','上車緯度','上車經度','上車定
 
 /* ---------- rendering shell ---------- */
 function renderAll(){
+  rnPushSyncSoon();   // 上下班打卡、城市、還原、雲端同步 may have changed what the push server should know
   if(currentTab==='payout' && !uiShow('payoutTab')) currentTab = 'entry';
   var payNav = document.querySelector('.nav-btn[data-act="tab:payout"]'); if(payNav) payNav.style.display = uiShow('payoutTab') ? '' : 'none';
   document.querySelectorAll('.nav-btn').forEach(function(b){ b.classList.toggle('active', b.dataset.act==='tab:'+currentTab); });
@@ -6533,6 +6534,9 @@ function hotspotHtml(days, dayKeys){
    上車熱區 cache, looked up with the cell's grid point only. 「下一單在哪裡上車」(i) waits for the second version. */
 function dsAvailable(){ return betaOn(); }
 var DS_DAYS = [30, 90, 180, 365], DS_DAYS_DEF = 90, DS_TOP = 10, DS_DEAD_TOP = 5, DS_MIN_DEAD = 3;
+// a 死區 waits clearly longer than the driver's own average: at least DS_DEAD_RATIO times it and DS_DEAD_MORE minutes more
+// (a cell that waits less than average is not a dead zone, even when it is among the few with enough data)
+var DS_DEAD_RATIO = 1.5, DS_DEAD_MORE = 5;
 var dsDays = DS_DAYS_DEF;
 // the wait after trip t (in minutes), or null when it is not waiting for a fare
 function dsWait(t, nx, segs){
@@ -6570,7 +6574,8 @@ function dsStats(from, to){
   var all = Object.keys(cells).map(function(k){ var c = cells[k]; c.avg = c.wN ? c.w/c.wN : null; return c; });
   S.avg = S.waitN ? S.waitSum/S.waitN : null;
   S.hot = all.slice().sort(function(a,b){ return (b.n-a.n) || (b.wN-a.wN) || (a.key<b.key ? -1 : 1); }).slice(0, DS_TOP);
-  S.dead = all.filter(function(c){ return c.wN>=DS_MIN_DEAD; }).sort(function(a,b){ return (b.avg-a.avg) || (b.wN-a.wN) || (a.key<b.key ? -1 : 1); }).slice(0, DS_DEAD_TOP);
+  S.deadCand = all.filter(function(c){ return c.wN>=DS_MIN_DEAD; }).length;
+  S.dead = all.filter(function(c){ return c.wN>=DS_MIN_DEAD && S.avg!=null && c.avg>=S.avg*DS_DEAD_RATIO && c.avg-S.avg>=DS_DEAD_MORE; }).sort(function(a,b){ return (b.avg-a.avg) || (b.wN-a.wN) || (a.key<b.key ? -1 : 1); }).slice(0, DS_DEAD_TOP);
   S.cells = all.length;
   dsMemo = {gen:dataGen, st:state, key:key, val:S};
   return S;
@@ -6608,14 +6613,13 @@ function dsCardHtml(){
     return dsCellHtml(c, '下車區 '+(i+1), c.n+' 趟'+(c.fareN?' · 平均實收 '+fmtMoney(c.fare/c.fareN):'')+' · 下車後平均空檔 '+(c.wN ? fmtNum(c.avg,1)+' 分('+c.wN+' 次)' : '—(沒有可算的)'), '');
   }).join('');
   h += '<div style="font-size:13.5px;font-weight:800;margin:16px 0 2px">🐢 死區提醒(下車後最久才接到下一單,前 '+DS_DEAD_TOP+' 名)</div>';
-  if(!S.dead.length) h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;padding:6px 0">還沒有哪一區累積到 '+DS_MIN_DEAD+' 次可算的空檔,多跑一陣子就會出現。</div>';
+  if(!S.dead.length) h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;padding:6px 0">'+(S.deadCand ? '目前沒有明顯的死區:累積到 '+DS_MIN_DEAD+' 次以上的地方,下車後等單都沒有比你的平均久很多。' : '還沒有哪一區累積到 '+DS_MIN_DEAD+' 次可算的空檔,多跑一陣子就會出現。')+'</div>';
   h += S.dead.map(function(c, i){
-    var diff = S.avg!=null ? c.avg - S.avg : null;
-    return dsCellHtml(c, '死區 '+(i+1), c.wN+' 次'+(diff!=null ? ' · '+(diff>=0.05 ? '比你的平均多 '+fmtNum(diff,1)+' 分' : (diff<=-0.05 ? '比你的平均少 '+fmtNum(-diff,1)+' 分' : '跟你的平均差不多')) : ''), '平均 '+fmtNum(c.avg,1)+' 分');
+    return dsCellHtml(c, '死區 '+(i+1), c.wN+' 次 · 比你的平均多 '+fmtNum(c.avg-S.avg,1)+' 分'+(S.avg>0 ? '(約 '+fmtNum(c.avg/S.avg,1)+' 倍)' : ''), '平均 '+fmtNum(c.avg,1)+' 分');
   }).join('');
   h += '<div style="'+NOTE+'">⏱️ 下車後空檔是<b>估算</b>:這一趟下車到下一單(有按「接到單了」就算到接單,沒按就算到下一趟上車)。不算:每天最後一趟、隔天才接的單;有記到上班時間的日子(2026.11.19.11 版以後的打卡),下班前最後一趟、休息中下車或休息後才接的單也不算;以前的日子或在「歷史」改過工時的,空檔超過 '+(EMPTY_GAP_CAP_MIN/60)+' 小時當成休息不算。載客中就接到的下一單(無縫接單)空檔算 0。中間有沒按上下車的單,空檔會算得比較長。'+
     (S.waitN ? '<br>能算空檔的 '+S.waitN+' 次中,'+S.punchN+' 次有對到上班時間。' : '')+'</div>';
-  h += '<div style="'+NOTE+'">死區:同一區至少 '+DS_MIN_DEAD+' 次能算的空檔才列入,依平均空檔由長到短。只跟你自己的平均比。以下車位置約 1 公里見方分區,地名、✏️ 取名跟「上車熱區」共用(查詢時只送出 1 公里格子的格點座標)。只在手機上算,不上傳。</div>';
+  h += '<div style="'+NOTE+'">死區:同一區至少 '+DS_MIN_DEAD+' 次能算的空檔,而且平均空檔是你自己平均的 '+DS_DEAD_RATIO+' 倍以上(至少多 '+DS_DEAD_MORE+' 分)才列入,依平均空檔由長到短。只跟你自己的平均比。以下車位置約 1 公里見方分區,地名、✏️ 取名跟「上車熱區」共用(查詢時只送出 1 公里格子的格點座標)。只在手機上算,不上傳。</div>';
   return h+'</div></div>';
 }
 
@@ -7020,12 +7024,12 @@ function rnBodyHtml(){
 }
 function rnSheetHtml(){
   var keys = trafficPicks();
-  return '<div class="modal-title">🚦 路況快報<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div><div id="rnSheet">'+
+  return '<div class="modal-title">🚦 路況快報<button class="close" style="margin-left:auto;margin-right:8px;font-size:18px" data-act="rn-set" aria-label="路況快報設定">⚙️</button><button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div><div id="rnSheet">'+
     '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 8px">城市:<b style="color:var(--text)">'+esc(rnCityNames(keys))+'</b>(照「常用路況地點」的我主要跑) · <a data-act="traffic-spots" style="color:var(--accent);cursor:pointer;font-weight:700">改城市</a></div>'+
     '<div id="rnBody">'+rnBodyHtml()+'</div>'+
-    '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:12px;border-top:1px solid var(--border);padding-top:8px">資料來源:警察廣播電臺即時路況、交通部運輸資料流通服務平臺(TDX)。<br>內容僅供參考,以現場狀況為準;開車時請勿操作。<br>只送出你選的城市,不送你的位置;不推播,打開才讀。</div></div>';
+    '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:12px;border-top:1px solid var(--border);padding-top:8px">資料來源:警察廣播電臺即時路況、交通部運輸資料流通服務平臺(TDX)。<br>內容僅供參考,以現場狀況為準;開車時請勿操作。<br>只送出你選的城市,不送你的位置。'+(isNativeApp() && rnPushPlugin() ? '重大路況通知要自己在 ⚙️ 打開(預設不收)。' : '打開才讀,網頁版沒有通知。')+'</div></div>';
 }
-function rnRefresh(){ var b = document.getElementById('rnBody'); if(b) b.innerHTML = rnBodyHtml(); }
+function rnRefresh(){ var b = document.getElementById('rnBody'); if(b) b.innerHTML = rnBodyHtml(); rnSumRefresh(); }
 function rnLoad(force){
   if(!isVip()) return;
   var keys = trafficPicks().join(',');
@@ -7045,23 +7049,296 @@ function rnLoad(force){
     clearTimeout(rnTimer);
     rnData = {at:Date.now(), cities:keys, src:j.src||{}, items:j.items};
     rnBusy = false; rnErr = ''; rnRefresh();
+    if(document.getElementById('rnSheet')) rnMarkSeen();   // what the driver has now seen, for 「上次查看後新增」
   }).catch(fail);
 }
 function openRoadNews(){
   if(!isVip()){ openVipIntro('官方路況快報'); return; }
+  // the first time on a phone that can get pushes: ask (預設不收) before the list
+  if(!rnPushCfg().asked && isNativeApp() && rnPushPlugin()){
+    rnPushCan().then(function(can){ if(can && !rnPushCfg().asked) openModal(rnPushAskHtml()); else openRoadNewsSheet(); });
+    return;
+  }
+  openRoadNewsSheet();
+}
+function openRoadNewsSheet(){
   if(rnData && rnData.cities!==trafficPicks().join(',')) rnData = null;
   rnTab = 'live';
   openModal(rnSheetHtml());
+  if(rnData) rnMarkSeen();
   rnLoad(false);
 }
 function rnEntryHtml(){
   if(!rnAvailable() || !uiShow('roadNews')) return '';
   if(!isVip()) return '<div class="section"><div class="card" style="padding:12px 14px;display:flex;gap:10px;align-items:center"><div style="flex:1;font-size:13px;line-height:1.5"><b>🚦 官方路況快報 👑</b>'+
-    '<div style="font-size:12px;color:var(--text-muted)">依你主要跑的城市,列出警廣和交通部公布的事故、壅塞、封路、施工</div></div>'+
+    '<div style="font-size:12px;color:var(--text-muted)">依你主要跑的城市,列出警廣和交通部公布的事故、壅塞、封路、施工</div>'+
+    (rnPushHeld() ? '<div style="font-size:12px;color:var(--expense);font-weight:700;margin-top:2px">🔔 VIP 到期,重大路況通知已暫停;恢復 VIP 後會自動打開</div>' : '')+'</div>'+
     '<button class="btn btn-ghost" style="flex:none" data-act="rn-vip">看看</button></div></div>';
+  setTimeout(rnSumMaybeLoad, 0);   // the summary line reads the list by itself (at most every 3 minutes)
   return '<div class="section"><button class="card" style="width:100%;padding:12px 14px;display:flex;gap:10px;align-items:center;text-align:left;cursor:pointer;font:inherit;color:inherit" data-act="open-roadnews">'+
-    '<div style="flex:1;font-size:13px;line-height:1.5"><b>🚦 路況快報</b><div style="font-size:12px;color:var(--text-muted)">'+esc(rnCityNames(trafficPicks()))+'的事故、壅塞、封路、施工(警廣＋交通部)</div></div>'+
+    '<div style="flex:1;font-size:13px;line-height:1.5"><b>🚦 路況快報</b><div style="font-size:12px;color:var(--text-muted)">'+esc(rnCityNames(trafficPicks()))+'的事故、壅塞、封路、施工(警廣＋交通部)</div>'+rnSumHtml()+'</div>'+
     '<span style="flex:none;color:var(--accent);font-size:13px;font-weight:700">打開 ›</span></button></div>';
+}
+/* ---------- 🚦 重大路況通知 (VIP 2.0 ⑤ 第二版 乙批: Android push through Firebase) ----------
+   Off until the driver says yes (asked the first time 路況快報 opens; its ⚙️ changes it later). Only after that yes
+   does the app ask the phone for a push token (Firebase does nothing before: auto-init is off in the manifest).
+   Sent to our server (paoche-push on Cloudflare): this phone's random id, the push token, which of 台北／新北 are
+   ticked, the 不打擾 hours, 暫停到幾點 and 「通知到幾點」 (12 h after 上班打卡, 0 after 下班打卡). No position and
+   nothing from the ledger. The server only sends while that time runs, at most 1 batch per 10 minutes, 5 a day.
+   記帳頁摘要, 不打擾 and 暫停 are state.rnPush, so backups, restore and cloud sync carry them. Whether THIS phone
+   gets pushes (on) and whether it was asked are this phone's own (localStorage, 11/20 Welson): a second phone or an
+   older cloud copy must never switch another phone's notifications off without anyone noticing. The id and the token stay in this phone's localStorage only (never in the ledger, a backup or the cloud):
+   a phone the ledger was restored onto says yes again itself before it gets a token. */
+var RN_PUSH_URL = 'https://paoche-push.rw-631.workers.dev';
+var RN_PUSH_CITIES = ['tpe','ntpc'], RN_SHIFT_H = 12, RN_PAUSE_MS = 3600000, RN_PUSH_LS = 'taxi_push_v1', RN_SEEN_LS = 'taxi_rn_seen_v1';
+var rnPushCanP = null, rnPushBusy = false, rnPushTimer = null, rnPushFailAt = 0, rnPushErr = '', rnPushWaitTok = false, rnSumAt = 0;
+function rnPushPlugin(){ try{ return isNativeApp() && window.Capacitor.Plugins && window.Capacitor.Plugins.PushNotifications || null; }catch(e){ return null; } }
+function rnLsGet(k){ try{ var v = JSON.parse(localStorage.getItem(k)||'null'); return v && typeof v==='object' ? v : null; }catch(e){ return null; } }
+function rnLsSet(k, v){ try{ if(v==null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+function rnPushReg(){ return rnLsGet(RN_PUSH_LS) || {}; }
+function rnPushRegSet(ch){ var r = rnPushReg(); for(var k in ch) r[k] = ch[k]; rnLsSet(RN_PUSH_LS, r); return r; }
+// true when this phone can get pushes: the installed 測試版 app, built with the Firebase settings
+function rnPushCan(){
+  if(rnPushCanP) return rnPushCanP;
+  var nt = nativeTools();
+  if(!rnPushPlugin() || !nt || !rnAvailable()) return Promise.resolve(false);
+  rnPushCanP = nt.buildInfo().then(function(i){ return !!(i && i.push); }, function(){ return false; });
+  return rnPushCanP;
+}
+var RN_PUSH_LOCAL = ['on','asked'];   // this phone only (localStorage), never in the ledger
+function rnPushCfg(){
+  var p = state.rnPush && typeof state.rnPush==='object' ? state.rnPush : {};
+  var q = p.quiet && typeof p.quiet==='object' ? p.quiet : {};
+  var r = rnPushReg();
+  // 2026.11.20.4 kept on/asked in the ledger: a phone that registered then keeps its answer once (moved on the next change)
+  if(r.on===undefined && r.token && p.on!==undefined){ r = rnPushRegSet({on:p.on===true, asked:true}); }
+  var tm = function(v, d){ return typeof v==='string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(v) ? v : d; };
+  return {on:r.on===true, asked:r.asked===true, summary:p.summary!==false, quiet:{on:q.on===true, from:tm(q.from,'23:00'), to:tm(q.to,'06:00')}, pauseUntil: +p.pauseUntil>0 && isFinite(+p.pauseUntil) ? +p.pauseUntil : 0};
+}
+// on/asked go to this phone's own store; the rest is a ledger setting (saved, backed up, synced)
+function rnPushSet(ch){
+  var loc = {}, led = false, c = rnPushCfg();
+  for(var k in ch){ if(RN_PUSH_LOCAL.indexOf(k)>=0) loc[k] = ch[k]; else { c[k] = ch[k]; led = true; } }
+  if(Object.keys(loc).length) rnPushRegSet(loc);
+  var hadOld = state.rnPush && (state.rnPush.on!==undefined || state.rnPush.asked!==undefined);
+  if(led || hadOld){ state.rnPush = {summary:c.summary, quiet:c.quiet, pauseUntil:c.pauseUntil}; save(); }
+  rnPushSyncSoon();
+}
+function rnHmMin(s){ var m = String(s).split(':'); return (+m[0])*60 + (+m[1]); }
+function rnPushId(){
+  var r = rnPushReg();
+  if(typeof r.id==='string' && /^[a-f0-9]{32}$/.test(r.id)) return r.id;
+  var a = new Uint8Array(16), s = '';
+  try{ window.crypto.getRandomValues(a); }catch(e){ for(var j=0;j<16;j++) a[j] = Math.floor(Math.random()*256); }
+  for(var i=0;i<a.length;i++) s += (a[i]<16?'0':'')+a[i].toString(16);
+  rnPushRegSet({id:s});
+  return s;
+}
+// 「通知到幾點」: 12 hours after the 上班打卡 that is still open (forgetting 下班打卡 runs out by itself)
+function rnShiftUntil(now){
+  var best = 0, dm0 = state.dailyMeta||{};
+  Object.keys(dm0).forEach(function(d){ var m = dm0[d]; if(m && +m.activeShiftStart > best) best = +m.activeShiftStart; });
+  var u = best ? best + RN_SHIFT_H*3600000 : 0;
+  return u > now ? u : 0;
+}
+function rnPushCities(){ return trafficPicks().filter(function(k){ return RN_PUSH_CITIES.indexOf(k)>=0; }); }
+// what the server should hold for this phone right now
+// VIP 到期 (or 測試版「VIP 測試」 off): the server is told to stop and deletes this phone; the driver's 「通知」 choice and
+// the token stay on the phone, so when VIP comes back the next screen draw sends on:true again by itself (11/20)
+function rnPushHeld(){ var c = rnPushCfg(); return !!c.on && isNativeApp() && !isVip(); }
+function rnPushPayload(now){
+  var c = rnPushCfg(), r = rnPushReg(), id = rnPushId();
+  if(!c.on || !r.token || !isVip()) return {id:id, on:false};
+  return {id:id, on:true, token:r.token, platform:'android', cities:rnPushCities(),
+    quiet: c.quiet.on && c.quiet.from!==c.quiet.to ? {from:rnHmMin(c.quiet.from), to:rnHmMin(c.quiet.to)} : null,
+    until: rnShiftUntil(now), pause: c.pauseUntil > now ? c.pauseUntil : 0};
+}
+// something waits to reach the server (shown as 「同步中」 until it does)
+function rnPushPending(){
+  var r = rnPushReg();
+  if(!r.token && !r.sent) return false;   // never registered on this phone: nothing to tell
+  return JSON.stringify(rnPushPayload(Date.now())) !== r.sent;
+}
+function rnPushSyncSoon(){ if(!rnPushPlugin()) return; clearTimeout(rnPushTimer); rnPushTimer = setTimeout(rnPushSync, 700); }
+function rnPushSync(){
+  if(rnPushBusy || !rnPushPending()) return;
+  if(navigator.onLine===false){ rnPushErr = 'offline'; rnPushUi(); return; }   // the 'online' event sends it
+  var wait = 30000 - (Date.now() - rnPushFailAt);
+  if(rnPushFailAt && wait > 0){ clearTimeout(rnPushTimer); rnPushTimer = setTimeout(rnPushSync, wait+50); return; }
+  var body = JSON.stringify(rnPushPayload(Date.now()));
+  rnPushBusy = true;
+  fetch(RN_PUSH_URL+'/v1/device', {method:'POST', headers:{'Content-Type':'application/json'}, body:body, cache:'no-store', credentials:'omit', referrerPolicy:'no-referrer'}).then(function(res){
+    return res.json().then(function(j){ return {ok:res.ok, j:j}; });
+  }).then(function(x){
+    rnPushBusy = false;
+    if(!x.ok || !x.j || !x.j.ok) throw new Error('push');
+    rnPushFailAt = 0; rnPushErr = '';
+    var on = JSON.parse(body).on;
+    rnPushRegSet({sent:body, at:Date.now(), allowed: on ? x.j.allowed===true : null, live: on ? x.j.live===true : null});
+    rnPushUi();
+    rnPushSync();   // something changed again meanwhile
+  }).catch(function(){
+    rnPushBusy = false; rnPushFailAt = Date.now(); rnPushErr = navigator.onLine===false ? 'offline' : 'down';
+    rnPushUi(); clearTimeout(rnPushTimer); rnPushTimer = setTimeout(rnPushSync, 30500);
+  });
+}
+// after 好: the phone's permission, the quiet 「重大路況」 channel, then the token (it arrives in the 'registration' listener)
+function rnPushEnable(){
+  var pn = rnPushPlugin();
+  rnPushListen();   // the token comes through these listeners
+  return rnPushCan().then(function(can){
+    if(!can || !pn){ rnPushSet({on:false, asked:true}); showToast('這支手機目前不能收通知;記帳、路況清單照常可用', 3600); rnPushUi(); return; }
+    return pn.requestPermissions().then(function(p){
+      if(!p || p.receive!=='granted'){
+        rnPushSet({on:false, asked:true}); rnPushUi();
+        showToast('手機的通知沒有允許,不會收到重大路況通知;記帳、路況清單照常可用。要開的話,到手機的「設定 → 通知」允許跑車人生', 5200);
+        return;
+      }
+      rnPushSet({on:true, asked:true});
+      var ch = pn.createChannel ? pn.createChannel({id:'roads_major', name:'重大路況', description:'上班時的重大路況(封路、無法通行),無聲、不震動', importance:2, visibility:0, vibration:false, lights:false}).catch(function(){}) : Promise.resolve();
+      return ch.then(function(){ rnPushWaitTok = true; rnPushUi(); return pn.register(); });
+    });
+  }).catch(function(){ rnPushWaitTok = false; rnPushErr = 'down'; rnPushUi(); });
+}
+function rnPushDisable(){
+  rnPushSet({on:false, asked:true});
+  var pn = rnPushPlugin(), r = rnPushReg();
+  rnPushRegSet({token:null, allowed:null, live:null});
+  if(!r.sent) rnPushRegSet({sent:JSON.stringify({id:rnPushId(), on:false})});   // never reached the server: nothing to delete there
+  if(pn) pn.unregister().catch(function(){});
+  rnPushWaitTok = false; rnPushSync(); rnPushUi();
+}
+var rnPushListening = false;
+function rnPushListen(){
+  var pn = rnPushPlugin(); if(!pn || rnPushListening) return;
+  rnPushListening = true;
+  try{
+    pn.addListener('registration', function(t){
+      rnPushWaitTok = false;
+      if(!t || !t.value || !rnPushCfg().on) return;
+      rnPushRegSet({token:String(t.value)}); rnPushSync(); rnPushUi();
+    });
+    pn.addListener('registrationError', function(){ rnPushWaitTok = false; rnPushErr = 'token'; rnPushUi(); });
+    // tapped: open 路況快報 and read it again (the event may be over by now)
+    pn.addListener('pushNotificationActionPerformed', function(a){
+      var d = a && a.notification && a.notification.data || {};
+      if(d.open!=='roads' || !rnAvailable()) return;
+      setTimeout(function(){ if(!isVip()) return; openRoadNews(); rnLoad(true); }, 300);
+    });
+    // while the app is open Android shows nothing; the 記帳頁 summary is read again instead (no pop-up banner, 11/20)
+    pn.addListener('pushNotificationReceived', function(){ if(rnAvailable() && isVip()) rnLoad(true); });
+  }catch(e){}
+  // a phone that was offline, a shift that ran out: catch up
+  window.addEventListener('online', function(){ rnPushFailAt = 0; rnPushSyncSoon(); });
+  document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='visible'){ rnPushSyncSoon(); rnSumMaybeLoad(); } });
+  // already on (and allowed) on this phone: ask for the token again quietly, Firebase may have replaced it
+  var c = rnPushCfg(), r = rnPushReg();
+  if(c.on && r.token) rnPushCan().then(function(can){ if(!can) return; pn.checkPermissions().then(function(p){ if(p && p.receive==='granted') pn.register(); }).catch(function(){}); });
+}
+// a line for the ⚙️ sheet and the 記帳頁 card: where this phone stands
+function rnPushStatus(){
+  var c = rnPushCfg(), r = rnPushReg(), now = Date.now();
+  if(!c.on || !isNativeApp()) return '';
+  if(rnPushHeld()) return 'VIP 到期,通知已暫停(恢復 VIP 後自動打開)';
+  if(!r.token) return rnPushWaitTok ? '正在向手機取得通知編號…' : '這支手機還沒開通知(到 ⚙️ 打開)';
+  if(rnPushPending()) return rnPushErr==='offline' ? '同步中(有網路就會送出)' : '同步中…';
+  if(r.allowed===false) return '內測中:這支手機還沒加入內測名單,暫時收不到';
+  if(!rnPushCities().length) return '目前只有台北、新北有通知';
+  if(c.pauseUntil > now) return '通知暫停到 '+hhmm(c.pauseUntil);
+  var u = rnShiftUntil(now);
+  return u ? '上班中,有重大路況會通知(到 '+hhmm(u)+')'+(r.live===false ? ',伺服器暫停發送中' : '') : '下班中,不會通知';
+}
+function rnPushUi(){
+  var el = document.getElementById('rnPushStat'); if(el) el.textContent = rnPushStatus();
+  if(document.getElementById('rnSet')) rnSetRefresh();
+  rnSumRefresh();
+}
+// first time 路況快報 opens on a phone that can get pushes
+function rnPushAskHtml(){
+  return '<div class="modal-title">🚦 重大路況通知<button class="close" data-act="rn-ask:no">'+ICON_CLOSE+'</button></div>'+
+    '<div style="font-size:15px;font-weight:700;line-height:1.6;margin:2px 0 8px">要不要在上班時收「重大路況」通知?</div>'+
+    '<div style="font-size:13px;color:var(--expense);font-weight:700;margin-bottom:8px">(請於合法停車後查看)</div>'+
+    '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.7;margin-bottom:14px">只有封路、無法通行這類重大事件才通知;只在上班打卡中,10 分鐘最多 1 則、一天最多 5 則,無聲、不震動。目前只有台北、新北。之後可以在路況快報的 ⚙️ 改。</div>'+
+    '<div style="display:flex;gap:10px"><button class="btn btn-ghost" style="flex:1" data-act="rn-ask:no">先不要</button><button class="btn btn-primary" style="flex:1" data-act="rn-ask:yes">好</button></div>';
+}
+function rnSwitch(id, on, label, sub){
+  return '<label style="display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer"><input type="checkbox" id="'+id+'"'+(on?' checked':'')+' style="margin-top:3px;width:18px;height:18px;flex:none">'+
+    '<span style="flex:1;font-size:13.5px;line-height:1.5"><b>'+label+'</b>'+(sub ? '<span style="display:block;font-size:12px;color:var(--text-muted)">'+sub+'</span>' : '')+'</span></label>';
+}
+var rnSetCan = null;   // what rnPushCan() answered, for drawing the sheet
+function rnSetBodyHtml(){
+  var c = rnPushCfg(), now = Date.now(), h = '', native = isNativeApp(), can = native && rnSetCan!==false && !!rnPushPlugin();
+  if(!native) h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.7;padding:8px 0;border-bottom:1px solid var(--border)">🔔 重大路況通知:網頁版(iPhone)目前沒有通知,打開路況快報才讀。記帳頁摘要照常可用。</div>';
+  else if(!can) h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.7;padding:8px 0;border-bottom:1px solid var(--border)">🔔 重大路況通知:這個版本還不能收通知。</div>';
+  else {
+    h += rnSwitch('f-rn-push', c.on, '🔔 重大路況通知', '上班打卡中、有封路或無法通行這類重大事件時通知(無聲、不震動)。請於合法停車後查看。');
+    h += '<div id="rnPushStat" style="font-size:12px;color:var(--accent-strong);font-weight:700;padding:6px 0 2px">'+esc(rnPushStatus())+'</div>';
+    if(!rnPushCities().length) h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6">目前只有台北、新北有通知;你選的城市是 '+esc(rnCityNames(trafficPicks()))+'。</div>';
+  }
+  h += rnSwitch('f-rn-sum', c.summary, '📋 記帳頁摘要', '記帳頁的路況快報下面顯示一行:重大、事故各幾則,上次查看後新增幾則重大路況。');
+  if(can){
+    h += rnSwitch('f-rn-quiet', c.quiet.on, '🌙 不打擾時段', '這段時間不通知(台灣時間,可以跨午夜,例如 23:00 到 06:00)');
+    h += '<div style="display:flex;gap:8px;align-items:center;padding:8px 0 10px;border-bottom:1px solid var(--border);'+(c.quiet.on?'':'opacity:.5')+'"><input type="time" id="f-rn-qfrom" value="'+c.quiet.from+'" style="flex:1"'+(c.quiet.on?'':' disabled')+'><span>到</span><input type="time" id="f-rn-qto" value="'+c.quiet.to+'" style="flex:1"'+(c.quiet.on?'':' disabled')+'></div>';
+    if(c.on) h += '<div style="display:flex;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)"><span style="flex:1;font-size:13.5px"><b>⏸️ 暫停通知</b><span style="display:block;font-size:12px;color:var(--text-muted)">'+(c.pauseUntil > now ? '暫停到 '+hhmm(c.pauseUntil) : '休息、吃飯時先停一下')+'</span></span>'+
+      (c.pauseUntil > now ? '<button class="btn btn-ghost" style="width:auto;padding:6px 14px" data-act="rn-unpause">恢復</button>' : '<button class="btn btn-ghost" style="width:auto;padding:6px 14px" data-act="rn-pause">暫停 1 小時</button>')+'</div>';
+    // 測試版 only: the id for the 內測名單 and a test push
+    if(betaOn()){
+      var r = rnPushReg();
+      h += '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.7;margin-top:10px">🧪 測試版:裝置編號 <b style="color:var(--text);word-break:break-all">'+esc(rnPushId())+'</b> <a data-act="rn-copy-id" style="color:var(--accent);cursor:pointer;font-weight:700">複製</a>'+
+        (c.on && r.token ? '<br><a data-act="rn-test" style="color:var(--accent);cursor:pointer;font-weight:700">傳一則測試通知給這支手機</a>' : '')+'</div>';
+    }
+    h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:10px">打開通知時會送出:這支手機的匿名編號、通知編號、台北／新北哪幾個、不打擾時段、通知到幾點;不送位置、不送帳本。關掉通知就刪除伺服器上這支手機的資料。</div>';
+  }
+  return h;
+}
+function rnSetRefresh(){ var b = document.getElementById('rnSet'); if(b) b.innerHTML = rnSetBodyHtml(); }
+function openRoadSettings(){
+  openModal('<div class="modal-title">⚙️ 路況快報設定<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div><div id="rnSet">'+rnSetBodyHtml()+'</div>'+
+    '<button class="btn btn-ghost" style="margin-top:12px" data-act="open-roadnews">‹ 回路況快報</button>');
+  rnPushCan().then(function(can){ if(rnSetCan!==can){ rnSetCan = can; rnSetRefresh(); } });
+}
+function rnSettingChange(t){
+  if(t.id==='f-rn-push'){ if(t.checked) rnPushEnable(); else rnPushDisable(); return true; }
+  if(t.id==='f-rn-sum'){ rnPushSet({summary:t.checked}); rnSetRefresh(); renderAll(); return true; }
+  if(t.id==='f-rn-quiet'){ var q = rnPushCfg().quiet; q.on = t.checked; rnPushSet({quiet:q}); rnSetRefresh(); return true; }
+  if(t.id==='f-rn-qfrom' || t.id==='f-rn-qto'){
+    if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(t.value)) return true;
+    var q2 = rnPushCfg().quiet; q2[t.id==='f-rn-qfrom' ? 'from' : 'to'] = t.value; rnPushSet({quiet:q2}); return true;
+  }
+  return false;
+}
+// ---- the 記帳頁 summary: 重大、事故 counts and what is new since the list was last opened ----
+function rnSumCounts(){
+  if(!rnData || rnData.cities!==trafficPicks().join(',')) return null;
+  var v = rnView(rnData.items, Date.now()), major = [], acc = 0;
+  v.live.forEach(function(e){ if(e.done || e.stale) return; if(e.major) major.push(e.id); else if(e.ty==='事故' || e.ty==='交通障礙') acc++; });
+  var seen = rnLsGet(RN_SEEN_LS), fresh = null;
+  if(seen && seen.ids instanceof Array) fresh = major.filter(function(id){ return seen.ids.indexOf(id)<0; }).length;
+  return {major:major.length, acc:acc, fresh:fresh, majorIds:major};
+}
+function rnMarkSeen(){ var s = rnSumCounts(); if(s) rnLsSet(RN_SEEN_LS, {at:Date.now(), ids:s.majorIds.slice(0, 200)}); }
+function rnSumHtml(){
+  var c = rnPushCfg(), h = '';
+  if(c.summary){
+    var s = rnSumCounts();
+    if(s) h += '<span style="color:'+(s.major ? 'var(--expense)' : 'var(--text-muted)')+';font-weight:700">🔴 重大 '+s.major+'</span> · <span style="font-weight:700">🟠 事故 '+s.acc+'</span> <span style="color:var(--text-muted)">('+hhmm(rnData.at)+')</span>'+
+      (s.fresh ? '<br><b style="color:var(--expense)">上次查看後新增 '+s.fresh+' 則重大路況</b>' : '');
+    else if(rnBusy) h += '<span style="color:var(--text-muted)">讀取中…</span>';
+  }
+  var st = rnPushStatus();
+  if(st) h += (h ? '<br>' : '')+'<span style="color:var(--text-muted)">🔔 '+esc(st)+'</span>';
+  return '<div id="rnSum" style="font-size:12px;line-height:1.55'+(h ? ';margin-top:4px' : '')+'">'+h+'</div>';
+}
+function rnSumRefresh(){ var el = document.getElementById('rnSum'); if(el) el.outerHTML = rnSumHtml(); }
+// the summary reads the list by itself now and then (at most every 3 minutes, only while the app is on screen)
+function rnSumMaybeLoad(){
+  if(!rnAvailable() || !uiShow('roadNews') || !isVip() || !rnPushCfg().summary) return;
+  if(document.visibilityState==='hidden' || rnBusy || currentTab!=='entry') return;
+  var keys = trafficPicks().join(',');
+  if(rnData && rnData.cities===keys && Date.now()-rnData.at < 3*60000) return;
+  if(Date.now()-rnSumAt < 3*60000) return;
+  rnSumAt = Date.now();
+  rnLoad(true);
 }
 function parseLatLng(s){
   var m = String(s||'').match(/(-?\d+(?:\.\d+)?)\s*[,，]\s*(-?\d+(?:\.\d+)?)/);
@@ -8445,10 +8722,10 @@ var HELP = [
     ['上車 / 下車', '客人上車按「上車」,下車按「下車」→ 選平台、打車資;還不知道車資可以「稍後再填」。位置只在按下那一刻記一次。', 'trips'],
     ['接到單了(前往接客)', '⚙️「隱私與分享」→「進階:記錄接單時間」打勾後出現(上下車滿 30 趟也會提示一次),分析頁會分出等單和接駁各花多久;活動追蹤也用這個時間算趟數。載客中就接到下一單:按行程卡上的「📲 接到下一單」,下車後直接按「上車」(無縫接單,等單算 0)。'],
     ['📍 上車熱區', '分析頁看你最常上車的地方,可篩白天 / 晚上 / 深夜,點 ✏️ 取名。「⏰ 現在」看過去 12 週同一個星期幾、現在前後一小時最常上車的地方。', 'hotspot'],
-    ['📍 下車地統計', '分析頁「上車熱區」下面:最近 90 天(可改 30 天、180 天、1 年)你最常在哪裡下車(前 10 名),每一區下車後平均多久才接到下一單;「死區提醒」列下車後最久才接到下一單的前 5 區(同一區至少 3 次才列)。空檔是估算:下車到按「接到單了」(沒按就到下一趟上車),每天最後一趟、下班前最後一趟、休息中都不算。要按上車／下車並允許定位才有資料,只在手機上算。', 'dropStat', 'vip', 'beta'],
+    ['📍 下車地統計', '分析頁「上車熱區」下面:最近 90 天(可改 30 天、180 天、1 年)你最常在哪裡下車(前 10 名),每一區下車後平均多久才接到下一單;「死區提醒」列下車後等單明顯比你平均久的地方(平均空檔是你平均的 1.5 倍以上,同一區至少 3 次才列,最多 5 區)。空檔是估算:下車到按「接到單了」(沒按就到下一趟上車),每天最後一趟、下班前最後一趟、休息中都不算。要按上車／下車並允許定位才有資料,只在手機上算。', 'dropStat', 'vip', 'beta'],
     ['👥 車友熱區', '同意分享上車熱區才能看附近車友都在哪裡上車,每個地點也會顯示你自己在那裡載過幾趟、平均實收多少;只分享約 1 公里一格,不含精確位置、金額;取消分享會刪除你分享過的資料。'],
     ['即時路況', '記帳頁「看即時路況」開 Google 地圖;常用地點可以新增、排序。停車或紅燈時再看。', 'traffic'],
-    ['🚦 官方路況快報', '記帳頁的「🚦 路況快報」(可以在 ⚙️ 記帳首頁排列單獨排順序、單獨開關;不開「看即時路況」也能用):依「常用路況地點」勾的我主要跑城市(快報裡的「改城市」也能改),列出警察廣播電臺和交通部 TDX 公布的事故、壅塞、封路、交通管制;施工另外放在「🚧 施工」。點一則開 Google 地圖路況。只送出城市、不送位置,打開才讀,不推播。停車或紅燈時再看。', 'roadNews', 'vip', 'beta']
+    ['🚦 官方路況快報', '記帳頁的「🚦 路況快報」(可以在 ⚙️ 記帳首頁排列單獨排順序、單獨開關;不開「看即時路況」也能用):依「常用路況地點」勾的我主要跑城市(快報裡的「改城市」也能改),列出警察廣播電臺和交通部 TDX 公布的事故、壅塞、封路、交通管制;施工另外放在「🚧 施工」。點一則開 Google 地圖路況。只送出城市、不送位置。右上角 ⚙️:重大路況通知(安卓測試版,預設不收;上班打卡中才通知,無聲)、記帳頁摘要(重大、事故各幾則)、不打擾時段、暫停 1 小時。停車或紅燈時再看。', 'roadNews', 'vip', 'beta']
   ]],
   ['分析', [
     ['看賺多少', '分析頁選本日 / 本週 / 本月 / 本年 / 自訂,看實收、淨利、時薪。'],
@@ -8902,12 +9179,15 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.20.3';
+var APP_VERSION = '2026.11.20.6';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.20.6', '📍 測試版:下車地統計的「死區提醒」只列等單明顯比你平均久的地方(你平均的 1.5 倍以上);等得比平均短的地方不再被叫死區,一個都沒有時寫「目前沒有明顯的死區」', 'beta'],
+  ['2026.11.20.6', '🔔 測試版:VIP 到期時,重大路況通知會自動暫停;恢復 VIP 後自動打開,不用重新設定。路況快報不再列出資料來源留下的測試資料', 'beta'],
+  ['2026.11.20.4', '🔔 測試版:路況快報可以在上班時收「重大路況」通知(封路、無法通行這類,無聲、不震動,10 分鐘最多 1 則、一天最多 5 則,目前只有台北、新北)。預設不收,第一次打開會問你;路況快報右上角 ⚙️ 可以改通知、記帳頁摘要、不打擾時段、暫停 1 小時。記帳頁會多一行摘要:重大、事故各幾則', 'beta'],
   ['2026.11.20.3', '🚦 測試版:「路況快報」變成記帳首頁獨立的一塊,可以單獨打開、關掉、排上下順序;不開「看即時路況」也能用。打開「看即時路況」時會一起打開', 'beta'],
   ['2026.11.20.3', '🔥 測試版:「人潮」按鈕改名「🔥 人潮情報」;收入/平台旁的按鈕在小螢幕、大字時會自動換行,不會擠在一起', 'beta'],
   ['2026.11.20.3', '🤔 測試版:「接不接」先收起來(派單當下看不到車資、公里數,用不上),之後有新想法再打開', 'beta'],
@@ -9952,6 +10232,23 @@ document.addEventListener('click', function(e){
   else if(cmd==='open-roadnews'){ openRoadNews(); }
   else if(cmd==='rn-reload'){ rnLoad(true); }
   else if(cmd==='rn-tab'){ rnTab = arg==='work' ? 'work' : 'live'; rnRefresh(); }
+  else if(cmd==='rn-set'){ openRoadSettings(); }
+  else if(cmd==='rn-ask'){
+    if(arg==='yes'){ rnPushEnable().then(function(){ openRoadNewsSheet(); }); }
+    else { rnPushSet({on:false, asked:true}); openRoadNewsSheet(); showToast('不會收重大路況通知;之後可以在路況快報的 ⚙️ 打開', 3200); }
+  }
+  else if(cmd==='rn-pause'){ rnPushSet({pauseUntil:Date.now()+RN_PAUSE_MS}); rnSetRefresh(); renderAll(); showToast('通知暫停到 '+hhmm(Date.now()+RN_PAUSE_MS)); }
+  else if(cmd==='rn-unpause'){ rnPushSet({pauseUntil:0}); rnSetRefresh(); renderAll(); showToast('通知已恢復'); }
+  else if(cmd==='rn-copy-id'){
+    var rid = rnPushId(), rok = function(){ showToast('已複製裝置編號'); }, rfail = function(){ showToast('複製失敗,請長按編號自己選取'); };
+    if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(rid).then(rok, rfail);
+    else { try{ var rta = document.createElement('textarea'); rta.value = rid; document.body.appendChild(rta); rta.select(); var rdone = document.execCommand('copy'); document.body.removeChild(rta); (rdone ? rok : rfail)(); }catch(err){ rfail(); } }
+  }
+  else if(cmd==='rn-test'){
+    var RT_WHY = {wait:'剛剛才傳過,2 分鐘後再試', notallowed:'這支手機還沒加入內測名單', off:'伺服器的推播開關還沒打開', nokey:'伺服器還沒設定好通知金鑰', nodevice:'伺服器上沒有這支手機(先關掉再打開通知)', gone:'通知編號失效了,請關掉再打開通知'};
+    fetch(RN_PUSH_URL+'/v1/test', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id:rnPushId()}), cache:'no-store', credentials:'omit', referrerPolicy:'no-referrer'})
+      .then(function(r){ return r.json(); }).then(function(j){ showToast(j && j.ok ? '✓ 已送出測試通知,幾秒內會出現在通知列' : '沒有送出:'+(RT_WHY[j && j.why] || '伺服器暫時沒有回應'), 3800); }, function(){ showToast('沒有送出:連不到伺服器,請確認網路', 3200); });
+  }
   else if(cmd==='ds-days'){ var dsN = +arg; if(DS_DAYS.indexOf(dsN)>=0){ dsDays = dsN; renderAll(); } }
   else if(cmd==='fc-tab'){ fcTab = arg==='whatif' ? 'whatif' : 'real'; renderAll(); }
   else if(cmd==='fc-settings'){ openFcSettings(); }
@@ -10361,6 +10658,7 @@ document.addEventListener('input', function(e){
 });
 document.addEventListener('change', function(e){
   if(ledgerBusy()){ ledgerBusyNotice(); return; }
+  if(e.target.id && e.target.id.indexOf('f-rn-')===0 && rnSettingChange(e.target)) return;
   if(e.target.id && e.target.id.indexOf('f-fee-')===0 && e.target.id!=='f-fee-apply-from'){ var fcn = document.getElementById('fee-change-note'); if(fcn) fcn.hidden = false; }
   if(e.target.matches && e.target.matches('[data-mirror]')){ var mt = document.getElementById(e.target.getAttribute('data-mirror')); if(mt) mt.checked = e.target.checked; if(mt && mt.id==='f-ui-traffic' && mt.checked) uiLinkRoadNews(); return; }
   if(e.target.id && e.target.id.indexOf('f-ui-')===0){ document.querySelectorAll('[data-mirror="'+e.target.id+'"]').forEach(function(m){ m.checked = e.target.checked; }); }
@@ -10459,7 +10757,8 @@ if(_staleShiftDate){ openStaleShiftModal(_staleShiftDate); }
 else if(!state.uiMode && !hasMeaningfulData()){ state.seenVersion = APP_VERSION; openModeChooser(); }
 else { if(!state.uiMode){ state.uiMode = uiModeOf(state.ui||{}); saveQuiet(); } var _missingKmDate = findMissingKmDate(); if(_missingKmDate) openMissingKmModal(_missingKmDate); else if(!maybeShowWhatsNew()) maybeAskShareHot(); }
 setTimeout(function(){ notifySync(false); }, 2500);
-initWebBeta(); if(APP_CHANNEL==='beta') renderAll(); setTimeout(detectAppChannel, 300);   // new trips add payout days; km moves the maintenance guess
+initWebBeta(); if(APP_CHANNEL==='beta') renderAll(); setTimeout(detectAppChannel, 300);
+setTimeout(function(){ rnPushListen(); rnSumMaybeLoad(); }, 1500);   // new trips add payout days; km moves the maintenance guess
 }
 /* ---------- the installed app's own copy of the ledger ----------
    Inside the app the phone may clear the web view's storage on its own (iOS can), so the ledger is also
