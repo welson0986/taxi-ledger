@@ -250,7 +250,8 @@ body{
 .wide-cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:20px;align-items:start}
 .wide-cols>.col{min-width:0}
 .wide-ui .content.tab-analytics>*,.wide-ui .content.tab-payout>*,.wide-ui .content.tab-expense>*{max-width:860px;margin-left:auto;margin-right:auto}
-.jump-exp{background:none;border:1px solid var(--border);border-radius:16px;padding:6px 12px;min-height:34px;font:inherit;font-size:12.5px;font-weight:700;color:var(--text);cursor:pointer}
+.title-btns{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;min-width:0}
+.jump-exp{white-space:nowrap;background:none;border:1px solid var(--border);border-radius:16px;padding:6px 12px;min-height:34px;font:inherit;font-size:12.5px;font-weight:700;color:var(--text);cursor:pointer}
 .cal-cell{min-width:0;overflow:hidden}
 .cal-cell .n{max-width:100%;overflow:hidden;white-space:nowrap}
 /* large type: seven columns must still fit the screen */
@@ -3321,7 +3322,11 @@ function fareCompareHtml(fare, pay){
     return '<div class="list-item"><div class="li-body"><div class="li-title">'+(i===0?'🏆 ':'')+esc(x.label)+(x.est?'(估)':'')+'</div><div class="li-sub">手續費 '+fmtMoney2(x.fee)+(fare>0?(' · '+fmtNum(x.fee/fare*100,1)+'%'):'')+'</div></div><div class="li-amt income num">'+fmtMoney2(x.net)+'</div></div>';
   }).join('');
 }
-/* ---------- 這張單接不接 (test app only for now) ---------- */
+/* ---------- 這張單接不接 (paused) ---------- */
+// PAUSED 2026-11-13 (Welson): when an order is offered the fleet apps do not show the fare or the distance yet, so there is
+// nothing to type in before deciding — the moment to use it never comes. Hidden even in 測試版; all the code stays.
+// To bring it back, set this to true (the 「🤔 接不接」 button on 收入/平台 is the only way in).
+var TRIP_JUDGE_VISIBLE = false;
 // what an order is worth per hour and per km, against the driver's own last four weeks
 var tjState = {platform:null, pay:'card'};
 function tripJudgeBase(){
@@ -3410,7 +3415,8 @@ function renderEntry(){
     '<div class="stat-tile"><div class="lbl">今日支出</div><div class="val expense num">'+fmtMoney(exp)+'</div></div></div></div>';
   // an unfinished trip stays visible even after the buttons are switched off
   B.trips = (uiShow('trips') || state.activeTrip || (state.pendingTrips||[]).length || state.pendingAccept) ? tripCardHtml() : '';
-  B.traffic = (uiShow('traffic') ? trafficCardHtml() : '')+rnEntryHtml();
+  B.traffic = uiShow('traffic') ? trafficCardHtml() : '';
+  B.roadNews = rnEntryHtml();   // its own block since 2026.11.20.3 (before, it hung under 看即時路況)
   var todayFlow = cashSummary(todayRecs);
   B.cashFlow = '';
   if(todayRecs.length && uiShow('cashFlow')){
@@ -3448,8 +3454,9 @@ function renderEntry(){
 
   // on a phone the expense buttons sit far below the platforms; a shortcut on the title takes the driver there
   var expJump = !isTwoColUi() && !homeHidden('expenses') && homeOrder().indexOf('expenses') > homeOrder().indexOf('platforms');
-  var cmpBtn = (betaOn() ? '<button class="jump-exp" data-act="open-trip-judge">🤔 接不接</button>' + crowdBtnHtml() : '') + (uiShow('fareCompare') ? '<button class="jump-exp" data-act="open-fare-compare">🧮 各車隊比較</button>' : '');
-  var hp = '<div class="section"><div class="section-title"><span>收入/平台</span><span style="display:flex;gap:6px">'+cmpBtn+(expJump ? '<button class="jump-exp" data-act="jump-expenses">＋ 記支出</button>' : '')+'</span></div><div class="platform-grid">';
+  var cmpBtn = (betaOn() && TRIP_JUDGE_VISIBLE ? '<button class="jump-exp" data-act="open-trip-judge">🤔 接不接</button>' : '') + (betaOn() ? crowdBtnHtml() : '') + (uiShow('fareCompare') ? '<button class="jump-exp" data-act="open-fare-compare">🧮 各車隊比較</button>' : '');
+  // the buttons wrap onto a second row (right-aligned) on a narrow phone or with big fonts instead of squeezing
+  var hp = '<div class="section"><div class="section-title" style="gap:8px;align-items:flex-start"><span style="padding-top:8px;flex:none">收入/平台</span><span class="title-btns">'+cmpBtn+(expJump ? '<button class="jump-exp" data-act="jump-expenses">＋ 記支出</button>' : '')+'</span></div><div class="platform-grid">';
   visiblePlatforms().forEach(function(p){
     var pt = platformTotals[p.key]||0;
     hp += '<div class="platform-chip" data-act="open-income:'+p.key+'">'+
@@ -3517,6 +3524,7 @@ var HOME_BLOCKS = [
   ['trips','上車/下車按鈕','trips'],
   ['platforms','收入/平台按鈕'],
   ['traffic','看即時路況、常用地點','traffic'],
+  ['roadNews','🚦 路況快報','roadNews'],
   ['campaign','活動獎勵','campaign'],
   ['cashFlow','今日現金收入/待撥款','cashFlow'],
   ['target','今日目標','todayTarget'],
@@ -3527,7 +3535,12 @@ var HOME_BLOCKS = [
 function homeOrder(){
   var def = HOME_BLOCKS.map(function(b){ return b[0]; });
   var saved = (state.homeOrder||[]).filter(function(k){ return def.indexOf(k)>=0; });
-  def.forEach(function(k, i){ if(saved.indexOf(k)<0) saved.splice(Math.min(i, saved.length), 0, k); });
+  def.forEach(function(k, i){
+    if(saved.indexOf(k)>=0) return;
+    // 路況快報 was split out of 看即時路況: a driver who moved that block finds it right below, where it used to be
+    var at = k==='roadNews' && saved.indexOf('traffic')>=0 ? saved.indexOf('traffic')+1 : Math.min(i, saved.length);
+    saved.splice(at, 0, k);
+  });
   return saved;
 }
 function homeHidden(k){ return !!(state.homeHide && state.homeHide[k]); }
@@ -3537,6 +3550,7 @@ function homeLayoutHtml(){
   h += '<div style="font-size:11px;color:var(--text-muted);margin:-2px 0 6px;line-height:1.6">▲▼ 調整順序,取消勾選就不顯示。備份、雲端提醒會固定在最上面。</div>';
   h += '<div id="homeOrderList">';
   homeOrder().forEach(function(k){
+    if(k==='roadNews' && !rnAvailable()) return;   // only listed where the feature exists (測試版 for now)
     var b = info[k], box = '';
     if(b[2]) box = '<input type="checkbox" data-mirror="f-ui-'+b[2]+'" style="width:17px;height:17px;flex:none"'+(uiOn(b[2])?' checked':'')+'>';
     else if(b[3]) box = '<input type="checkbox" id="f-home-show-'+k+'" style="width:17px;height:17px;flex:none"'+(homeHidden(k)?'':' checked')+'>';
@@ -6275,7 +6289,7 @@ window.addEventListener('message', function(e){
 });
 function crowdBtnHtml(){
   // a real button like its neighbours (a link does not get the same font scaling)
-  return '<button class="jump-exp" data-act="open-crowd">🔥 人潮'+(isVip()?'':' 👑')+'</button>';
+  return '<button class="jump-exp" data-act="open-crowd">🔥 人潮情報'+(isVip()?'':' 👑')+'</button>';
 }
 function vipTestHtml(){
   return '<div class="card" style="margin-top:14px;padding:12px 14px;border-style:dashed"><label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer">'+
@@ -6888,7 +6902,10 @@ function rnIsMajor(e){
   if(RN_NOT_MAJOR.some(function(w){ return t.indexOf(w)>=0; })) return false;
   return e.ty==='災害' || e.st===105 || RN_MAJOR_WORDS.some(function(w){ return t.indexOf(w)>=0; });
 }
-// one (merged) item → null when it should not be shown, else {tab, done, major}
+// how long things stay (2026.11.20.3, Welson): TDX lists only events still going on, so a TDX one stays while TDX has it
+// (6 h at most); 警廣 rarely posts 「已排除」, so a 警廣-only one fades after 1 h (「可能已排除」) and goes after 2 h, a 重大 one after 4 h
+var RN_FADE_H = 1, RN_PBS_H = 2, RN_MAJOR_H = 4, RN_TDX_H = 6;
+// one (merged) item → null when it should not be shown, else {tab, done, major, stale}
 function rnRule(e, now){
   var age = now - Math.min(e.m, now), done = rnIsDone(e);
   if(done) return age <= RN_H ? {tab:e.ty==='道路施工' ? 'work' : 'live', done:true, major:false} : null;
@@ -6899,7 +6916,9 @@ function rnRule(e, now){
     if(end) return now <= end ? {tab:'live', done:false, major:major} : null;
     return age <= 6*RN_H ? {tab:'live', done:false, major:major} : null;
   }
-  return age <= (major ? 6 : 3)*RN_H ? {tab:'live', done:false, major:major} : null;
+  if((e.srcs||[]).indexOf('tdx')>=0) return age <= RN_TDX_H*RN_H ? {tab:'live', done:false, major:major, stale:false} : null;
+  if(age > (major ? RN_MAJOR_H : RN_PBS_H)*RN_H) return null;
+  return {tab:'live', done:false, major:major, stale: age > (major ? RN_PBS_H : RN_FADE_H)*RN_H};
 }
 function rnDist(a, b){
   if(a.la==null || a.lo==null || b.la==null || b.lo==null) return Infinity;
@@ -6935,8 +6954,8 @@ function rnMerge(items){
 // what the sheet shows: {live:[...], work:[...]}, newest first, the ✅ 已排除 ones last
 function rnView(items, now){
   var v = {live:[], work:[]};
-  rnMerge(items).forEach(function(e){ var r = rnRule(e, now); if(r){ e.done = r.done; e.major = r.major; v[r.tab].push(e); } });
-  ['live','work'].forEach(function(t){ v[t].sort(function(a, b){ return (a.done-b.done) || (b.m-a.m); }); });
+  rnMerge(items).forEach(function(e){ var r = rnRule(e, now); if(r){ e.done = r.done; e.major = r.major; e.stale = !!r.stale; v[r.tab].push(e); } });
+  ['live','work'].forEach(function(t){ v[t].sort(function(a, b){ return (a.done-b.done) || (a.stale-b.stale) || (b.m-a.m); }); });
   return v;
 }
 function rnAgo(m, now){
@@ -6960,13 +6979,14 @@ function rnItemHtml(e, now){
   var h = '<div class="li-body" style="min-width:0"><div class="li-title" style="white-space:normal">'+(RN_ICON[e.ty]||'ℹ️')+' '+esc(e.ty)+
     (e.done ? ' <span style="font-size:11.5px;font-weight:700;color:var(--text-muted)">✅ 已排除</span>' : '')+
     (e.major && !e.done ? ' <span style="font-size:11.5px;font-weight:700;color:var(--expense)">重大</span>' : '')+
+    (e.stale && !e.done ? ' <span style="font-size:11.5px;font-weight:700;color:var(--text-muted)">可能已排除</span>' : '')+
     ' <span style="font-size:11.5px;font-weight:400;color:var(--text-muted)">'+when+'('+rnAgo(e.m, now)+'更新)</span></div>'+
     (e.ar ? '<div class="li-sub" style="white-space:normal;font-weight:700;color:var(--text)">'+esc(e.ar)+'</div>' : '')+
     '<div class="li-sub" style="white-space:normal;line-height:1.55;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden">'+esc(e.tx||e.tx2)+'</div>'+
     (src ? '<div style="font-size:11px;color:var(--text-muted);margin-top:3px">'+esc(src)+'</div>' : '')+
     (e.listener ? '<div style="font-size:11px;color:var(--accent-strong);font-weight:700;margin-top:2px">👂 熱心聽眾提供,請自己判斷</div>' : '')+'</div>';
   var tail = e.la!=null && e.lo!=null ? '<div style="flex:none;align-self:center;color:var(--accent);font-size:12.5px;white-space:nowrap">看路況 ›</div>' : '';
-  var st = 'text-decoration:none;color:inherit;align-items:flex-start;gap:8px'+(e.done ? ';opacity:.5' : '');
+  var st = 'text-decoration:none;color:inherit;align-items:flex-start;gap:8px'+(e.done ? ';opacity:.5' : e.stale ? ';opacity:.62' : '');
   return e.la!=null && e.lo!=null
     ? '<a class="list-item rn-item" style="'+st+'" target="_blank" rel="noopener" href="'+trafficUrl(e.la, e.lo)+'">'+h+tail+'</a>'
     : '<div class="list-item rn-item" style="'+st+'">'+h+'</div>';
@@ -6992,9 +7012,10 @@ function rnBodyHtml(){
   if(!list.length) h += '<div style="'+NOTE+'">'+(rnTab==='work' ? '最近 7 天沒有'+esc(rnCityNames(keys))+'的施工消息。' : '目前沒有收到通報（不代表道路通暢）')+'</div>';
   h += list.map(function(e){ return rnItemHtml(e, now); }).join('');
   h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:10px">'+(rnTab==='work'
-    ? '施工收在這裡,顯示最近 7 天有更新的。'
-    : '事故、壅塞等顯示 3 小時;火災、翻覆、封路等重大事件 6 小時;交通管制 6 小時或到說明寫的結束日;已排除的灰色顯示 1 小時。')+
-    '時間是消息最後更新的時間。點一則打開 Google 地圖路況。</div>';
+    ? '施工集中在這裡,只列最近 7 天有更新的。'
+    : '警廣的事故、壅塞 1 小時沒更新會變淡(可能已排除),2 小時後消失;火災、翻覆、封路等重大事件留 4 小時。<br>'+
+      '交通部 TDX 的事件在結束前都會顯示(最多 6 小時);交通管制留 6 小時或到公告結束日;已排除的變灰色,1 小時後消失。')+
+    '<br>時間為最後更新時間 · 點一則看 Google 地圖路況。</div>';
   return h;
 }
 function rnSheetHtml(){
@@ -7882,6 +7903,13 @@ var UI_DEFAULT_OFF = ['shiftFix','campaign','restRemind','fxTip','fareCompare','
 var UI_SIMPLE_OFF = ['liveRate','subtype','fareType','payment','discount','markup','addOn','coupon','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
 // x[2] 'vip': a VIP feature (👑 while VIP is sold); x[3] 'beta': only in 跑車人生 測試版 while it is tried out
 function uiListed(x){ return x[3]!=='beta' || betaOn(); }
+// turning 看即時路況 on turns 路況快報 on with it (either can be turned off again on its own)
+function uiLinkRoadNews(){
+  var rn = document.getElementById('f-ui-roadNews');
+  if(!rn || rn.checked) return;
+  rn.checked = true;
+  document.querySelectorAll('[data-mirror="f-ui-roadNews"]').forEach(function(m){ m.checked = true; });
+}
 function uiOn(k){ return (state.ui && (k in state.ui)) ? state.ui[k]!==false : UI_DEFAULT_OFF.indexOf(k)<0; }
 // sections that only have data when another feature is on
 function uiShow(k){
@@ -8420,7 +8448,7 @@ var HELP = [
     ['📍 下車地統計', '分析頁「上車熱區」下面:最近 90 天(可改 30 天、180 天、1 年)你最常在哪裡下車(前 10 名),每一區下車後平均多久才接到下一單;「死區提醒」列下車後最久才接到下一單的前 5 區(同一區至少 3 次才列)。空檔是估算:下車到按「接到單了」(沒按就到下一趟上車),每天最後一趟、下班前最後一趟、休息中都不算。要按上車／下車並允許定位才有資料,只在手機上算。', 'dropStat', 'vip', 'beta'],
     ['👥 車友熱區', '同意分享上車熱區才能看附近車友都在哪裡上車,每個地點也會顯示你自己在那裡載過幾趟、平均實收多少;只分享約 1 公里一格,不含精確位置、金額;取消分享會刪除你分享過的資料。'],
     ['即時路況', '記帳頁「看即時路況」開 Google 地圖;常用地點可以新增、排序。停車或紅燈時再看。', 'traffic'],
-    ['🚦 官方路況快報', '記帳頁「看即時路況」下面點「路況快報」:依「常用路況地點」勾的我主要跑城市,列出警察廣播電臺和交通部 TDX 公布的事故、壅塞、封路、交通管制;施工另外放在「🚧 施工」。點一則開 Google 地圖路況。只送出城市、不送位置,打開才讀,不推播。停車或紅燈時再看。', 'roadNews', 'vip', 'beta']
+    ['🚦 官方路況快報', '記帳頁的「🚦 路況快報」(可以在 ⚙️ 記帳首頁排列單獨排順序、單獨開關;不開「看即時路況」也能用):依「常用路況地點」勾的我主要跑城市(快報裡的「改城市」也能改),列出警察廣播電臺和交通部 TDX 公布的事故、壅塞、封路、交通管制;施工另外放在「🚧 施工」。點一則開 Google 地圖路況。只送出城市、不送位置,打開才讀,不推播。停車或紅燈時再看。', 'roadNews', 'vip', 'beta']
   ]],
   ['分析', [
     ['看賺多少', '分析頁選本日 / 本週 / 本月 / 本年 / 自訂,看實收、淨利、時薪。'],
@@ -8874,12 +8902,16 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.20.2';
+var APP_VERSION = '2026.11.20.3';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.20.3', '🚦 測試版:「路況快報」變成記帳首頁獨立的一塊,可以單獨打開、關掉、排上下順序;不開「看即時路況」也能用。打開「看即時路況」時會一起打開', 'beta'],
+  ['2026.11.20.3', '🔥 測試版:「人潮」按鈕改名「🔥 人潮情報」;收入/平台旁的按鈕在小螢幕、大字時會自動換行,不會擠在一起', 'beta'],
+  ['2026.11.20.3', '🤔 測試版:「接不接」先收起來(派單當下看不到車資、公里數,用不上),之後有新想法再打開', 'beta'],
+  ['2026.11.20.3', '🚦 測試版:路況快報顯示時間更貼近現況:警廣的事故、壅塞 1 小時沒更新會變淡並標「可能已排除」,2 小時後消失;重大事件留 4 小時;交通部 TDX 的事件在結束前都會顯示(最多 6 小時)', 'beta'],
   ['2026.11.20.2', '🚦 測試版:路況快報每則的來源改成只寫通報單位(例如高公局北區交控中心),畫面比較清爽;熱心聽眾提供的照樣用黃字提醒', 'beta'],
   ['2026.11.20.1', '🚦 測試版:路況快報的「重大」標示更準,寫著「已解除、未封路、預計、明日、今晚、預告」的不再標重大;沒有消息時改寫「目前沒有收到通報（不代表道路通暢）」;台北、新北改由伺服器每 3 分鐘自動整理,打開更快', 'beta'],
   ['2026.11.19.13', '🚦 測試版新功能:記帳頁「看即時路況」下面多了「路況快報」,依你勾的我主要跑城市,列出警廣和交通部公布的事故、壅塞、封路、施工,點一則看地圖路況。只送出城市、不送你的位置;打開才讀,不推播。上架後是 VIP 功能', 'beta'],
@@ -10330,8 +10362,9 @@ document.addEventListener('input', function(e){
 document.addEventListener('change', function(e){
   if(ledgerBusy()){ ledgerBusyNotice(); return; }
   if(e.target.id && e.target.id.indexOf('f-fee-')===0 && e.target.id!=='f-fee-apply-from'){ var fcn = document.getElementById('fee-change-note'); if(fcn) fcn.hidden = false; }
-  if(e.target.matches && e.target.matches('[data-mirror]')){ var mt = document.getElementById(e.target.getAttribute('data-mirror')); if(mt) mt.checked = e.target.checked; return; }
+  if(e.target.matches && e.target.matches('[data-mirror]')){ var mt = document.getElementById(e.target.getAttribute('data-mirror')); if(mt) mt.checked = e.target.checked; if(mt && mt.id==='f-ui-traffic' && mt.checked) uiLinkRoadNews(); return; }
   if(e.target.id && e.target.id.indexOf('f-ui-')===0){ document.querySelectorAll('[data-mirror="'+e.target.id+'"]').forEach(function(m){ m.checked = e.target.checked; }); }
+  if(e.target.checked && (e.target.id==='f-ui-traffic' || (e.target.getAttribute && e.target.getAttribute('data-mirror')==='f-ui-traffic'))) uiLinkRoadNews();
   if(e.target.id==='f-vip-test'){ state.vipTest = e.target.checked; save(); renderAll(); showToast(e.target.checked ? '👑 已開啟 VIP 測試' : '已切回免費版'); return; }
   if(e.target.id==='f-vip-scene'){
     if(state.vipTest){ state.vipTest = false; save(); var vtc = document.getElementById('f-vip-test'); if(vtc) vtc.checked = false; renderAll(); }
