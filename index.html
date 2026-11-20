@@ -2066,6 +2066,9 @@ function monthRange(m){
 var VEH_POLICY_DEFAULTS = ['強制險','任意險(第三責任險)','旅客責任險'];
 function veh(){ return state.vehicle || {}; }
 function vehOn(){ var v = veh(); return !!(v.odo || (v.maint && v.maint.next) || (v.inspect && v.inspect.next) || (v.policies||[]).some(function(p){ return p.due; })); }
+// 儀表板里程 on the 加油／保養維修／充電 form: when 車輛提醒 is set up, or (VIP) 🚗 車輛成本 is filled in (11/20: a driver
+// who only filled in 車輛成本 could not correct the mileage its 更換提醒 count from)
+function vehOdoAsk(){ var c = veh().cost; return vehOn() || (vcOn() && !!c && (+c.price>0 || +c.loanMonthly>0 || (c.every && Object.keys(c.every).length>0))); }
 // the reading the driver last typed in, plus the daily km recorded on the days after it
 function vehOdoEstimate(){
   var o = veh().odo; if(!o || !(o.base>0)) return null;
@@ -4077,7 +4080,7 @@ function fcSlotsHtml(S){
     if(!c.length) return;
     any = true;
     h += '<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12.5px"><div style="font-weight:700">'+sl[0]+' <span style="font-weight:400;font-size:11px;color:var(--text-muted)">'+sl[1]+'</span></div>'+
-      c.map(function(x, j){ return '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:2px"><span>'+(j===0 && c.length>1 ? '🏆 ' : '')+esc(x.label)+' <span style="font-size:11px;color:var(--text-muted)">'+x.n+' 趟</span></span><span class="num">'+fmtMoney(x.rate)+' / 時</span></div>'; }).join('')+'</div>';
+      c.map(function(x, j){ return '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:2px"><span>'+(j===0 && c.length>1 ? '🏆 ' : '')+esc(x.label)+' <span style="font-size:11px;color:var(--text-muted)">'+x.n+' 趟</span></span><span class="num" style="white-space:nowrap">'+fmtMoney(x.rate)+' / 時</span></div>'; }).join('')+'</div>';
   });
   if(!any) h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6">資料還不夠:同一個時段、同一家要有 '+FC_MIN_SLOT+' 趟以上有按上下車的單才列出,多跑幾天就會出現。</div>';
   else h += '<div style="'+FC_NOTE+'">同一個時段、同一家少於 '+FC_MIN_SLOT+' 趟不列出。平日／週末照你的營業日,時段看上車時間;算法跟上面的每小時實收一樣(估算)。</div>';
@@ -5407,6 +5410,17 @@ function dispPreviewHtml(){
     '<div style="font-size:12px;color:var(--text-muted)">實收扣掉支出、固定成本和你想先存的錢,看這段期間真正落袋多少,還有月底預測</div></div>'+
     '<button class="btn btn-ghost" style="flex:none" data-act="disp-vip">看看</button></div></div>';
 }
+// 11/20: when it comes out below zero, say which deduction weighs most (and that the 預留款 are the driver's own choice)
+function dispWhyNegHtml(c){
+  var items = [['已記的支出', c.varExp], ['固定成本', c.fixed], ['車貸', c.loan], ['保養預留', c.maint, 1], ['換車預留', c.repl, 1], ['稅金預留', c.tax, 1]]
+    .filter(function(x){ return x[1]>0; });
+  var tot = items.reduce(function(a, x){ return a+x[1]; }, 0);
+  if(!items.length || !(tot>0)) return '';
+  items.sort(function(a, b){ return b[1]-a[1]; });
+  var top = items[0], res = items.filter(function(x){ return x[2]; }).reduce(function(a, x){ return a+x[1]; }, 0);
+  return '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-top:4px">📌 變成負數主要是<b style="color:var(--text)">'+top[0]+' '+fmtMoney(top[1])+'</b>(佔扣除的 '+Math.round(top[1]/tot*100)+'%)'+
+    (res>0 && c.disp+res>=0 ? ';預留款是你自己設的,不扣預留款的話是 '+fmtMoney(c.disp+res)+'(還沒花掉的錢,只是提醒你先存起來)' : '')+'。</div>';
+}
 function dispCardHtml(range, kind){
   if(!dispAvailable() || !uiShow('dispIncome')) return '';
   if(!isVip()) return dispPreviewHtml();
@@ -5427,6 +5441,7 @@ function dispCardHtml(range, kind){
   if(c.R.replOn && c.rates.repl>0) h += row('換車預留', minus(c.repl), '每公里折舊 '+fmtMoney2(c.rates.repl)+' × '+fmtNum(c.km,1)+' 公里');
   if(c.R.taxOn) h += row('稅金預留', minus(c.tax), '實收 × '+c.R.taxPct+'%');
   h += '<div style="display:flex;justify-content:space-between;gap:10px;padding:8px 0 2px;font-size:14px;font-weight:700"><span>＝ 可支配所得</span><span class="num">'+fmtMoney(c.disp)+'</span></div>';
+  if(c.disp<0) h += dispWhyNegHtml(c);
   var warn = [];
   if(!c.expCount) warn.push('你還沒記支出,這個數字會偏高');
   if(!state.fixedCosts.length) warn.push('你還沒填固定成本(靠行費、保險、車貸…),這個數字會偏高。到 ⚙️「固定成本」填');
@@ -5657,7 +5672,7 @@ function vcCardHtml(){
   if(!isVip()) return vcPreviewHtml();
   var X = vcCalc(), C = X.C, muted = 'font-size:11.5px;color:var(--text-muted);line-height:1.6';
   var row = function(k, v, sub){ return '<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px"><span style="color:var(--text-muted)">'+k+(sub?'<div style="font-size:11px">'+sub+'</div>':'')+'</span><span class="num" style="text-align:right;white-space:nowrap">'+v+'</span></div>'; };
-  var per = function(x){ return x!=null ? fmtMoney2(x)+' /公里' : '—'; };
+  var per = function(x){ return x!=null ? fmtMoney2(x)+'&nbsp;/公里' : '—'; };
   var h = '<div class="section"><div class="section-title"><span>🚗 車輛成本(估算)</span></div><div class="card" style="padding:12px 14px">';
   h += '<div style="font-size:12px;color:var(--text-muted)">每開 1 公里,車子本身花你約</div>';
   h += '<div class="num" style="font-size:26px;font-weight:800;margin:2px 0 8px">'+(X.total!=null ? fmtMoney2(X.total) : '—')+'</div>';
@@ -6610,12 +6625,12 @@ function dsCardHtml(){
   h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px">只統計有下車位置的 '+S.n+' 趟'+(S.noPos?'(另有 '+S.noPos+' 趟沒有記到位置,不列入)':'')+';能算空檔的 '+S.waitN+' 次。</div>';
   h += '<div style="font-size:13.5px;font-weight:800;margin:14px 0 2px">📌 下車熱區(前 '+DS_TOP+' 名)</div>';
   h += S.hot.map(function(c, i){
-    return dsCellHtml(c, '下車區 '+(i+1), c.n+' 趟'+(c.fareN?' · 平均實收 '+fmtMoney(c.fare/c.fareN):'')+' · 下車後平均空檔 '+(c.wN ? fmtNum(c.avg,1)+' 分('+c.wN+' 次)' : '—(沒有可算的)'), '');
+    return dsCellHtml(c, '下車區 '+(i+1), c.n+'&nbsp;趟'+(c.fareN?' · 平均實收 '+fmtMoney(c.fare/c.fareN):'')+' · 下車後平均空檔 '+(c.wN ? fmtNum(c.avg,1)+'&nbsp;分('+c.wN+'&nbsp;次)' : '—(沒有可算的)'), '');
   }).join('');
   h += '<div style="font-size:13.5px;font-weight:800;margin:16px 0 2px">🐢 死區提醒(下車後最久才接到下一單,前 '+DS_DEAD_TOP+' 名)</div>';
   if(!S.dead.length) h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;padding:6px 0">'+(S.deadCand ? '目前沒有明顯的死區:累積到 '+DS_MIN_DEAD+' 次以上的地方,下車後等單都沒有比你的平均久很多。' : '還沒有哪一區累積到 '+DS_MIN_DEAD+' 次可算的空檔,多跑一陣子就會出現。')+'</div>';
   h += S.dead.map(function(c, i){
-    return dsCellHtml(c, '死區 '+(i+1), c.wN+' 次 · 比你的平均多 '+fmtNum(c.avg-S.avg,1)+' 分'+(S.avg>0 ? '(約 '+fmtNum(c.avg/S.avg,1)+' 倍)' : ''), '平均 '+fmtNum(c.avg,1)+' 分');
+    return dsCellHtml(c, '死區 '+(i+1), c.wN+'&nbsp;次 · 比你的平均多 '+fmtNum(c.avg-S.avg,1)+'&nbsp;分'+(S.avg>0 ? '(約 '+fmtNum(c.avg/S.avg,1)+'&nbsp;倍)' : ''), '平均 '+fmtNum(c.avg,1)+'&nbsp;分');
   }).join('');
   h += '<div style="'+NOTE+'">⏱️ 下車後空檔是<b>估算</b>:這一趟下車到下一單(有按「接到單了」就算到接單,沒按就算到下一趟上車)。不算:每天最後一趟、隔天才接的單;有記到上班時間的日子(2026.11.19.11 版以後的打卡),下班前最後一趟、休息中下車或休息後才接的單也不算;以前的日子或在「歷史」改過工時的,空檔超過 '+(EMPTY_GAP_CAP_MIN/60)+' 小時當成休息不算。載客中就接到的下一單(無縫接單)空檔算 0。中間有沒按上下車的單,空檔會算得比較長。'+
     (S.waitN ? '<br>能算空檔的 '+S.waitN+' 次中,'+S.punchN+' 次有對到上班時間。' : '')+'</div>';
@@ -7994,7 +8009,7 @@ function openExpenseModal(catKey, editId){
   } else {
     h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-amount" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.amount)||'')+'"></div>';
   }
-  if((catKey==='fuel' || catKey==='repair' || catKey==='charge') && vehOn()){
+  if((catKey==='fuel' || catKey==='repair' || catKey==='charge') && vehOdoAsk()){
     var estO = vehOdoEstimate();
     h += '<div class="form-row"><label>儀表板里程(選填,校正保養提醒)</label><input class="num-input" id="f-exp-odo" type="number" min="0" step="1" inputmode="numeric" placeholder="'+(estO?('推估 '+estO.km):'例如 125000')+'" value="'+((existing&&existing.odo)||'')+'">'+
       (catKey==='repair' ? '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">細項選「機油(小保養)」或「定期保養(大保養)」又填了里程,下次保養里程會自動往後算。</div>' : '')+'</div>';
@@ -9179,12 +9194,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.20.6';
+var APP_VERSION = '2026.11.20.7';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.20.7', '🚗 測試版:只填了「車輛成本」也能在加油、保養維修時填儀表板里程;可支配所得變負數時,會說主要是哪一筆扣最多;大字時數字和單位不會被拆成兩行', 'beta'],
   ['2026.11.20.6', '📍 測試版:下車地統計的「死區提醒」只列等單明顯比你平均久的地方(你平均的 1.5 倍以上);等得比平均短的地方不再被叫死區,一個都沒有時寫「目前沒有明顯的死區」', 'beta'],
   ['2026.11.20.6', '🔔 測試版:VIP 到期時,重大路況通知會自動暫停;恢復 VIP 後自動打開,不用重新設定。路況快報不再列出資料來源留下的測試資料', 'beta'],
   ['2026.11.20.4', '🔔 測試版:路況快報可以在上班時收「重大路況」通知(封路、無法通行這類,無聲、不震動,10 分鐘最多 1 則、一天最多 5 則,目前只有台北、新北)。預設不收,第一次打開會問你;路況快報右上角 ⚙️ 可以改通知、記帳頁摘要、不打擾時段、暫停 1 小時。記帳頁會多一行摘要:重大、事故各幾則', 'beta'],
