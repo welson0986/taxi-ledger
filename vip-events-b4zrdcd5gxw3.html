@@ -1213,6 +1213,183 @@ var footerFine=document.querySelector('.footer-fine');if(footerFine)footerFine.t
   }
   mergeNov19OfficialUpdates();
 
+  // 11/20 更新：逐筆比對既有卡片；已存在的活動僅更正內容，不另造重複卡。
+  // 路段管制起迄與實際表演散場是不同資訊；來源不明的結束時刻不作推估。
+  function mergeNov20OfficialUpdates() {
+    var ref={
+      hokuto:'https://www.legacy.com.tw/article/page/taipei/3348',
+      pili:'https://pili.kktix.cc/events/1cedf6ff',
+      qays:'https://www.opentix.life/event/2094726891126235137',
+      cityGather:'https://www.cna.com.tw/news/aloc/202611180104.aspx',
+      cityStart:'https://www.idn.com.tw/news/news_content.aspx?artid=20261118hsieh005&catdid=0&catid=1&catsid=2',
+      satoyama:'https://pto.gov.taipei/News_Content.aspx?n=D065CCB1467288C8&s=353A641700B46CA1&sms=72544237BBE4C5F6',
+      springs:'https://police.gov.taipei/News_Content.aspx?n=0B762199E50C4AB2&s=AE5F9988C0502FB5&sms=72544237BBE4C5F6',
+      springsOld:'https://dot.gov.taipei/News_Content.aspx?n=C41A7FC0570A20B3&s=C21798F85BED01D4&sms=72544237BBE4C5F6',
+      slope:'https://www.gov.taipei/News_Content.aspx?n=F0DDAF49B89E9413&s=EFDDC229A23D66C1&sms=72544237BBE4C5F6',
+      zhonghe:'https://www.zhonghe.police.ntpc.gov.tw/fp-2436-144036-13.html',
+      health:'https://www.diyi.org.tw/site/MS202600001/info/621',
+      rallySanhe:'https://newtalk.tw/news/view/2026-11-20/1072204',
+      cityAction:'https://www.cna.com.tw/news/aloc/202611170206.aspx',
+      cityActionTime:'https://www.knews.com.tw/news/7C92C23C1E446670DD19BA637547D2C6',
+      shulin:'https://www.ftvnews.com.tw/news/detail/2026B18W0263',
+      tucheng:'https://newtalk.tw/news/view/2026-11-15/1071300',
+      marathon:'https://police.gov.taipei/News_Content.aspx?n=0B762199E50C4AB2&s=896C78F61B6CBE3D&sms=72544237BBE4C5F6',
+      wine:'https://majorevent.gov.taipei/News.aspx?n=3D3E2948CDA72DD8&sms=E2A80B3BD6378AB0',
+      gathering:'https://www.gov.taipei/News_Content.aspx?n=F0DDAF49B89E9413&s=483F804E4DA8FAC0&sms=72544237BBE4C5F6',
+      actionPolice:'https://police.gov.taipei/News_Content.aspx?n=0B762199E50C4AB2&s=7CB0263FEB68AB65&sms=72544237BBE4C5F6'
+    };
+    function link(footer,label,url) {
+      if(!footer||Array.prototype.some.call(footer.querySelectorAll('a'),function(a){return a.href===url;}))return;
+      var a=document.createElement('a');a.className='source-link';a.textContent=label+' ↗';a.href=url;
+      a.target='_blank';a.rel='noopener noreferrer';footer.insertBefore(a,footer.querySelector('.nav-link')||null);
+    }
+    function modify(id,values) {
+      var card=document.getElementById(id);if(!card)return;
+      [['time','.time-text'],['name','.event-name'],['note','.event-note']].forEach(function(p){
+        if(!values[p[0]])return;var el=card.querySelector(p[1]);if(el)el.textContent=values[p[0]];
+      });
+      if(values.url)link(card.querySelector('.event-footer'),values.label||'最新公告',values.url);
+      if(values.other)link(card.querySelector('.event-footer'),values.otherLabel||'補充來源',values.other);
+    }
+    function event(data) {
+      var id='ev-20261120-'+data.key+'-'+data.day;
+      if(document.getElementById(id))return;
+      var stack=document.querySelector('#day-panel-'+data.day+' .event-stack');if(!stack)return;
+      var grade=data.grade||'A';var card=document.createElement('article');card.id=id;
+      card.className='event-card event-'+grade.toLowerCase();card.setAttribute('data-day',String(data.day));
+      card.setAttribute('data-grade',grade);card.setAttribute('data-source','OFFICIAL_20261120');
+      if(data.venue&&Object.prototype.hasOwnProperty.call(VENUE_COORDS,data.venue))card.setAttribute('data-venue',data.venue);
+      var top=document.createElement('div');top.className='event-top';
+      var time=document.createElement('span');time.className='time-text';time.textContent=data.time;top.appendChild(time);
+      var badge=document.createElement('span');badge.className='badge badge-'+grade.toLowerCase();
+      badge.textContent=grade==='A'?'A 官方公告':'B 新聞佐證';top.appendChild(badge);card.appendChild(top);
+      var name=document.createElement('div');name.className='event-name';name.textContent=data.title;card.appendChild(name);
+      var place=document.createElement('div');place.className='event-place';var dot=document.createElement('span');dot.className='place-dot';dot.setAttribute('aria-hidden','true');place.appendChild(dot);place.appendChild(document.createTextNode(data.place));card.appendChild(place);
+      var note=document.createElement('p');note.className='event-note';note.textContent=data.note;card.appendChild(note);
+      var foot=document.createElement('div');foot.className='event-footer';link(foot,data.sourceLabel||'活動資訊',data.url);
+      if(data.other)link(foot,data.otherLabel||'補充消息',data.other);
+      var nav=document.createElement('a');nav.className='nav-link';nav.textContent='📍 導航';
+      nav.href='https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(data.nav||data.place)+'&travelmode=driving';
+      nav.target='_blank';nav.rel='noopener noreferrer';foot.appendChild(nav);card.appendChild(foot);stack.appendChild(card);
+      var region=document.getElementById('region-panel-'+(data.region===undefined?5:data.region));
+      if(region){region.setAttribute('data-event-refs',((region.getAttribute('data-event-refs')||'')+' '+id).trim());region.removeAttribute('data-rendered');}
+    }
+    function traffic(data) {
+      var list=document.querySelector('#traffic .traffic-list');if(!list||document.getElementById(data.id))return;
+      var card=document.createElement('article');card.className='traffic-card';card.id=data.id;
+      card.setAttribute('data-source','OFFICIAL_20261120');if(data.until)card.setAttribute('data-visible-until',data.until);
+      var head=document.createElement('div');head.className='traffic-head';var icon=document.createElement('span');icon.className='traffic-icon';icon.textContent='!';icon.setAttribute('aria-hidden','true');head.appendChild(icon);
+      var title=document.createElement('h3');title.textContent=data.title;head.appendChild(title);card.appendChild(head);
+      [['traffic-status',data.status],['traffic-time',data.time],['traffic-body',data.body]].forEach(function(x){var p=document.createElement('p');p.className=x[0];p.textContent=x[1];card.appendChild(p);});
+      var footer=document.createElement('div');footer.className='event-footer';link(footer,data.sourceLabel||'官方公告',data.url);
+      if(data.other)link(footer,'其他官方公告',data.other);card.appendChild(footer);list.insertBefore(card,list.firstChild);
+    }
+    // 已刊登的演出與集會：補上已確認的開場、交管，不重複新增活動卡。
+    modify('ev-20261119-city-hall-rally-21',{
+      name:'台灣民眾黨「決勝之夜｜民眾相挺，台灣必贏！」全國大集結',
+      time:'18:00 開始・正式散場未公布',
+      note:'11/21 18:00於臺北市政府前開始造勢。市府路（松高～松壽）自11/21 00:00至11/22 03:00雙向管制，另有新仁愛路例假日管制。15條公車改道、4個站位受影響；封閉區內計程車招呼站、營業用共用臨停區停用。道路解封時間不是晚會散場時刻。',
+      url:ref.cityStart,label:'活動開始時間新聞',other:ref.cityGather,otherLabel:'市府路官方交管佐證'
+    });
+    modify('ev-20261119-satoyama-market-21',{
+      note:'11/21 指南宮、貓空圓滿森境舉辦生態市集與環境劇場《桃花後》。公運處正式公告當日10:00～18:00管制指南路三段157巷，小10等3條公車調整動線；「貓纜指南宮站」往西站位取消停靠。管制時間非劇場散場時間。',
+      url:ref.satoyama,label:'公運處里山川管制公告'
+    });
+    modify('ev-VERIFY-1116-spring-21',{
+      time:'11:00～13:00 踩街・晚間演出散場未公布',
+      note:'11/21 11:00～13:00為踩街遊行；晚間另有「金曲之夜」，節目結束時刻未公布。最新警方公告光明路磺港路至大業路10:40起彈性管制；11/16公運處原公告為磺港路至中山路10:00～14:00，路段與時刻寫法不同，依最新現場交管為準；七星街持續管制至11/23 18:00。',
+      url:ref.springs,label:'北市警局最新踩街交管',other:ref.springsOld,otherLabel:'11/16公運處原管制公告'
+    });
+    modify('ev-NEXT-086',{url:ref.qays,label:'OPENTIX延期演出公告'});
+    modify('ev-NEXT-075',{
+      note:'11/21 美堤河濱公園基16號水門活動12:00～19:00，13:30起分組起跑。臺北市大型群聚行事曆已列「審查完成」，但這不代表一般道路或水門均已發布固定封路時段；目前沒有可核實的一般道路逐段管制時刻。',
+      url:ref.wine,label:'北市大型群聚活動審查資訊'
+    });
+    event({key:'hokuto',day:20,time:'17:30 入場／18:30 開演・散場未公布',grade:'A',
+      title:'HOKUTO LIVE & FAN MEETING 2026「JUKE BOX LAND」台北場',
+      place:'Legacy Taipei・華山1914中5A館（中正區）',venue:'華山1914',region:5,
+      note:'HOKUTO（吉野北人）個人演出暨粉絲見面會。Legacy Taipei場館公告11/20 17:30開放入場、18:30預定開演；正式散場時刻及實到人數未公布。',
+      url:ref.hokuto,sourceLabel:'Legacy Taipei官方場次',nav:'臺北市中正區八德路一段1號 華山1914中5A館'});
+    event({key:'zhongzheng-gathering',day:20,time:'集會時刻未公布・道路管制08:00～22:00',grade:'A',
+      title:'中正區紹興北街、林森北路集會遊行',place:'紹興北街／林森北路（中正區）',region:5,
+      note:'集會活動確切開始與散場時刻未公布；管制08:00～22:00，紹興北街（北平東路至忠孝東路一段）、林森北路（北平東路至市民大道）交通受影響，6線公車改道及4處站位受影響。道路管制結束不等於集會散場。',
+      url:ref.gathering,sourceLabel:'臺北市交通局交管公告',nav:'臺北市中正區紹興北街與北平東路口'});
+    event({key:'healthwalk',day:21,time:'08:30～09:00 報到／09:00～12:00 活動',grade:'A',
+      title:'健康走・愛長久｜心智障礙者社會融合健走闖關',place:'中正紀念堂民主大道（中正區）',region:5,
+      note:'11/21第一社福主辦公益健走闖關，09:00～12:00為正式活動；08:30～09:00報到。12:00是主辦表訂結束，不代表所有參與者同時離場；周邊車道封閉未見正式另行公告。',
+      url:ref.health,sourceLabel:'第一社福主辦官方活動時刻',nav:'臺北市中正區中山南路21號 中正紀念堂民主大道'});
+    [21,22].forEach(function(day){event({key:'pili-concert',day:day,
+      time:day===21?'15:30 開演・散場未公布':'17:00 開演・散場未公布',grade:'A',
+      title:'霹靂熱血樂章 2026 PILI CONCERT（颱風延期場）',
+      place:'誠品生活新店3F黑盒子（新店區）',region:3,
+      note:day===21?'因颱風原定10/24的15:30場，官方確認延期至11/21 15:30同場地演出；實際散場及參與人數未公布。':'因颱風原定10/25 13:00場，官方確認延期至11/22 17:00同場地演出；實際散場及參與人數未公布。',
+      url:ref.pili,sourceLabel:'霹靂KKTIX延期及場次公告',nav:'新北市新店區中興路三段70號 誠品生活新店'});});
+    event({key:'sanhe-rally',day:21,time:'18:00 開始・散場未公布',grade:'B',
+      title:'「洋流慧聚」新北大型造勢晚會（蘇巧慧 × 沈伯洋）',
+      place:'三和國中（新北市三重區）',region:3,
+      note:'11/21 18:00於三和國中操場舉行大型造勢晚會，實際散場未公布；尚未取得三重分局周邊固定道路管制公告，請於三和路四段外圍合法停靠。',
+      url:ref.rallySanhe,sourceLabel:'候選人公開活動消息（新聞）',other:ref.tucheng,otherLabel:'候選人11/15造勢預告',nav:'新北市三重區三和路四段216號 三和國中'});
+    event({key:'shulin-rally',day:21,time:'09:00 開始・散場未公布',grade:'B',
+      title:'「慧聚繁星・樹林鶯歌會贏」造勢大會',place:'樹林高中（新北市樹林區）',region:3,
+      note:'11/21上午09:00在樹林高中舉辦大型選舉造勢，候選人預告蔡英文、蕭美琴將出席；周邊封路及散場時刻未公布，勿將學校周邊道路視為已封閉。',
+      url:ref.shulin,sourceLabel:'候選人行程新聞',other:ref.tucheng,otherLabel:'其他造勢預告',nav:'新北市立樹林高級中學'});
+    event({key:'tucheng-rally',day:22,time:'活動開始／散場時刻未公布',grade:'B',
+      title:'「慧聚繁星」土城場造勢大會',place:'新北高工操場（新北市土城區）',region:3,
+      note:'候選人確認11/22在新北高工操場舉辦土城、三峽區造勢活動；開始時間、實際散場及周邊警察交通管制均未公布。',
+      url:ref.tucheng,sourceLabel:'候選人造勢預告',nav:'新北市土城區學府路一段241號 新北高工'});
+    event({key:'city-action',day:22,time:'14:30～18:00 六站展區／18:00 競總活動',grade:'B',
+      title:'「市民動起來」城市行動展｜六站主題活動',
+      place:'忠孝東路／復興南路沿線六站・北平東路競總（跨信義、大安、中正）',region:5,
+      note:'11/22沿忠孝東路、復興南路設六處定點舞台，14:30～18:00同時進行音樂、舞蹈及展示；18:00起北平東路競總另有活動，晚間散場未公布。這是分散式定點展區，不可視為整條路封閉；同日味全龍遊行可能與東區動線交疊。',
+      url:ref.cityAction,sourceLabel:'中央社活動新聞',other:ref.cityActionTime,otherLabel:'六站時間新聞',nav:'臺北市中正區北平東路30-1號'});
+    traffic({id:'traffic-20261120-satoyama',until:'2026-11-21T18:00',
+      title:'11/21 臺北里山川：指南路三段157巷管制',status:'A 臺北市公共運輸處11/19公告',
+      time:'11/21（六）10:00～18:00',
+      body:'文山區指南路三段157巷配合山林活動交管，小10等3條公車調整行駛路線，取消「貓纜指南宮站」往西站位停靠。切勿將公車改道路線推論為鄰近所有山路封閉；依現場交管人員指揮。',
+      url:ref.satoyama,sourceLabel:'公運處指南宮交通管制'});
+    traffic({id:'traffic-20261120-slope',until:'2026-12-01T00:00',
+      title:'北投泉源路邊坡搶修：交管延續至11/30',status:'A 臺北市公共運輸處正式公告',
+      time:'11/13～11/30 每日09:00～17:00、23:00～翌日05:00',
+      body:'北投區泉源路1206143燈桿前（惇敘工商旁）施工交管，公車改道並取消停靠「惇敘工商（泉源）」雙向等16處站位。官方公告施工管制延續至11/30，實際視現場提前或延後解除。',
+      url:ref.slope,sourceLabel:'臺北市政府工程交通公告'});
+    traffic({id:'traffic-20261120-zhonghe-road',until:'2026-11-21T12:30',
+      title:'11/21 中和廣福路健檢：指定門牌附近道路使用',status:'A 新北市政府警察局中和分局公告',
+      time:'11/21（六）07:30～12:30',
+      body:'新北市中和區廣福路39號、47號至50號周邊舉辦健檢活動並臨時使用道路，現場有人員交通疏導。不是廣福路全線封閉公告，請依實際交通標示及人員指揮。',
+      url:ref.zhonghe,sourceLabel:'中和分局交通提醒'});
+    traffic({id:'traffic-20261120-beiping-action',until:'2026-11-23T00:00',
+      title:'11/21～22 北平東路大型集會：搭建舞台先行封道',status:'A 臺北市政府警察局中正第一分局11/20公告',
+      time:'11/21（六）10:00～11/22（日）24:00（預定撤場）',
+      body:'北平東路（紹興北街不含～杭州北路不含）南側3車道於11/21 10:00起管制，供11/22集會搭建舞台，預定11/22 24:00撤場後開放。視人潮可能擴至北平東路、紹興北街全線；忠孝東路與杭州北路口往北亦可能彈性管制。11/22活動申請時段08:00～22:00，非整段道路封閉時刻；依現場指揮。',
+      url:ref.actionPolice,sourceLabel:'中正第一分局11/20交管公告'});
+    modify('ev-20261120-city-action-22',{
+      note:'11/22沿忠孝東路、復興南路設六處定點舞台，14:30～18:00進行音樂、舞蹈及展示；18:00起北平東路競總另有活動，晚間散場未公布。警方公告北平東路（紹興北街～杭州北路）南側3線車道自11/21 10:00先行管制搭建舞台，周邊可能依人潮擴大管制。不同路段勿視為全線封閉。',
+      url:ref.actionPolice,label:'中正一分局最新交管'
+    });
+    var springTraffic=document.getElementById('traffic-spring-20261116');
+    if(springTraffic){
+      var st=springTraffic.querySelector('.traffic-status');if(st)st.textContent='A 11/16公運處原公告＋11/20北市警局最新踩街管制';
+      var stm=springTraffic.querySelector('.traffic-time');if(stm)stm.textContent='七星街：11/18 06:00～11/23 18:00；光明路11/21踩街11:00～13:00（警局10:40起彈性管制）';
+      var sb=springTraffic.querySelector('.traffic-body');if(sb)sb.textContent='北市警局11/20更新：光明路（磺港路～大業路）11/21 10:40起彈性管制；11/16公運處原公告則為光明路（磺港路～中山路）10:00～14:00。兩公告範圍與時刻略不同，以實際員警指揮為準。七星街管制至11/23 18:00；小39改至捷運新北投站北側發車，共15線公車調整、10站位取消。';
+      link(springTraffic.querySelector('.event-footer'),'北市警局11/20踩街公告',ref.springs);
+    }
+    Array.prototype.forEach.call(document.querySelectorAll('#traffic .traffic-card'),function(card){
+      var h=card.querySelector('h3');if(!h||h.textContent.indexOf('NS RUN 南山半馬')===-1)return;
+      link(card.querySelector('.event-footer'),'警局11/19交管示意及改道建議',ref.marathon);
+    });
+    var rank=document.querySelectorAll('#top10 .rank-card');
+    if(rank.length>6){
+      var t=rank[6].querySelector('.rank-time strong');if(t)t.textContent='11/21（六）18:00 開始・散場未公布';
+      var n=rank[6].querySelector('.rank-reason');if(n)n.textContent='市府路大型造勢晚會18:00開始；市府路11/21 00:00～11/22 03:00雙向封閉，新仁愛路另有例假日管制，計程車招呼站及共用臨停區停用。外圍合法處上下客，晚會散場時刻未公布。';
+    }
+    if(rank.length>4){var r=rank[4].querySelector('.rank-reason');if(r)r.textContent='味全龍封王遊行11/22 14:00自天母出發；同日下午14:30～18:00東區另有城市行動展六站舞台，可能與忠孝東路、仁愛路動線交疊。遊行採現場彈性管制，切勿在禁停路段候客。';}
+    var fine=document.querySelector('.footer-fine');
+    if(fine)fine.textContent='資訊更新：2026/11/20（台灣時間）｜活動、施工及交通管制以官方公告與現場指揮為準。© 2026 跑車人生記帳本 · VIP 專屬';
+    var headerTime=document.querySelector('.update-stamp time');
+    if(headerTime){headerTime.setAttribute('datetime','2026-11-20');headerTime.textContent='最後更新 11/20｜週末活動及交管';}
+  }
+  mergeNov20OfficialUpdates();
+
   // 交通管制項目只在標題能確定單一場館時對應；跨區遊行不任意選擇其中一個座標。
   function venueForTrafficCard(card) {
     var heading=card.querySelector('h3');
