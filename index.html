@@ -667,6 +667,25 @@ function isYellowCab(){ return state.carType==='yellow'; }
 function isUberTaxiRec(r){ return r.platform==='uber' && r.subtype==='優步小黃'; }
 // Uber 多元 is entered as what the driver received; its fare and fee are worked back from the fee % (estimates)
 function isUberNetRec(r){ return r.platform==='uber' && !isUberTaxiRec(r); }
+// 記帳時填實收 (⚙️ 平台管理, per platform, off by default): the amount typed in is what the driver received, already
+// net of the platform's fee. Each record keeps its own r.netEntry, set when it was first saved, and every sum looks
+// at that mark, never at today's switch: turning the switch off or on later leaves the earlier entries as they were.
+// Uber 多元 has always been entered this way (isUberNetRec) and needs no mark; tips and bonuses are not fares.
+function netEntryAllowed(key){ var d = platformDef(key); return !!d && !d.tipOnly && !d.bonus && !(key==='uber' && !isYellowCab()); }
+function netEntryOn(key){ var o = state.netEntryPlats; return !!(o && typeof o==='object' && o[key]===true) && netEntryAllowed(key); }
+function isNetMarked(r){ return r.netEntry===true && r.platform!=='bonus' && r.platform!=='tipbox' && !isUberNetRec(r); }
+// entered as 實收 by either way: its fare and fee are estimates worked back from the fee rules
+function isNetEntryRec(r){ return isUberNetRec(r) || isNetMarked(r); }
+// 「Uber 多元、BOLT」: the platforms among recs entered as 實收, for the 估算 notes
+function netEntryLabels(recs){
+  var seen = {}, out = [];
+  recs.forEach(function(r){
+    if(!isNetEntryRec(r)) return;
+    var l = isUberNetRec(r) ? 'Uber 多元' : platformDef(r.platform).label;
+    if(!seen[l]){ seen[l] = true; out.push(l); }
+  });
+  return out.join('、');
+}
 function applyCarType(p){
   if(isYellowCab() && TAXI_NO_SUBTYPE.indexOf(p.key)>=0){ delete p.subtypeOptions; delete p.allSubtypes; }
   if(isYellowCab() && p.key==='uber'){ p.hasAddOn = true; p.paymentOptions = ['現金','信用卡']; }
@@ -1208,8 +1227,8 @@ function tripIndex(){
       return a.d<b.d ? -1 : a.d>b.d ? 1 : ((+a.r.ts||0)-(+b.r.ts||0) || a.i-b.i);
     }).forEach(function(x){
       linegoTaxiBefore.set(x.r, sum);
-      var g = +x.r.revenue||0;
-      if(g>0) sum += linegoDispatchFee(g, x.r.fees||resolvedFeeRules());
+      var fx = x.r.fees||resolvedFeeRules(), g = linegoFareOf(x.r, fx);
+      if(g>0) sum += linegoDispatchFee(g, fx);
     });
   });
 }
@@ -1289,8 +1308,8 @@ function linegoMonthDispatchBefore(r){
     var xd = linegoTaxiDates.get(x), xt = x.ts || 0;
     // Keep a strict order even for imported trips sharing a timestamp (or having no timestamp/id).
     if(xd>d || (xd===d && (xt>ts || (xt===ts && i>=pos)))) return;
-    var g = +x.revenue||0;
-    if(g>0) sum += linegoDispatchFee(g, x.fees||resolvedFeeRules());
+    var fx = x.fees||resolvedFeeRules(), g = linegoFareOf(x, fx);
+    if(g>0) sum += linegoDispatchFee(g, fx);
   });
   return sum;
 }
@@ -1299,6 +1318,7 @@ function rawNet(r){
   var gross = +r.revenue||0;
   if(gross<=0) return 0;
   if(r.platform==='bonus') return gross;
+  if(isNetMarked(r)) return gross;  // 記帳時填實收: the amount is already net
   var fees = r.fees||state.feeRules||{};
   if(r.platform==='hailyellow'){
     if(r.payment==='信用卡') return gross*(1-(fees.hailyellowCredit!=null?fees.hailyellowCredit:3)/100);
@@ -1416,7 +1436,42 @@ function grossBase(r){
     var pctU = fees.uber!=null?fees.uber:25;
     return v/(1-pctU/100);
   }
+  if(isNetMarked(r)) return netEntryGross(r, v);
   return v;
+}
+// 記帳時填實收: the fare that, run through this platform's own fee rules (the ones kept with the record), pays what
+// the driver typed in. Found by halving the search range, so every rule (%, a fixed fee per trip, card surcharges,
+// BOLT's weekly count, LINE GO 小黃's tier and monthly cap) is used exactly as for a fare. Rules that depend on
+// how many trips there were are only approximate when one entry stands for a whole day (the driver is told).
+// Kept per record until the ledger changes.
+var netGrossMemo = null;
+function netEntryGross(r, net){
+  if(!netGrossMemo || netGrossMemo.gen!==dataGen || netGrossMemo.st!==state) netGrossMemo = {gen:dataGen, st:state, map:new WeakMap()};
+  var hit = netGrossMemo.map.get(r);
+  if(hit && hit.net===net && hit.fees===r.fees && hit.pay===r.payment && hit.ft===r.fareType && hit.st===r.subtype) return hit.g;
+  var c = {}; for(var k in r){ if(k!=='netEntry') c[k] = r[k]; }
+  function netAt(g){ c.revenue = g; return rawNet(c); }
+  var lo = net, hi = Math.max(net*1.5, net+60), g = net, n = 0;
+  while(netAt(hi) < net && n<30){ lo = hi; hi *= 2; n++; }
+  if(netAt(hi) < net) g = net;  // a fee that eats every fare: no estimate
+  else {
+    for(var i=0; i<60 && hi-lo>0.0005; i++){ var mid = (lo+hi)/2; if(netAt(mid) >= net) hi = mid; else lo = mid; }
+    // fares are whole dollars: take the nearest one when it pays the same (BOLT keeps cents, so 1249.994 also pays 1000)
+    var whole = Math.round(hi);
+    g = Math.abs(netAt(whole) - net) < 0.01 ? whole : Math.round(hi*100)/100;
+    if(g < net) g = net;
+  }
+  netGrossMemo.map.set(r, {net:net, fees:r.fees, pay:r.payment, ft:r.fareType, st:r.subtype, g:g});
+  return g;
+}
+// LINE GO 小黃's monthly cap counts the dispatch fee of every trip before; an entry made as 實收 gives its fare back
+// from the dispatch fee alone (no card fee), which is close enough for the cap and keeps the lookups one pass
+function linegoFareOf(x, fees){
+  var v = +x.revenue||0;
+  if(!(v>0) || !isNetMarked(x)) return v;
+  var tier = fees.linegoTaxiTier!=null ? +fees.linegoTaxiTier : 200, flat = fees.linegoTaxiFlat!=null ? +fees.linegoTaxiFlat : 10, pct = fees.linegoTaxiPct!=null ? +fees.linegoTaxiPct : 10;
+  if(v + flat < tier) return v + flat;
+  return pct<100 ? Math.max(tier, v/(1-pct/100)) : v;
 }
 function describeRecord(r){
   var parts=[];
@@ -2043,7 +2098,7 @@ function openSubBreakdownModal(item){
   recsList.sort(function(a,b){ return a.date<b.date?1:(a.date>b.date?-1:(b.ts||0)-(a.ts||0)); });
   h += '<div class="card">' + recsList.map(function(r){
     var val = computeNetRevenue(r)+(+r.tip||0);
-    return '<div class="list-item" data-act="edit-income:'+r.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+r.date+'</div><div class="li-sub">車資 '+fmtMoney(r.revenue||0)+(r.tip?(' · 小費 '+fmtMoney(r.tip)):'')+(r.area?(' · 📍'+esc(r.area)):'')+(r.event?(' · 🎉'+esc(r.event)):'')+(r.note?(' · '+esc(r.note)):'')+'</div></div><div class="li-amt income num">+'+fmtMoney(val)+'</div></div>';
+    return '<div class="list-item" data-act="edit-income:'+r.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+r.date+'</div><div class="li-sub">'+(isNetMarked(r)?'實收 ':'車資 ')+fmtMoney(r.revenue||0)+(r.tip?(' · 小費 '+fmtMoney(r.tip)):'')+(r.area?(' · 📍'+esc(r.area)):'')+(r.event?(' · 🎉'+esc(r.event)):'')+(r.note?(' · '+esc(r.note)):'')+'</div></div><div class="li-amt income num">+'+fmtMoney(val)+'</div></div>';
   }).join('') + '</div>';
   openModal(h);
 }
@@ -2368,10 +2423,12 @@ function moneyFlow(r){
   var cfg = payoutCfg(payKey(r));
   var coupon = r.coupon>0 ? +r.coupon : 0;
   if(isCashRecord(r)){
-    var fee = Math.max(0, (+r.revenue||0) - netBeforeCoupon(r));
+    // 記帳時填實收: the passenger paid the whole fare (worked back, an estimate) and its fee is owed to the platform
+    var fare = isNetMarked(r) ? grossBase(r) : (+r.revenue||0);
+    var fee = Math.max(0, fare - netBeforeCoupon(r));
     var netted = cfg.cashFeeFromPayout && cfg.schedule!=='none';
     // the passenger paid the coupon part with the platform's money: less cash, and the platform owes it
-    return {cash:(+r.revenue||0)-coupon+tip, noncash:(r.couponType==='absorb'?0:coupon)+(+r.tripBonus||0), cashFee:fee, netted:netted};
+    return {cash:fare-coupon+tip, noncash:(r.couponType==='absorb'?0:coupon)+(+r.tripBonus||0), cashFee:fee, netted:netted};
   }
   return {cash:0, noncash:net+tip, cashFee:0, netted:false};
 }
@@ -3165,7 +3222,7 @@ function openTripLinkModal(tripId){
   if(unlinked.length){
     h += '<div class="section-title" style="margin-bottom:8px">或連到已經記好的收入</div><div class="card" style="margin-bottom:14px">';
     h += unlinked.map(function(r){
-      return '<div class="list-item" data-act="trip-attach:'+t.id+':'+r.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+esc(platformDef(r.platform).label)+' · '+hhmm(r.ts)+' 記帳</div><div class="li-sub">車資 '+fmtMoney(r.revenue||0)+'</div></div><div class="li-amt num" style="color:var(--accent)">連結</div></div>';
+      return '<div class="list-item" data-act="trip-attach:'+t.id+':'+r.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+esc(platformDef(r.platform).label)+' · '+hhmm(r.ts)+' 記帳</div><div class="li-sub">'+(isNetMarked(r)?'實收 ':'車資 ')+fmtMoney(r.revenue||0)+'</div></div><div class="li-amt num" style="color:var(--accent)">連結</div></div>';
     }).join('')+'</div>';
   }
   h += '<div class="btn-row" style="gap:8px"><button class="btn btn-danger" style="flex:1" data-act="trip-delete:'+t.id+'">刪除這趟</button><button class="btn btn-ghost" style="flex:1" data-act="close-modal">稍後再填</button></div>';
@@ -3589,8 +3646,8 @@ function renderDayList(dateStr){
     var desc = describeRecord(r);
     var parts = [];
     if(desc && uiShow('recDesc')) parts.push(esc(desc));
-    if(grossEst) parts.push((r.platform==='bonus'?'金額 ':isUberNetRec(r)?'估算車資 ':'車資 ')+fmtMoney(grossEst-(+r.tripBonus||0)));
-    if(fee>0.5) parts.push((isUberNetRec(r)?'估算抽成 ':'抽成 ')+fmtMoney(fee));
+    if(grossEst) parts.push((r.platform==='bonus'?'金額 ':isNetEntryRec(r)?'估算車資 ':'車資 ')+fmtMoney(grossEst-(+r.tripBonus||0)));
+    if(fee>0.5) parts.push((isNetEntryRec(r)?'估算抽成 ':'抽成 ')+fmtMoney(fee));
     if(r.tip) parts.push('小費 '+fmtMoney(r.tip));
     if(r.note) parts.push(esc(r.note));
     var subLine = parts.join(' · ');
@@ -3867,6 +3924,7 @@ function platformEfficiencyHtml(recs){
     if(!map[r.platform]) map[r.platform]={label:def.label,color:def.color,trips:0,net:0,gross:0};
     var m = map[r.platform];
     m.trips++; m.net += computeNetRevenue(r)+(+r.tip||0); m.gross += computeGrossRevenue(r);
+    if(isNetMarked(r)) m.estNet = true;
   });
   var list = Object.keys(map).map(function(k){ var m=map[k]; m.avg=m.net/m.trips; m.feePct=m.gross>0?(m.gross-(m.net))/m.gross*100:0; return m; })
     .sort(function(a,b){ return b.avg-a.avg; });
@@ -3878,9 +3936,9 @@ function platformEfficiencyHtml(recs){
     return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'+
       '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><span style="font-size:13.5px;font-weight:700">'+esc(m.label)+'</span><span class="num" style="font-weight:700">'+fmtMoney2(m.avg)+' / 趟</span></div>'+
       '<div style="height:8px;margin:6px 0 4px;background:var(--surface-sunken);border-radius:4px"><div style="height:8px;width:'+w.toFixed(1)+'%;background:var(--accent);border-radius:4px"></div></div>'+
-      '<div style="font-size:11.5px;color:var(--text-muted)">'+m.trips+' 趟 · 實收 '+fmtMoney(m.net)+' · 手續費佔車資 '+(m.feePct>0?m.feePct.toFixed(1)+'%':'0%')+'</div></div>';
+      '<div style="font-size:11.5px;color:var(--text-muted)">'+m.trips+' 趟 · 實收 '+fmtMoney(m.net)+' · 手續費佔車資'+(m.estNet?'(估)':'')+' '+(m.feePct>0?m.feePct.toFixed(1)+'%':'0%')+'</div></div>';
   }).join('');
-  h += '<div style="font-size:11px;color:var(--text-muted);padding-top:8px">平均每趟實收已扣手續費、含記在該趟的小費;另外用「'+esc(platformDef('tipbox').label)+'」記的不列入。</div></div></div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);padding-top:8px">平均每趟實收已扣手續費、含記在該趟的小費;另外用「'+esc(platformDef('tipbox').label)+'」記的不列入。'+(list.some(function(m){ return m.estNet; }) ? '標「(估)」的平台有用「記帳時填實收」記的帳,手續費是估的;一天只記一筆總額的,一筆算 1 趟,平均每趟會偏高。' : '')+'</div></div></div>';
   return h;
 }
 /* ---------- VIP 2.0 ③: 🏁 我的車隊收益比較 (VIP; only in 跑車人生 測試版 while it is tried out; off until turned on) ----------
@@ -3957,7 +4015,7 @@ function fcStats(from, to){
     var m = F(r.platform), g = grossBase(r);
     var n = computeNetRevenue(r)+(+r.tip||0);
     m.trips++; m.gross += g; m.fee += Math.max(0, g - netBeforeCoupon(r)); m.net += n; m.tripBonus += (+r.tripBonus||0);
-    if(isUberNetRec(r)) m.est = true;
+    if(isNetEntryRec(r)){ m.est = true; if(isNetMarked(r)) m.estNet = true; }
     // the km the driver typed in, else the straight line from 上車 to 下車
     var km = tripKmOf(r), real = km!=null;
     if(!real && r.pickup && r.dropoff) km = straightKm(r.pickup, r.dropoff);
@@ -4019,7 +4077,7 @@ function fcWhatIfCalc(from, to, src, dst){
   if(fcWiMemo && fcWiMemo.gen===dataGen && fcWiMemo.st===state && fcWiMemo.key===key) return fcWiMemo.val;
   var P = fcWhatIfPrep(from, to, src), base = fcWhatIfRun(P, dst, 1);
   var val = {n:base.n, fare:base.fare, actual:base.actual, net:base.net, be: base.n ? fcBreakEven(P, dst, base.actual) : null,
-    srcEst: P.items.some(function(x){ return isUberNetRec(x.r); }), dstEst: dst==='uber' && !isYellowCab()};
+    srcEst: P.items.some(function(x){ return isNetEntryRec(x.r); }), srcEstNet: P.items.some(function(x){ return isNetMarked(x.r); }), dstEst: dst==='uber' && !isYellowCab()};
   fcWiMemo = {gen:dataGen, st:state, key:key, val:val};
   return val;
 }
@@ -4067,7 +4125,7 @@ function fcRealHtml(S){
     }
     h += '</div>';
   });
-  if(S.list.some(function(m){ return m.est; })) h += '<div style="'+FC_NOTE+'">Uber 多元記的是實收,車資和手續費是用你設定的抽成 % 反推的估算。</div>';
+  if(S.list.some(function(m){ return m.est; })) h += '<div style="'+FC_NOTE+'">'+(S.list.some(function(m){ return m.estNet; }) ? '標「(估)」的車隊有記「實收」的單(Uber 多元,或 ⚙️ 打開「記帳時填實收」的平台),車資和手續費是用你設定的抽成 % 反推的估算。一天只記一筆總額的,平均每趟實收會偏高。' : 'Uber 多元記的是實收,車資和手續費是用你設定的抽成 % 反推的估算。')+'</div>';
   h += '<div style="'+FC_NOTE+'">⏱️ 每小時實收是<b>估算</b>:上一趟下車到這一趟下車的時間(等單＋接客＋載客)算給這一趟的車隊。同時開好幾個車隊 App 時分不出來,等單時間算給接到的那一家。有記到上班時間的日子(2026.11.19.11 版以後的打卡),上班後、休息結束後的第一趟,從打卡或休息結束算起;以前的日子或在「歷史」改過工時的,空檔超過 '+(EMPTY_GAP_CAP_MIN/60)+' 小時當成休息不算,第一趟從按「接到單了」算起,沒按就只算載客時間。載客中接到的下一單(無縫接單)等單算 0。'+
     (S.timedN ? '<br>有按上下車的 '+S.timedN+' 趟中,'+S.punchN+' 趟有對到上班時間。' : '')+
     (S.worked > S.allMin/60 + 0.05 ? '<br>這段期間打卡 '+fmtNum(S.worked,1)+' 小時,其中 '+fmtNum(S.allMin/60,1)+' 小時算給了各趟;其餘(最後一趟到下班、沒按上下車的趟,以及沒記到上班時間那幾天第一趟以前)分不出是哪一家,沒有算進去,所以各車隊的每小時實收通常會比平均時薪高一些。' : '')+'</div>';
@@ -4160,7 +4218,7 @@ function fcWhatIfHtml(range, S){
     '・不包含:各家的活動獎勵、派單量、等單時間、付款與撥款時間、錢包門檻。「實際拿到」也不含趟趟加給、小費和自己吸收的優惠券。<br>'+
     '・付款方式照原本那一趟;'+dL+' 沒有那種付款方式時,現金照現金,其他當成刷卡。<br>'+
     '・用 '+dL+' <b>現在</b>的手續費設定(跟記帳頁「🧮 各車隊實收比較」同一套算法)。BOLT 每週趟數門檻、LINE GO 小黃每月派遣費上限,會把移過去的單一起算。'+
-    (R.srcEst || R.dstEst ? '<br>・Uber 多元記的是實收,車資是用你設定的抽成 % 反推、實收是照抽成 % 估的。' : '')+'</div>';
+    (R.srcEst || R.dstEst ? (R.srcEstNet ? '<br>・記「實收」的單(Uber 多元,或打開「記帳時填實收」的平台),車資是用你設定的抽成 % 反推的估算;一天只記一筆總額的,每週趟數門檻、每月上限會算不準。' : '<br>・Uber 多元記的是實收,車資是用你設定的抽成 % 反推、實收是照抽成 % 估的。') : '')+'</div>';
   return h;
 }
 function openFcSettings(){
@@ -4570,7 +4628,7 @@ function renderAnalytics(){
   }
   h += '<div class="stat-tile"><div class="lbl">實收</div><div class="val income num">'+fmtMoney(net.total)+'</div></div>';
   h += '</div>';
-  if(uiShow('grossFees') && recs.some(isUberNetRec)) h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">含 Uber 多元:它的車資和手續費是用你設定的 % 從實收反推的估算值。</div>';
+  if(uiShow('grossFees') && recs.some(isNetEntryRec)) h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">'+(recs.some(isNetMarked) ? '含記「實收」的單('+netEntryLabels(recs)+'):車資和手續費是用你設定的 % 從實收反推的估算值。' : '含 Uber 多元:它的車資和手續費是用你設定的 % 從實收反推的估算值。')+'</div>';
   h += '</div>';
   if(F){
     h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
@@ -7738,7 +7796,7 @@ function openYearReportModal(year){
 
 /* ---------- MODALS ---------- */
 var currentIncomeModalKey = null;
-var currentIncomeEditFees = null, currentIncomeEditId = null, currentIncomeEditDate = null, currentIncomeEditTs = null;
+var currentIncomeEditFees = null, currentIncomeEditId = null, currentIncomeEditDate = null, currentIncomeEditTs = null, currentIncomeEditNet = false;
 var modalOpener = null, modalOpenerAct = null;
 function openModal(html){
   currentIncomeModalKey = null;
@@ -7791,6 +7849,7 @@ function computePreviewRecordFromForm(key){
   if(def.hasStationFee){ rec.stationFee = +grab('f-station-fee')||0; }
   if(def.dispatchOptions){ var dpe=document.getElementById('chip-dispatchPct'); rec.dispatchPct = parseFloat(dpe?dpe.value:def.dispatchOptions[0]); }
   if(key==='uber' && isYellowCab()) rec.subtype = '優步小黃';
+  if(currentIncomeEditId ? currentIncomeEditNet : netEntryOn(key)) rec.netEntry = true;
   markFeeRules(rec, key, null);
   var cmp0 = document.getElementById('f-camp'); if(cmp0 && cmp0.checked) rec.tripBonus = +cmp0.getAttribute('data-amt')||0;
   var cpv0 = +grab('f-coupon')||0;
@@ -7809,10 +7868,11 @@ function updateIncomePreview(){
   var fee = gross-net;
   var total = net+rec.tip;
   el.innerHTML = '<div class="summary-row" style="grid-template-columns:1fr 1fr 1fr">'+
-    '<div class="stat-tile"><div class="lbl">'+(isUberNetRec(rec)?'估算車資':'車資')+'</div><div class="val num">'+fmtMoney(gross)+'</div></div>'+
-    '<div class="stat-tile"><div class="lbl">'+(isUberNetRec(rec)?'估算抽成':'抽成')+'</div><div class="val expense num">'+(fee>0.5?fmtMoney(fee):'—')+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">'+(isNetEntryRec(rec)?'估算車資':'車資')+'</div><div class="val num">'+fmtMoney(gross)+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">'+(isNetEntryRec(rec)?'估算抽成':'抽成')+'</div><div class="val expense num">'+(fee>0.5?fmtMoney(fee):'—')+'</div></div>'+
     '<div class="stat-tile"><div class="lbl">實收</div><div class="val income num">'+fmtMoneyFor(currentIncomeModalKey, total)+'</div></div>'+
-    '</div>';
+    '</div>'+
+    (isNetMarked(rec) && (+rec.revenue||0)>0 ? '<div class="net-entry-line" style="font-size:12px;color:var(--text-muted);margin-top:6px;line-height:1.5">實收 '+fmtMoney(net)+' → 車資約 '+fmtMoney(gross)+'、手續費約 '+(fee>0.5?fmtMoney(fee):'$0')+'(估)</div>' : '');
 }
 /* ---------- settings left with changes not saved ----------
    The settings sheet only writes its form when 儲存設定 is pressed (字體大小 and 畫面寬度 apply at once and are not
@@ -7963,8 +8023,10 @@ function openIncomeModal(key, editId){
   } else if(def.tipOnly){
     h += tipFieldHtml('金額', existing);
   } else {
-    var revLabel = (key==='uber') ? (isYellowCab() ? '跳表金額' : '下車時顯示的金額(不含小費)') : (key==='bolt' ? '車資金額(未扣手續費)' : (key==='metro' ? '車資(大都會 App 顯示的實收金額)' : '車資金額'));
-    var revHint = key==='metro' ? '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">請輸入大都會 App 上這一單的實收金額,<b>不是跳表機上的金額</b>。優惠折扣大都會已經算好了,下面的派別只是記錄這一單是什麼派,不會再折一次。</div>' : '';
+    // 記帳時填實收: an entry keeps how it was first made; a new one follows the platform's switch
+    var netE = existing ? isNetMarked(existing) : netEntryOn(key);
+    var revLabel = netE ? '實收(已扣手續費)' : (key==='uber') ? (isYellowCab() ? '跳表金額' : '下車時顯示的金額(不含小費)') : (key==='bolt' ? '車資金額(未扣手續費)' : (key==='metro' ? '車資(大都會 App 顯示的實收金額)' : '車資金額'));
+    var revHint = netE ? '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">填這一筆實際拿到的錢(已扣手續費,不含小費)。車資和手續費由 App 依你設定的抽成估算'+(existing ? ',這一筆是用「實收」記的。' : ';要改回填車資,到 ⚙️ 設定 → 平台管理關掉「記帳時填實收」。')+'</div>' : key==='metro' ? '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">請輸入大都會 App 上這一單的實收金額,<b>不是跳表機上的金額</b>。優惠折扣大都會已經算好了,下面的派別只是記錄這一單是什麼派,不會再折一次。</div>' : '';
     h += '<div class="form-row"><label>'+revLabel+'</label><input class="num-input" id="f-revenue" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.revenue)||'')+'">'+revHint+'</div>';
     if(uiOn('tip')) h += tipFieldHtml('小費(選填)', existing);
     if(((key==='uber' && !isYellowCab()) || key==='bolt') && uiOn('tripToll')){
@@ -7988,6 +8050,7 @@ function openIncomeModal(key, editId){
   currentIncomeEditId = existing ? existing.id : null;
   currentIncomeEditDate = existing ? existing.date : null;
   currentIncomeEditTs = existing ? existing.ts : null;
+  currentIncomeEditNet = existing ? isNetMarked(existing) : false;
   updateIncomePreview();
   focusField(['f-revenue','f-tip']);
 }
@@ -7995,8 +8058,10 @@ var DUP_WINDOW_MS = 2*60000;
 // An extra 0 is the commonest typo. With the trip's pickup and drop-off we can say roughly what the meter
 // would show (Taiwan meters run about $100 to start and $25 a km; roads are ~1.4x the straight line);
 // without them we compare with the driver's own recent fares. Only asks: a real surge or a long trip goes through.
-function fareLooksTooHigh(revenue, trip, platformKey){
+function fareLooksTooHigh(revenue, trip, platformKey, netEntry){
   if(!(revenue>=500)) return '';
+  // 記帳時填實收 is often one total for the whole day: only a linked trip can say the amount is off
+  if(netEntry && !(trip && trip.pickup && trip.dropoff)) return '';
   if(trip && trip.pickup && trip.dropoff){
     var km = straightKm(trip.pickup, trip.dropoff), mins = (trip.dropoff.ts && trip.pickup.ts) ? tripMin(trip.pickup, trip.dropoff) : null;
     var byKm = km!=null ? 100 + km*1.4*25 : 0, byMin = mins!=null && mins>0 ? 85 + mins*15 : 0;
@@ -8009,7 +8074,7 @@ function fareLooksTooHigh(revenue, trip, platformKey){
     }
     if(est>0) return '';
   }
-  var recent = state.records.filter(function(r){ return !platformDef(r.platform).tipOnly && r.platform!=='bonus' && (+r.revenue||0)>0; })
+  var recent = state.records.filter(function(r){ return !platformDef(r.platform).tipOnly && r.platform!=='bonus' && !isNetMarked(r) && (+r.revenue||0)>0; })
     .slice(-100).map(function(r){ return +r.revenue; }).sort(function(a,b){ return a-b; });
   if(recent.length<10) return revenue>=3000 ? fmtMoney(revenue)+' 是一筆很大的金額,確定沒有多打一個 0 嗎?' : '';
   var median = recent[Math.floor(recent.length/2)];
@@ -8038,10 +8103,12 @@ function saveIncome(key, editId){
   if(!def.tipOnly && !def.bonus && !(existing && (+existing.revenue||0)===revenue)){
     var linkEl = document.getElementById('f-trip-link'), linkV = linkEl ? linkEl.value : '';
     var tripForCheck = existing && existing.pickup ? existing : (linkV && linkV!=='none' ? findPendingTrip(linkV) : null);
-    var tooHigh = fareLooksTooHigh(revenue, tripForCheck, key);
+    var tooHigh = fareLooksTooHigh(revenue, tripForCheck, key, existing ? isNetMarked(existing) : netEntryOn(key));
     if(tooHigh && !confirm(tooHigh)) return;
   }
   var rec = existing || {id:uid(), date:currentEntryDate(), ts:Date.now(), platform:key, fees:resolvedFeeRules()};
+  // 記帳時填實收 is marked once, when the entry is made; editing it later never adds or removes the mark
+  if(!existing && netEntryOn(key)) rec.netEntry = true;
   rec.revenue = revenue; rec.tip = tip; rec.note = note;
   var tripTollEl = document.getElementById('f-trip-toll');
   if(tripTollEl){ var tripToll = +tripTollEl.value || 0; rec.tollRefund = tripToll>0 ? Math.round(tripToll*100)/100 : undefined; }
@@ -8804,7 +8871,7 @@ document.addEventListener('visibilitychange', function(){ if(document.visibility
 /* ---------- 📖 feature guide: [title, where / how, switch key] ---------- */
 var HELP = [
   ['記收入', [
-    ['記一筆收入', '記帳頁點平台 → 打金額 → 儲存。Uber 多元打 App 顯示的實收;其他平台打車資,系統自動扣手續費。2 分鐘內記了一模一樣的一筆會先問你。'],
+    ['記一筆收入', '記帳頁點平台 → 打金額 → 儲存。Uber 多元打 App 顯示的實收;其他平台打車資,系統自動扣手續費。想直接打實收(例如一天只記一筆總額)的平台,到 ⚙️ 設定 → 平台管理打開「記帳時填實收」,車資和手續費由 App 估算。2 分鐘內記了一模一樣的一筆會先問你。'],
     ['我的車:多元/小黃/R 牌', '⚙️「基本設定」→「我的車」。選小黃後 Uber、BOLT、LINE GO 不用選車種;Uber 小黃打跳表金額,自動扣 15%(手續費設定可改)。選 R 牌租賃車,記帳頁不顯示路招、呼叫小黃、接電。'],
     ['車種/屬性', 'Uber、BOLT、LINE GO 記帳時選車種,分析頁可以看各車種賺多少。', 'subtype'],
     ['計價方式', '跳表、預估車資、據點叫車。', 'fareType'],
@@ -9201,6 +9268,7 @@ function openSettingsModal(){
   });
   h += '</div>';
   h += '<div style="height:8px"></div><button class="add-fixed-btn" data-act="open-newplatform">+ 新增平台</button><div style="height:14px"></div>';
+  h += netEntrySettingsHtml();
 
   S.platforms = h; h = '';
   h += '<div class="form-row" style="margin-top:6px"><label>支出項目管理(用 ▲▼ 排序,可改名/隱藏/新增)</label></div>';
@@ -9302,12 +9370,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.20.8';
+var APP_VERSION = '2026.11.21.1';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.21.1', '💵 每個平台都能「記帳時填實收」:到 ⚙️ 設定 → 平台管理打開後,記 BOLT、LINE GO 等平台時直接打實際拿到的錢,不會再被扣一次手續費;車資和手續費由 App 估算。打開前記的帳照原本的算法,之後關掉也不影響'],
   ['2026.11.20.8', '💡 測試版:VIP 功能還缺資料時(例如沒記每日里程、沒按上車/下車、沒打卡),會直接告訴你還缺什麼、去哪裡補,有的可以一鍵打開;VIP 介紹和 👑 預覽多一行「需要:…」,先知道要記哪些資料才看得到', 'beta'],
   ['2026.11.20.7', '🚗 測試版:只填了「車輛成本」也能在加油、保養維修時填儀表板里程;可支配所得變負數時,會說主要是哪一筆扣最多;大字時數字和單位不會被拆成兩行', 'beta'],
   ['2026.11.20.6', '📍 測試版:下車地統計的「死區提醒」只列等單明顯比你平均久的地方(你平均的 1.5 倍以上);等得比平均短的地方不再被叫死區,一個都沒有時寫「目前沒有明顯的死區」', 'beta'],
@@ -9692,7 +9761,7 @@ function keepUndoCopy(label, done){
 // settings that belong to this phone, not to the ledger: a restored backup must not switch sharing or
 // statistics back on, bring back an old sharing id, or claim this phone's cloud backup state
 var DEVICE_KEYS = ['undoMeta','seenVersion','syncUrl','syncEvery','lastCloudBasicAt','cloudBaseTime','cloudSentSids','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale','layoutWidth'];
-var LEDGER_PART_NAMES = {expenses:'支出', dailyMeta:'每日工時與里程', fixedCosts:'固定成本', fixedOverrides:'固定成本覆寫', targets:'目標', feeRules:'手續費設定', platformOverrides:'平台設定', customPlatforms:'自訂平台', platformOrder:'平台排列', payoutSettings:'撥款設定', payouts:'撥款核對', pendingTrips:'行程', tollRefunds:'過路費退款', metroWallet:'大都會錢包', vehicle:'車輛提醒'};
+var LEDGER_PART_NAMES = {expenses:'支出', dailyMeta:'每日工時與里程', fixedCosts:'固定成本', fixedOverrides:'固定成本覆寫', targets:'目標', feeRules:'手續費設定', platformOverrides:'平台設定', customPlatforms:'自訂平台', platformOrder:'平台排列', netEntryPlats:'記帳時填實收', payoutSettings:'撥款設定', payouts:'撥款核對', pendingTrips:'行程', tollRefunds:'過路費退款', metroWallet:'大都會錢包', vehicle:'車輛提醒'};
 // '' when the data can be used as a ledger, otherwise what is wrong with it
 function ledgerProblem(p, strictDates){
   if(!p || typeof p!=='object' || Array.isArray(p)) return '這不是記帳本的備份資料';
@@ -9749,6 +9818,7 @@ function ledgerProblem(p, strictDates){
     ((p.vehicle!=null && (typeof p.vehicle!=='object' || Array.isArray(p.vehicle) || (p.vehicle.policies!=null && !Array.isArray(p.vehicle.policies)) || (p.vehicle.cost!=null && !isObj(p.vehicle.cost)))) ? '「車輛提醒」的格式不對' : '') ||
     ((p.analysisPresets!=null && !Array.isArray(p.analysisPresets)) ? '「分析組合」的格式不對' : objList(p.analysisPresets||[], '分析組合')) ||
     numValues(p.feeRules||{}, '手續費設定') || numValues(p.targets||{}, '目標') ||
+    ((p.netEntryPlats!=null && (!isObj(p.netEntryPlats) || Object.keys(p.netEntryPlats).some(function(k){ return typeof p.netEntryPlats[k]!=='boolean'; }))) ? '「記帳時填實收」的格式不對' : '') ||
     ((p.activeTrip!=null && !isObj(p.activeTrip)) ? '「載客中的行程」格式不對' : '');
 }
 // every way of swapping in a whole ledger (backup file, cloud backup, undo, clear) goes through here:
@@ -9883,7 +9953,36 @@ function saveNewPlatform(){
   state.platformOrder.push(cp.key);
   save(); openSettingsModal();
 }
+// ⚙️ 平台管理 → 記帳時填實收: one switch per fare platform, off by default. Uber 多元 is always entered this way.
+var NET_ENTRY_NOTE = '打開的平台,記帳時填「實際拿到的錢」(已扣手續費),車資和手續費由 App 依你設定的抽成估算,畫面上標「估」。';
+function netEntrySettingsHtml(){
+  var plats = allPlatforms().filter(function(p){ return !p.tipOnly && !p.bonus; });
+  var on = plats.filter(function(p){ return netEntryOn(p.key); }).length;
+  var h = '<details id="netEntrySec" style="border:1px solid var(--border);border-radius:9px;padding:6px 10px;margin-bottom:14px"'+(on?' open':'')+'>'+
+    '<summary style="font-size:13px;font-weight:700;cursor:pointer">💵 記帳時填實收(已扣手續費) <span style="font-weight:400;color:var(--text-muted);font-size:12px">('+(on?'已打開 '+on+' 個':'都沒有打開')+')</span></summary>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.65;margin:6px 0 4px">'+NET_ENTRY_NOTE+'<br>'+
+    '・一天只記一筆總額的話,會被當成 1 趟:<b>平均每趟、還要跑幾趟</b>會不準;時薪、實收、可支配所得不受影響。<br>'+
+    '・有分現金、刷卡的車隊(例如台灣大、大都會、YOXI),撥款對帳要分開:混成一筆可能對不上,在意的話現金、刷卡各記一筆。<br>'+
+    '・只影響打開之後新記的帳;以前記的照原本的方式算,之後關掉也一樣。</div>';
+  plats.forEach(function(p){
+    var uberNet = p.key==='uber' && !isYellowCab();
+    h += '<label style="display:flex;align-items:center;gap:8px;padding:7px 0;border-top:1px solid var(--border);font-size:13px;cursor:'+(uberNet?'default':'pointer')+'">'+
+      '<input type="checkbox" id="f-plat-net-'+p.key+'" style="width:18px;height:18px;flex:none"'+(uberNet||netEntryOn(p.key)?' checked':'')+(uberNet?' disabled':'')+'>'+
+      '<span style="flex:1">'+iconHtml(p.icon||'🚘')+' '+esc(p.label)+(uberNet?'<div style="font-size:11px;color:var(--text-muted)">Uber 多元本來就是填實收,不能關</div>':'')+'</span></label>';
+  });
+  return h+'</details>';
+}
+function saveNetEntrySettings(){
+  if(!document.getElementById('netEntrySec')) return;
+  var ne = {}, any = false;
+  allPlatforms().forEach(function(p){
+    var el = document.getElementById('f-plat-net-'+p.key);
+    if(el && !el.disabled && el.checked && netEntryAllowed(p.key)){ ne[p.key] = true; any = true; }
+  });
+  if(any) state.netEntryPlats = ne; else delete state.netEntryPlats;
+}
 function savePlatformSettings(){
+  saveNetEntrySettings();
   var list = document.getElementById('platOrderList');
   if(list){ state.platformOrder = Array.prototype.slice.call(list.children).map(function(r){ return r.getAttribute('data-key'); }); }
   allPlatforms().forEach(function(p){
@@ -10248,7 +10347,7 @@ document.addEventListener('click', function(e){
       '<div style="font-size:14px;line-height:1.8"><b>實收</b> = 扣完平台手續費後你賺到的錢(含小費),<b>也包含還沒撥款</b>的刷卡、App 付款單。<br>'+
       '<b>今日現金收入</b> = 今天乘客直接付你的現金,還沒扣現金支出(例如停車費)。<br>'+
       '<b>待撥款</b> = 平台之後才撥給你的錢,到「撥款」頁看預計入帳日、核對實際入帳。<br>'+
-      '<span style="color:var(--text-muted);font-size:12.5px">Uber 多元輸入的是 App 顯示的實收,車資和抽成是用你設定的 % 反推的估算值。</span></div>'+
+      '<span style="color:var(--text-muted);font-size:12.5px">Uber 多元輸入的是 App 顯示的實收,車資和抽成是用你設定的 % 反推的估算值;在 ⚙️ 平台管理打開「記帳時填實收」的平台也一樣。</span></div>'+
       '<div style="text-align:right;margin-top:12px"><a data-act="open-help:實收" style="font-size:12.5px;color:var(--accent);cursor:pointer">看完整功能說明 ›</a></div>');
   }
   else if(cmd==='help-on'){
