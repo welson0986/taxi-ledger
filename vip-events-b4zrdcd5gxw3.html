@@ -1390,6 +1390,374 @@ var footerFine=document.querySelector('.footer-fine');if(footerFine)footerFine.t
   }
   mergeNov20OfficialUpdates();
 
+  // 11/21 公開資訊增補：只補原卡缺漏及確定的新活動，不改動日期／區域切換機制。
+  function mergeNov21OfficialUpdates() {
+    var ref={
+      mna21:'https://ticket.mna.com.tw/UTK0201_?PRODUCT_ID=P1ETF1DD',
+      mna22:'https://ticket.mna.com.tw/UTK0201_?PRODUCT_ID=P1ETF1DE',
+      benesse:'https://www.benesse.com.tw/magazine/show/26english/index.html',
+      wall:'https://thewalllivehouse.kktix.cc/events/83071863',
+      rally:'https://fongnews.net/2026vote/94952/',
+      rallyMore:'https://fongnews.net/2026vote/95239/',
+      pili:'https://www.pili.com.tw/news-view/202609241553522971044/',
+      qingshan:'https://mjcsg.org.tw/?act=menuinfo&cmd=detail&mi_id=20261120001&ml_id=20250804008',
+      shulin:'https://www.shulin.police.ntpc.gov.tw/cp-1206-144567-20.html',
+      horse:'https://www.gov.taipei/News_Content.aspx?n=EEC70A4186D4C828&s=9FE55C0D9007DE3B&sms=87415A8B9CE81B16',
+      horseParking:'https://www.tmc.taipei/tw/news/announcement/63thGHA-Parking-Lot-Notice',
+      riverside:'https://heo.gov.taipei/News_Content.aspx?n=1FE45A3FEA3D194E&s=D706A13F3EEE970F&sms=72544237BBE4C5F6'
+    };
+    function source(footer,label,url) {
+      if(!footer||!url||Array.prototype.some.call(footer.querySelectorAll('a'),function(a){return a.href===url;}))return;
+      var a=document.createElement('a');a.className='source-link';a.href=url;
+      a.textContent=label+' ↗';a.target='_blank';a.rel='noopener noreferrer';
+      footer.insertBefore(a,footer.querySelector('.nav-link')||null);
+    }
+    function update(id,info) {
+      var card=document.getElementById(id);if(!card)return;
+      [['time','.time-text'],['note','.event-note']].forEach(function(part){
+        if(info[part[0]]){var node=card.querySelector(part[1]);if(node)node.textContent=info[part[0]];}
+      });
+      if(info.url)source(card.querySelector('.event-footer'),info.label||'主辦公告',info.url);
+      if(info.other)source(card.querySelector('.event-footer'),info.otherLabel||'交通資訊',info.other);
+    }
+    function event(data) {
+      var id='ev-20261121-'+data.key+'-'+data.day;
+      var stack=document.querySelector('#day-panel-'+data.day+' .event-stack');
+      if(!stack||document.getElementById(id))return;
+      var grade=data.grade||'A',card=document.createElement('article');
+      card.id=id;card.className='event-card event-'+grade.toLowerCase();
+      card.setAttribute('data-day',data.day);card.setAttribute('data-grade',grade);
+      card.setAttribute('data-source','20261121_PUBLIC_SOURCES');
+      if(data.venue&&Object.prototype.hasOwnProperty.call(VENUE_COORDS,data.venue))card.setAttribute('data-venue',data.venue);
+      var top=document.createElement('div');top.className='event-top';
+      var time=document.createElement('span');time.className='time-text';time.textContent=data.time;top.appendChild(time);
+      var badge=document.createElement('span');badge.className='badge badge-'+grade.toLowerCase();
+      badge.textContent=grade==='A'?'A 主辦／官方資訊':'B 活動消息';top.appendChild(badge);card.appendChild(top);
+      var name=document.createElement('div');name.className='event-name';name.textContent=data.title;card.appendChild(name);
+      var place=document.createElement('div');place.className='event-place';
+      var dot=document.createElement('span');dot.className='place-dot';dot.setAttribute('aria-hidden','true');
+      place.appendChild(dot);place.appendChild(document.createTextNode(data.place));card.appendChild(place);
+      var note=document.createElement('p');note.className='event-note';note.textContent=data.note;card.appendChild(note);
+      var footer=document.createElement('div');footer.className='event-footer';
+      source(footer,data.sourceLabel||'主辦資訊',data.url);
+      if(data.other)source(footer,data.otherLabel||'補充報導',data.other);
+      var nav=document.createElement('a');nav.className='nav-link';nav.textContent='📍 導航';
+      nav.href='https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(data.nav||data.place)+'&travelmode=driving';
+      nav.target='_blank';nav.rel='noopener noreferrer';footer.appendChild(nav);card.appendChild(footer);stack.appendChild(card);
+      var region=document.getElementById('region-panel-'+data.region);
+      if(region){region.setAttribute('data-event-refs',((region.getAttribute('data-event-refs')||'')+' '+id).trim());region.removeAttribute('data-rendered');}
+    }
+    function traffic(data) {
+      var list=document.querySelector('#traffic .traffic-list');
+      if(!list||document.getElementById(data.id))return;
+      var card=document.createElement('article');card.className='traffic-card';card.id=data.id;
+      card.setAttribute('data-source','20261121_PUBLIC_SOURCES');
+      card.setAttribute('data-visible-until',data.until);
+      if(data.venue&&Object.prototype.hasOwnProperty.call(VENUE_COORDS,data.venue))card.setAttribute('data-venue',data.venue);
+      var head=document.createElement('div');head.className='traffic-head';
+      var icon=document.createElement('span');icon.className='traffic-icon';icon.setAttribute('aria-hidden','true');icon.textContent='!';head.appendChild(icon);
+      var h=document.createElement('h3');h.textContent=data.title;head.appendChild(h);card.appendChild(head);
+      [['traffic-status',data.status],['traffic-time',data.time],['traffic-body',data.body]].forEach(function(part){
+        var p=document.createElement('p');p.className=part[0];p.textContent=part[1];card.appendChild(p);
+      });
+      var footer=document.createElement('div');footer.className='event-footer';
+      source(footer,'官方交通公告',data.url);
+      if(data.other)source(footer,'場館停車公告',data.other);
+      card.appendChild(footer);list.insertBefore(card,list.firstChild);
+    }
+
+    // 場次為主辦售票頁明列；結束時間由主辦預估長度換算，非正式散場。
+    event({key:'thielemann-esun',day:21,region:5,venue:'國家兩廳院',
+      time:'19:45 開演・約21:45 結束（主辦預估）',
+      title:'玉山音樂饗宴｜提勒曼與柏林國家歌劇院管弦樂團',
+      place:'國家音樂廳（中正區）',nav:'臺北市中正區中山南路21-1號 國家音樂廳',
+      note:'牛耳藝術公告11/21 19:45開演；含中場休息預估120分鐘，約21:45為推算時刻，實際散場以現場為準。',url:ref.mna21,sourceLabel:'MNA主辦售票及預估時長'});
+    event({key:'thielemann-wanhai',day:22,region:5,venue:'國家兩廳院',
+      time:'14:00 開演・約15:35 結束（主辦預估）',
+      title:'萬海慈善音樂饗宴｜提勒曼與柏林國家歌劇院管弦樂團',
+      place:'國家音樂廳（中正區）',nav:'臺北市中正區中山南路21-1號 國家音樂廳',
+      note:'牛耳藝術公告11/22 14:00開演；含中場休息預估95分鐘，約15:35為推算時刻，實際散場以現場為準。',url:ref.mna22,sourceLabel:'MNA主辦售票及預估時長'});
+    [21,22].forEach(function(day){event({key:'benesse-rainbow',day:day,region:4,
+      time:'10:30／13:30 各一場（每場約60分鐘）',
+      title:'巧虎英語舞臺劇《Finding Rainbow Island 尋找彩虹島》',
+      place:'臺北市兒童新樂園・兒童劇場（士林區）',nav:'臺北市士林區承德路五段55號 臺北市兒童新樂園',
+      note:'巧連智主辦11/'+day+'有10:30及13:30兩場，每場60分鐘、無中場休息；約11:30與14:30分別結束，為場次時長換算，實際離場時間未公布。',
+      url:ref.benesse,sourceLabel:'巧連智演出時刻'});});
+    event({key:'song-autumn',day:22,region:5,
+      time:'19:30 入場／20:00 開演・散場未公布',
+      title:'《秋之歌》Song of Autumn｜深夜康佩尼・波羅密・午後幽靈',
+      place:'The Wall Live House（文山區）',nav:'臺北市文山區羅斯福路四段200號B1',
+      note:'主辦KKTIX公告11/22 19:30入場、20:00開演；沒有發布正式散場及實到人數，周邊請合法停靠。',
+      url:ref.wall,sourceLabel:'The Wall官方售票頁'});
+    event({key:'sanchong-sunflower',day:21,region:3,grade:'B',
+      time:'15:00 餐車市集／17:00～20:30 晚會',
+      title:'「川好勢・聲勢之夜」李四川三重晚會',
+      place:'三重向日葵廣場・市前街與中正北路口（新北市三重區）',
+      nav:'新北市三重區市前街與中正北路口',
+      note:'11/21 15:00起有餐車市集，17:00～20:30為活動公布時段；與同晚三和國中造勢分屬不同地點。周邊是否封路未見警局正式公告，留意臨時交管與合法上下客點。',
+      url:ref.rally,sourceLabel:'活動時間及地點新聞',other:ref.rallyMore,otherLabel:'當日活動確認'});
+
+    // 已刊登卡片只補主辦當天公布的場次與道路資訊。
+    update('ev-20261120-pili-concert-21',{
+      time:'15:30～18:00 正式演出（含簽名會）',
+      note:'主辦確認原10/24延期至11/21；13:30～13:50另有彩排搶先看，15:30～18:00為正式演出及簽名會表定時段。實際離場可能因簽名人流調整。',url:ref.pili,label:'霹靂官方完整流程'});
+    update('ev-20261120-pili-concert-22',{
+      time:'17:00～19:30 正式演出（含簽名會）',
+      note:'主辦確認原10/25延期至11/22；15:40～16:00另有彩排，17:00～19:30為正式演出及簽名會表定時段。實際離場可能因簽名人流調整。',url:ref.pili,label:'霹靂官方完整流程'});
+    update('ev-CROSS-1115-mongaFun-21',{
+      time:'15:00～16:00 表演／17:30～18:00 點燈／18:00～21:00 遊樂設施',
+      note:'艋舺青山宮公布11/21 YOYO表演15:00～16:00、開園點燈17:30～18:00、遊樂設施及北港媽躦轎18:00～21:00。地點在萬華車站、格萊天漾飯店旁爐主壇周邊；本週活動不是11/28～30的正式遶境。',url:ref.qingshan,label:'艋舺青山宮官方場次'});
+    update('ev-CROSS-1115-mongaFun-22',{
+      time:'北港媽躦轎與童玩體驗・逐項時刻未公布',
+      note:'艋舺青山宮確認11/22開放爐主壇樂園童玩體驗，另有北港媽躦轎及限定手作；逐項起訖時刻請依現場公告。本週為前導樂園活動，不能套用11/28～30正式遶境交通管制。',url:ref.qingshan,label:'艋舺青山宮官方日程'});
+    update('ev-NEXT-087',{
+      note:'金馬獎官方17:00星光大道、18:30頒獎典禮，實際散場未公布。11/22 00:00～11/23 02:00北流周邊道路有活動進撤場管制，範圍涉及向陽路、南港路二段及市民大道八段；北流B1～B3當日暫停臨時停車。進出場及散場務必在管制區外合法上下客。',
+      url:ref.horse,label:'市府金馬獎交管',other:ref.horseParking,otherLabel:'北流停車限制'});
+
+    traffic({id:'traffic-20261121-shulin-special',until:'2026-11-21T13:00',
+      title:'11/21 樹林「1121」專案勤務：鎮前街周邊彈性交管',
+      status:'A 新北市警察局樹林分局11/20公告',time:'11/21（六）07:00～13:00（得提前或延後）',
+      body:'管制範圍北至鎮前街、東至博愛街、南至國凱街、西至八德街（各含該道路一線）；區域內視情況彈性管制人車，並非四街所圍所有道路全時封閉。依警方引導行駛及查驗。',url:ref.shulin});
+    traffic({id:'traffic-20261121-golden-horse',until:'2026-11-23T02:00',venue:'北流',
+      title:'11/22 金馬獎：北流周邊進撤場交管',
+      status:'A 臺北市政府公告＋北流停車公告',time:'11/22（日）00:00～11/23（一）02:00',
+      body:'臺北流行音樂中心周邊（南港路二段178巷以西、向陽路以東、南港路二段以南、市民大道八段以北）依活動實施交通管制；非指所有邊界道路全線封閉。北流汽車停車場B1～B3於11/22暫停臨時停車。17:00星光大道、18:30典禮；正式散場未公布，請避開管制區合法接客。',url:ref.horse,other:ref.horseParking});
+    traffic({id:'traffic-20261121-mabachao',until:'2026-11-23T18:00',
+      title:'11/22深夜～11/23 馬場町水防道路施工封閉',
+      status:'A 臺北市政府水利工程處11/18公告',time:'11/22（日）22:00～11/23（一）18:00（遇雨順延）',
+      body:'馬場町河濱公園56燈桿至中正河濱公園停車場間水防道路施工封閉，包含新一號馬場町疏散門出入口；依現場標示改道，切勿將整座河濱公園視為全面封閉。',url:ref.riverside});
+
+    var ranks=document.querySelectorAll('#top10 .rank-card');
+    if(ranks.length>7){
+      var old=ranks[7];
+      var t=old.querySelector('.rank-time strong');if(t)t.textContent='11/21（六）17:00～20:30';
+      var p=old.querySelector('.rank-location');if(p)p.textContent='三重向日葵廣場／三和國中周邊（新北三重）';
+      var n=old.querySelector('.rank-reason');if(n)n.textContent='三重今晚有向日葵廣場17:00～20:30晚會，三和國中18:00起也有大型集會；分屬兩處場地，不代表兩地之間道路封閉。請在外圍合法候客，實際散場依現場。';
+      var a=old.querySelector('.rank-navigation .nav-link');if(a)a.href='https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent('新北市三重區市前街與中正北路口')+'&travelmode=driving';
+    }
+    var fine=document.querySelector('.footer-fine');
+    if(fine)fine.textContent='資訊更新：2026/11/21（台灣時間）｜活動、施工及交通管制以官方公告與現場指揮為準。© 2026 跑車人生記帳本 · VIP 專屬';
+    var stamp=document.querySelector('.update-stamp time');
+    if(stamp){stamp.setAttribute('datetime','2026-11-21');stamp.textContent='最後更新 11/21｜週末場次及交管';}
+  }
+  mergeNov21OfficialUpdates();
+
+  // 2026/11/22 週日正式換週：保留當日原卡片，週一 00:00 自動下架；新週為 11/23～11/29。
+  // 此補丁只調整本週日期資料；場館座標仍全數引用站長提供的 VENUE_COORDS。
+  function mergeNov22To29VerifiedWeek() {
+    var calendar=document.getElementById('calendar');
+    var tabs=calendar&&calendar.querySelector('.day-tabs');
+    var panels=calendar&&calendar.querySelector('.day-panels');
+    var todayBar=calendar&&calendar.querySelector('.today-bar');
+    var sunday=document.getElementById('day-tab-22');
+    var sundayPanel=document.getElementById('day-panel-22');
+    if(!calendar||!tabs||!panels||!todayBar||!sunday||!sundayPanel)return;
+
+    // 保留 11/22 所有舊卡，包括 11/21 補查後才新增的活動與交通提醒。
+    Array.prototype.forEach.call(calendar.querySelectorAll('.tab-day[data-date]'),function(tab){
+      if(tab!==sunday){var owned=document.getElementById(tab.getAttribute('aria-controls'));if(owned)owned.remove();tab.remove();}
+    });
+    sunday.classList.add('carryover-tab');
+    sunday.classList.remove('prior-saturday-tab','is-active');
+    sunday.setAttribute('aria-label','11月22日（日）本週銜接活動');
+    sunday.setAttribute('title','查看本週日 11/22 活動，11/23 00:00 自動隱藏');
+    todayBar.appendChild(sunday);
+    sundayPanel.hidden=true;
+    calendar.setAttribute('data-week-start','2026-11-22');
+    calendar.setAttribute('data-week-end','2026-11-29');
+    var dayNames=['一','二','三','四','五','六','日'];
+    for(var d=23;d<=29;d++){
+      var date='2026-11-'+d;
+      var tab=document.createElement('button');
+      tab.className='tab-day';tab.id='day-tab-'+d;tab.type='button';
+      tab.setAttribute('role','tab');tab.setAttribute('data-day',String(d));tab.setAttribute('data-date',date);
+      tab.setAttribute('aria-controls','day-panel-'+d);tab.setAttribute('aria-selected','false');tab.tabIndex=-1;
+      tab.innerHTML='<span class="weekday">'+dayNames[d-23]+'</span><span class="daynum">'+d+'</span>';
+      tabs.appendChild(tab);
+      var panel=document.createElement('div');
+      panel.className='tab-panel';panel.id='day-panel-'+d;panel.hidden=true;
+      panel.setAttribute('role','tabpanel');panel.setAttribute('aria-labelledby',tab.id);
+      panel.innerHTML='<div class="panel-intro"><strong>11/'+d+'（'+dayNames[d-23]+'）</strong><span>共 0 筆日期資訊</span></div><div class="event-stack"></div>';
+      panels.appendChild(panel);
+    }
+
+    var ref={
+      xmas:'https://christmasland.ntpc.gov.tw/', city:'https://newtaipei.travel/zh-tw/calendar/detail/4083',
+      postal:'https://taipei2026.post.gov.tw/taipei2026/index.jsp?ID=1465094271219',
+      kitty:'https://www.huashan1914.com/exhibition',
+      jujutsu:'https://www.songshanculturalpark.org/exhibition/activity/37478e08-b215-4744-a1b9-3050f2120bb2',
+      design:'https://www.songshanculturalpark.org/exhibition/activity/ef7b55b4-2233-4615-91d4-52b85290628a',
+      garmin:'https://www.garmin.com.tw/event/2026/garmin-run/route.html',
+      shrek:'https://tpac.org.taipei/program/2051', shilin:'https://tpac.org.taipei/program/2040',
+      pet:'https://pet-fair.top-link.com.tw/page/16241', gift:'https://www.huashan1914.com/exhibition/%202026%E5%86%AC%E3%80%90%E6%89%8B%E7%A6%AE%E6%97%A5%E5%92%8C%E3%80%91',
+      akita:'https://www.huashan1914.com/exhibition/2026%E6%97%A5%E6%9C%AC%E7%A7%8B%E7%94%B0%E7%B8%A3%E8%A7%80%E5%85%89%E7%89%A9%E7%94%A2%E5%B1%95',
+      xmasMarket:'https://christmasland.ntpc.gov.tw/event.php',
+      forever:'https://tixcraft.com/activity/detail/26_forever', mamamoo:'https://www.arena.taipei/News_Content.aspx?n=2E1489AFE4B1BEA1&s=55BD65177B7B10B3',
+      youngk:'https://tixcraft.com/activity/detail/26_youngk', qingshan:'https://mjcsg.org.tw/?act=menuinfo&cmd=detail&mi_id=20261020001&ml_id=20250804008',
+      election:'https://info.cec.gov.tw/vote2026/question/', diana:'https://www.mna.com.tw/concerts_detail.html?id=779',
+      wheelchair:'https://www.songshanculturalpark.org/exhibition/activity/83bbabe0-bce7-4e07-9af2-7ec468df03d8'
+    };
+    // [日期, 表列時刻, 活動, 精確場址, 區域(0信義/1南港/2大安/3新北/4中山士林/5其他臺北/6外縣市), 指定場館代號, 官方URL, 補充, 可信度]
+    var events=[];
+    function add(day,time,name,place,region,venue,url,note,grade){events.push([day,time,name,place,region,venue,url,note,grade||'A']);}
+    [23,24,25,26,27,28,29].forEach(function(d){
+      add(d,'11:00–19:00','Hello Kitty《台灣感性》快閃店','華山1914 中5B館鍋爐室（中正區）',5,'華山1914',ref.kitty,'最後入場18:30，展覽人潮分散離場；以華山官方展演總覽為準。');
+      add(d,'11:00–19:00','《咒術迴戰》快閃店','松山文創園區藝巷空間（信義區）',0,'松山文創園區',ref.jujutsu,'園區官方公布11:00–19:00、最後入場18:30；非松菸園區整體開放時間。');
+      add(d,'17:30–23:00','2026 新北歡樂耶誕城・主燈秀','新北市民廣場、板橋站前廣場（板橋區）',3,'新北市民廣場',ref.xmas,'定時燈光展演；不是23:00所有遊客同時散場。縣民大道及新站路交通規則請看下方管制區。');
+      add(d,'18:00–22:00','中港水岸・耶誕映像','新莊中港廣場／中港大排（新莊區）',3,'',ref.xmas,'新莊燈區夜間參觀，非集中散場；以現場展演資訊為準。','B');
+    });
+    [24,25,26,27,28,29].forEach(function(d){
+      add(d,'10:00–18:00','2026 金點設計展','松山文創園區・台灣設計館01、02、04展間（信義區）',0,'松山文創園區',ref.design,'官方每週一休館，最後售票17:30；展覽至2027/04/25。');
+      add(d,'10:00–20:00','2026 新北城市展《New Taipei Band：共奏未來》','三重安芯中心（新北市三重區）',3,'三重安芯中心',ref.city,'新北市官方：週一休展、11/13起每日開放至20:00。');
+    });
+    [23,24,25].forEach(function(d){
+      add(d,d===25?'10:00–15:00（最後一天）':'10:00–18:00','臺北2026世界郵展','台北世貿一館 B、C區（信義區）',0,'世貿一館',ref.postal,d===25?'官方參觀時段至15:00；舊攤商文件另列17:00，採郵展對民眾公告。':'郵展官方參觀時段；分散離場，不視為演唱會散場。');
+    });
+    [24,25,26,27].forEach(function(d){add(d,'19:30–約21:50（時長推估）','倫敦全本音樂劇《史瑞克》','臺北表演藝術中心・大劇院（士林區）',4,'北藝中心',ref.shrek,'官方19:30開演、全長140分鐘（含中場），21:50為時間相加推估，非官方承諾散場。');});
+    // 平日大型音樂及展覽；找不到正式散場時間即明標未公布。
+    add(23,'20:00 開演・散場未公布','Malcolm Todd《Do That Again Tour》','台北國際會議中心 TICC（信義區）',0,'TICC','https://www.livenation.com.tw/mt-tpe','Live Nation官方19:00入場、20:00演出；散場未公布。');
+    add(24,'19:30 開演・散場未公布','wave to earth《the pieces tour》','台北國際會議中心 TICC（信義區）',0,'TICC','https://tixcraft.com/activity/detail/26_wte','拓元官方確認19:30開演；正式結束時間未公布。');
+    add(25,'20:00 開演・散場未公布','5 SECONDS OF SUMMER《EVERYONE’S A STAR!》','臺北流行音樂中心表演廳（南港區）',1,'北流','https://www.tmc.taipei/tw/blog/show/5SOS2026','北流與拓元官方均確認20:00開演；未公布正式散場。');
+    add(25,'20:00 開演・散場未公布','FOREVER YOUNG—唱一晚奇妙的歌','Legacy TERA（南港區）',1,'Legacy TERA','https://showtification.tw/shows/forever-young-2026-80dbef','與11/28大巨蛋F✦FOREVER為兩場不同演出；詳細散場未公布。','B');
+    add(26,'14:00–17:30','2026 企業ESG永續發展教育論壇','台北國際會議中心 TICC（信義區）',0,'TICC','https://ticc.com.tw/wSite/sp?bId=8849&ctNode=318&mp=1&xdUrl=%2FwSite%2Fap%2Fcp_Activity.jsp','TICC官方行事曆列14:00–17:30；實際參與人數未公布。');
+    [27,28,29].forEach(function(d){
+      add(d,'10:00–18:00','2026 上聯台北國際寵物用品博覽會（冬季）／台北貓展','台北南港展覽館2館（南港區）',1,'南港展覽館2館',ref.pet,'主辦公布11/27～11/30每日10:00–18:00；非集中散場。');
+      add(d,'11:00–22:00','2026 新北耶誕市集 × 亞洲電子競技公開賽','新北市民廣場（板橋區）',3,'新北市民廣場',ref.xmasMarket,'新北市官方11/27～11/29系列活動；電競賽程個別時刻以主辦為準，不推算決賽散場。');
+      add(d,d===27?'14:00–20:00':d===28?'11:00–20:00':'11:00–18:00','2026冬《手禮日和》','華山1914 東2A、東2B館（中正區）',5,'華山1914',ref.gift,'華山官方公布逐日開放時間，三天不同；市集人潮分散。');
+      add(d,'17:30–23:00','五股夏綠地耶誕嘉年華・燈區','五股環保藝術公園及周邊（五股區）',3,'五股環保藝術公園',ref.xmas,'夜間燈飾參觀；未查到集中散場鐘點。','B');
+      add(d,'08:00–18:00','2026 士林官邸菊展《菊映方圓》','士林官邸公園（士林區）',4,'','https://www.travel.taipei/zh-tw/event-calendar','展期自11/27起；園區展覽採分散進出，未有集中散場。','B');
+    });
+    add(27,'19:30 開演・散場未公布','Karencici《The Loser Live In Concert》','Zepp New Taipei（新莊區）',3,'Zepp New Taipei','https://warnermusictwtw.kktix.cc/events/ofgkrikd','華納官方售票確認11/27 19:30；結束時間未公布。');
+    add(27,'19:30 開演・散場未公布','NSO《馬勒第八，千人》第一場','國家音樂廳（中正區）',5,'國家兩廳院','https://www.npac-nso.org/concert-info/1138','國家交響樂團官方列11/27 19:30，演出沒有公布確切散場。');
+    add(28,'08:00–16:00（各投票所）','115年地方公職人員選舉及全國性公投','雙北各投票所（分散式人潮，非單一場館）',5,'',ref.election,'中選會確認投票08:00–16:00；開票結束時間未公告。不可當作單一集會或固定封路。');
+    add(28,'13:00–18:00','2026 台灣輪椅技巧障礙挑戰賽・第一天','松山文創園區4號倉庫（信義區）',0,'松山文創園區',ref.wheelchair,'活動官方公布兩日賽事；勿與大巨蛋演唱會人潮重複加總。');
+    add(28,'11:00–18:00','2026 日本秋田縣觀光物產展','華山1914華山劇場（中正區）',5,'華山1914',ref.akita,'官方展覽11/28–11/29，開放時段依當日園區公告。');
+    add(28,'13:30–約15:50（時長推估）','倫敦全本音樂劇《史瑞克》午場','臺北表演藝術中心・大劇院（士林區）',4,'北藝中心',ref.shrek,'官方13:30開演、總長140分鐘；15:50僅依時長推估。');
+    add(28,'18:30–約20:50（時長推估）','倫敦全本音樂劇《史瑞克》晚場','臺北表演藝術中心・大劇院（士林區）',4,'北藝中心',ref.shrek,'官方18:30開演、總長140分鐘；20:50僅依時長推估。');
+    add(28,'16:00 起駕・結束未公布','2026 艋舺青山王祭・南萬華暗訪第一日','艋舺青山宮與南萬華遶境路線（萬華區）',5,'',ref.qingshan,'青山宮官方公布11/28首日16:00起駕及南萬華路關圖。選舉日萬華周邊可能有移動式人車混流；未查到警方逐路段封閉時刻。');
+    add(28,'18:00–21:00（小巨蛋預計）','MAMAMOO《4WARD》台北第一場','台北小巨蛋（松山區）',4,'小巨蛋',ref.mamamoo,'官方16:30入場、18:00開演、預計21:00結束，實際依現場。');
+    add(28,'18:00 開演・散場未公布','PERSES《ALL PIECES, ONE》','Zepp New Taipei（新莊區）',3,'Zepp New Taipei','https://quantumcallstudio.kktix.cc/events/d60fe160','KKTIX主辦官方確認18:00；同日AKASAKI另一場已取消，不作額外人潮加總。');
+    add(28,'18:00 開演・散場未公布','KPOP PLANET in TAIPEI','國立體育大學綜合體育館（桃園龜山・林口生活圈）',6,'國體大綜合體育館','https://kham.com.tw/Application/UTK02/UTK0201_.aspx?PRODUCT_ID=P1GSEUSW','寬宏官方售票與主辦公告確認18:00，陣容含燦烈、田小娟及MEOVV；預估演出約120分鐘不代表正式散場。');
+    add(28,'19:30 開演・散場未公布','NSO《馬勒第八，千人》第二場','國家音樂廳（中正區）',5,'國家兩廳院','https://www.npac-nso.org/concert-info/1138','國家交響樂團官方明列11/28另有19:30演出；不只11/27一場。');
+    add(28,'19:00 開演・散場未公布','F✦FOREVER《恆星之城・光年赴約》台北限定場','臺北大巨蛋（信義區）',0,'大巨蛋',ref.forever,'拓元官方確認19:00；不把約22:00作正式散場，也不將場館容量視為實到人數。');
+    add(28,'19:00 開演・散場未公布','Young K Solo Tour《YOUNGEST》加場','台北國際會議中心 TICC（信義區）',0,'TICC',ref.youngk,'拓元官方確認11/28加場19:00；需留意與大巨蛋同時段進散場。');
+    add(28,'19:30 開演・散場未公布','Diana Krall 爵士天后演唱會・第一場','臺北流行音樂中心表演廳（南港區）',1,'北流','https://ticket.mna.com.tw/UTK0201_?PRODUCT_ID=P1ESVMPP','牛耳售票網列11/28 19:30；結束時間未公布。');
+    add(29,'05:00 起跑（分組不同）・散場未公布','2026 Garmin Run 台北站','大佳河濱公園（中山區）',4,'大佳河濱公園',ref.garmin,'官方21K 05:00起跑、5K 06:30起跑；10K以主辦組別公告為準。河濱周邊勿自行認定一般道路全面封閉。');
+    add(29,'09:00–18:00','2026 台灣輪椅技巧障礙挑戰賽・第二天','松山文創園區4號倉庫（信義區）',0,'松山文創園區',ref.wheelchair,'官方賽事第二日；與大巨蛋活動分開計算。');
+    add(29,'11:00–18:00','2026 日本秋田縣觀光物產展','華山1914華山劇場（中正區）',5,'華山1914',ref.akita,'華山官方11/28–29活動；市集分散離場。');
+    add(29,'11:00–約13:20（時長推估）','倫敦全本音樂劇《史瑞克》午場','臺北表演藝術中心・大劇院（士林區）',4,'北藝中心',ref.shrek,'11:00開演、總長140分鐘，13:20僅依演出長度推估。');
+    add(29,'16:00–約18:20（時長推估）','倫敦全本音樂劇《史瑞克》下午場','臺北表演藝術中心・大劇院（士林區）',4,'北藝中心',ref.shrek,'16:00開演、總長140分鐘，18:20僅依演出長度推估。');
+    add(29,'12:30 開演・散場未公布','沉浸式劇場《士林YES！》','臺北表演藝術中心・藍盒子（士林區）',4,'北藝中心',ref.shilin,'北藝中心官方列12:30場，非集中旅客同時抵達。');
+    add(29,'15:00–18:00（小巨蛋預計）','MAMAMOO《4WARD》台北第二場','台北小巨蛋（松山區）',4,'小巨蛋',ref.mamamoo,'官方13:30入場、15:00開演、預計18:00結束，實際依現場。');
+    add(29,'16:00 開演・散場未公布','Diana Krall 爵士天后演唱會・第二場','臺北流行音樂中心表演廳（南港區）',1,'北流','https://www.tmc.taipei/tw/blog/show/DianaKrall2026','北流官方確認16:00；散場未公布。');
+    add(29,'第二日暗訪・起迄未公布','2026 艋舺青山王祭・北萬華暗訪第二日','艋舺青山宮與北萬華遶境路線（萬華區）',5,'',ref.qingshan,'青山宮官方公布11/29北萬華暗訪路關。11/28的16:00起駕只屬第一日，不自行套用至第二日。');
+    add(29,'18:00 開演・散場未公布','Young K Solo Tour《YOUNGEST》第二場','台北國際會議中心 TICC（信義區）',0,'TICC',ref.youngk,'拓元官方確認11/29 18:00；散場未公布。');
+    add(29,'18:00 開演・散場未公布','TEEN TOP 台北專場','Zepp New Taipei（新莊區）',3,'Zepp New Taipei','https://www.zepp.co.jp/hall/newtaipei/schedule/','Zepp場館官方演出表列11/29 18:00；散場未公布。');
+    add(29,'19:00 開演・散場未公布','F✦FOREVER《恆星之城・光年赴約》台北限定場','臺北大巨蛋（信義區）',0,'大巨蛋',ref.forever,'拓元官方確認第二夜19:00；散場未公布。');
+
+    var counts={};
+    events.forEach(function(data,index){
+      var d=data[0],stack=document.querySelector('#day-panel-'+d+' .event-stack');if(!stack)return;
+      var card=document.createElement('article'),grade=data[8];
+      card.id='ev-WEEK-1122-'+d+'-'+index;
+      card.className='event-card '+(grade==='A'?'event-a':'event-b');
+      card.setAttribute('data-source','WEEK1122_OFFICIAL_CROSSCHECK');card.setAttribute('data-grade',grade);
+      if(data[5]&&Object.prototype.hasOwnProperty.call(VENUE_COORDS,data[5]))card.setAttribute('data-venue',data[5]);
+      var top=document.createElement('div');top.className='event-top';
+      var time=document.createElement('span');time.className='time-text';time.textContent=data[1];top.appendChild(time);
+      var badge=document.createElement('span');badge.className='badge badge-'+grade.toLowerCase();badge.textContent=grade==='A'?'A 官方來源':'B 待補細節';top.appendChild(badge);
+      var title=document.createElement('div');title.className='event-name';title.textContent=data[2];
+      var place=document.createElement('div');place.className='event-place';
+      var dot=document.createElement('span');dot.className='place-dot';dot.setAttribute('aria-hidden','true');place.appendChild(dot);
+      place.appendChild(document.createTextNode(data[3]));
+      var note=document.createElement('p');note.className='event-note';note.textContent=data[7];
+      var footer=document.createElement('div');footer.className='event-footer';
+      var source=document.createElement('a');source.className='source-link';source.textContent='官方／活動來源 ↗';
+      source.href=data[6];source.target='_blank';source.rel='noopener noreferrer';footer.appendChild(source);
+      if(data[3].indexOf('各投票所')===-1){
+        var nav=document.createElement('a');nav.className='nav-link';nav.textContent='📍 導航';
+        nav.href='https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(data[3])+'&travelmode=driving';
+        nav.target='_blank';nav.rel='noopener noreferrer';footer.appendChild(nav);
+      }
+      card.appendChild(top);card.appendChild(title);card.appendChild(place);card.appendChild(note);card.appendChild(footer);
+      stack.appendChild(card);counts[d]=(counts[d]||0)+1;
+      var region=document.getElementById('region-panel-'+data[4]);
+      if(region)region.setAttribute('data-event-refs',((region.getAttribute('data-event-refs')||'')+' '+card.id).trim());
+    });
+    for(var day=23;day<=29;day++){
+      var counter=document.querySelector('#day-panel-'+day+' .panel-intro span');
+      if(counter)counter.textContent='共 '+(counts[day]||0)+' 筆日期資訊';
+    }
+    // 11/22 原有卡不重複建置；補進沒有出現在基礎卡中的官方交通集會資料。
+    if(!document.getElementById('ev-WEEK-1122-22-bp')){
+      var sunStack=sundayPanel.querySelector('.event-stack');
+      var extra=document.createElement('article');extra.id='ev-WEEK-1122-22-bp';
+      extra.className='event-card event-a';extra.setAttribute('data-grade','A');extra.setAttribute('data-source','TAIPEI_POLICE_1120');
+      extra.innerHTML='<div class="event-top"><span class="time-text">08:00–22:00（核准集會時段）</span><span class="badge badge-a">A 官方警政</span></div><div class="event-name">11/22 北平東路集會及車道管制</div><div class="event-place"><span class="place-dot" aria-hidden="true"></span>北平東路紹興北街至杭州北路（中正區）</div><p class="event-note">警方公告搭拆台、撤場車道管制11/21 10:00～11/22 24:00；08:00～22:00是核准集會時間，不是散場時間。其餘路口視人潮彈性調整。</p><div class="event-footer"><a class="source-link" href="https://td.police.gov.taipei/News_Content.aspx?n=B19CFD7B4346611D&s=7CB0263FEB68AB65&sms=72544237BBE4C5F6" target="_blank" rel="noopener noreferrer">臺北市交通警察大隊 ↗</a><a class="nav-link" href="https://www.google.com/maps/dir/?api=1&destination=%E8%87%BA%E5%8C%97%E5%B8%82%E5%8C%97%E5%B9%B3%E6%9D%B1%E8%B7%AF%E7%B4%B9%E8%88%88%E5%8C%97%E8%A1%97" target="_blank" rel="noopener noreferrer">📍 導航</a></div>';
+      sunStack.appendChild(extra);
+      var z=document.getElementById('region-panel-5');if(z)z.setAttribute('data-event-refs',(z.getAttribute('data-event-refs')||'')+' '+extra.id);
+    }
+
+    // 11/28 祭典路關已有主辦公告；尚不能據此宣稱沿線各道路固定時段封路。
+    var traffic=document.querySelector('#traffic .traffic-list');
+    if(traffic){
+      var route=document.createElement('article');route.className='traffic-card';
+      route.setAttribute('data-visible-until','2026-11-30T00:00');route.id='traffic-qingshan-1128-1129';
+      route.innerHTML='<div class="traffic-head"><span class="traffic-icon" aria-hidden="true">!</span><h3>11/28～29 艋舺青山王祭暗訪｜南／北萬華主辦路關</h3></div><p class="traffic-status">A 艋舺青山宮官方路關圖（10/20）</p><p class="traffic-time">11/28（六）首日16:00起駕；11/29（日）第二日詳細起點時間依主辦公告</p><p class="traffic-body">11/28為南萬華暗訪、11/29為北萬華暗訪；請查看官方逐日路關圖，留意萬華車站、龍山寺及貴陽街周邊人車混流。尚未查到警察機關逐路段固定封閉／解除時刻，不能把整條行經道路當成全天封閉。</p><div class="event-footer"><a class="source-link" href="https://mjcsg.org.tw/?act=menuinfo&cmd=detail&mi_id=20261020001&ml_id=20250804008" target="_blank" rel="noopener noreferrer">青山宮官方路關圖 ↗</a></div>';
+      traffic.prepend(route);
+      var run=document.createElement('article');run.className='traffic-card';
+      run.setAttribute('data-visible-until','2026-11-29T12:00');run.id='traffic-garmin-1129';run.setAttribute('data-venue','大佳河濱公園');
+      run.innerHTML='<div class="traffic-head"><span class="traffic-icon" aria-hidden="true">!</span><h3>11/29 Garmin Run｜大佳河濱周邊跑者及接駁動線</h3></div><p class="traffic-status">A Garmin 官方路線與賽事規章；一般道路封閉時刻未獨立核實</p><p class="traffic-time">11/29（日）21K 05:00起跑；5K 06:30起跑；接駁03:30～06:00、07:30～10:00</p><p class="traffic-body">大佳河濱公園及堤外出入口清晨有跑者進出；官方公布分組路線與接駁，並不等於所有周邊一般道路全面封閉。行駛請留意現場交管與合法上下客區。</p><div class="event-footer"><a class="source-link" href="https://www.garmin.com.tw/event/2026/garmin-run/route.html" target="_blank" rel="noopener noreferrer">Garmin 主辦賽道圖 ↗</a></div>';
+      traffic.prepend(run);
+    }
+
+    var rankData=[
+      ['11/28（六）19:00開演｜散場未公告','臺北大巨蛋（信義）','F✦FOREVER第一夜；可能形成晚間大量進出人車，優先在可合法停靠的外圍候客。','臺北大巨蛋'],
+      ['11/29（日）19:00開演｜散場未公告','臺北大巨蛋（信義）','F✦FOREVER第二夜；切勿用推估22:00當成主辦正式散場。','臺北大巨蛋'],
+      ['11/28（六）18:00～預計21:00','臺北小巨蛋（松山）','MAMAMOO第一場；場館官方預計21:00結束，實際依當日狀況。','臺北小巨蛋'],
+      ['11/29（日）15:00～預計18:00','臺北小巨蛋（松山）','MAMAMOO第二場；下午演出及傍晚離場，注意南京東路周邊接送動線。','臺北小巨蛋'],
+      ['11/28（六）16:00起駕','艋舺青山宮・南萬華','暗訪首日有官方路關圖；移動式隊伍與投票日重疊，沿線避開人車混流。','艋舺青山宮'],
+      ['11/29（日）05:00起跑','大佳河濱公園（中山）','Garmin Run分組起跑，清晨接駁與跑者進出可能集中；待現場道路管制公告。','大佳河濱公園'],
+      ['11/28（六）08:00～16:00','雙北各投票所（分散）','地方選舉與公投投票；投開票所分散，不能視為單點大型散場。','臺北市'],
+      ['11/27～29 11:00～22:00','板橋新北市民廣場','耶誕市集與電競賽事，另有持續燈光秀；注意既有禁左轉／黃線禁停。','新北市民廣場'],
+      ['11/28（六）19:00／11/29（日）18:00','TICC（信義）','Young K兩場與大巨蛋週末活動時間疊加；尚無官方散場鐘點。','台北國際會議中心'],
+      ['11/29（日）16:00開演','臺北流行音樂中心（南港）','Diana Krall第二場；南港另有週末展覽，接客請留意散場與合法上下客點。','臺北流行音樂中心']
+    ];
+    Array.prototype.forEach.call(document.querySelectorAll('#top10 .rank-card'),function(card,i){
+      var item=rankData[i];if(!item)return;
+      var t=card.querySelector('.rank-time strong'),where=card.querySelector('.rank-location'),desc=card.querySelector('.rank-reason'),nav=card.querySelector('.rank-navigation .nav-link');
+      if(t)t.textContent=item[0];if(where)where.textContent=item[1];if(desc)desc.textContent=item[2];
+      if(nav)nav.href='https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(item[3])+'&travelmode=driving';
+    });
+    var calendarIntro=document.querySelector('#calendar .section-intro');
+    if(calendarIntro)calendarIntro.textContent='11/22（日）原活動保留至當晚；11/23～29 加入官方確認的演唱會、展覽、市集、選舉、路跑及暗訪。未知散場不擅自推估成確定時間。';
+    var rankIntro=document.querySelector('#top10 .section-intro');
+    if(rankIntro)rankIntro.textContent='按官方開演與預計結束、交通影響整理的觀察重點，不代表叫車量排名，也不保證能進入管制區候客。';
+    var trafficIntro=document.querySelector('#traffic .section-intro');
+    if(trafficIntro)trafficIntro.textContent='11/28～29 青山王祭官方路關圖、11/29 Garmin Run清晨動線及板橋耶誕城既有管制；正式封閉路段以警政公告與現場指揮為準。';
+    var urgentLinks=document.querySelector('#urgent-traffic .urgent-links');
+    if(urgentLinks){
+      [
+        ['11/22 北平東路集會','北平東路部分車道搭拆台及撤場至11/22 24:00','#ev-WEEK-1122-22-bp','2026-11-23T00:00'],
+        ['11/28～29 青山王祭暗訪','南／北萬華官方路關已公布，逐路段封閉鐘點尚未取得','#traffic-qingshan-1128-1129','2026-11-30T00:00'],
+        ['11/29 Garmin Run','大佳河濱清晨賽事與接駁，請留意現場動線','#traffic-garmin-1129','2026-11-29T12:00']
+      ].forEach(function(info){
+        var a=document.createElement('a');a.className='urgent-link';a.href=info[2];
+        a.setAttribute('data-visible-until',info[3]);
+        var title=document.createElement('strong');title.textContent=info[0];
+        var detail=document.createElement('small');detail.textContent=info[1];
+        a.appendChild(title);a.appendChild(detail);urgentLinks.appendChild(a);
+      });
+    }
+    var wedding=document.querySelector('#weddings .hero-chips');
+    if(wedding){wedding.replaceChildren();var w=document.createElement('span');w.className='hero-chip';w.textContent='11/22～11/29 宜嫁娶日尚未核對';wedding.appendChild(w);}
+    var foot=document.querySelector('.footer-fine');
+    if(foot)foot.textContent='資訊更新：2026/11/22（台灣時間）｜依官方場館、主辦與交通公告交叉查核。未公布散場、人潮與封路時段不推定。© 2026 跑車人生記帳本 · VIP 專屬';
+    var stamp=document.querySelector('.update-stamp time');
+    if(stamp){stamp.setAttribute('datetime','2026-11-22');stamp.textContent='最後更新 11/22｜涵蓋至11/29';}
+  }
+  mergeNov22To29VerifiedWeek();
+
   // 交通管制項目只在標題能確定單一場館時對應；跨區遊行不任意選擇其中一個座標。
   function venueForTrafficCard(card) {
     var heading=card.querySelector('h3');
@@ -1567,7 +1935,7 @@ var footerFine=document.querySelector('.footer-fine');if(footerFine)footerFine.t
     var areaIntro = document.querySelector('#areas .section-intro');
     if (areaIntro) areaIntro.textContent='依區域查看 '+range+' 的活動。已過期的銜接日會自動隱藏。';
     var trafficIntro = document.querySelector('#traffic .section-intro');
-    if (trafficIntro) trafficIntro.textContent='查看 '+range+' 的道路管制：北投溫泉季、中正區集會及萬華活動請留意公告時段；現場得彈性調整。';
+    if (trafficIntro) trafficIntro.textContent='查看 '+range+' 的道路管制：青山王祭路關、Garmin Run 清晨動線及板橋耶誕城禁左轉等；尚無官方逐路段封閉時刻時不應推測。';
     var auditChips = document.querySelectorAll('#audit-notes .hero-chip');
     auditChips.forEach(function(chip){if(/11\/15|8 天銜接/.test(chip.textContent)){chip.hidden=hide}});
     var auditSummary = document.getElementById('new-events-highlight');
@@ -1744,7 +2112,7 @@ var footerFine=document.querySelector('.footer-fine');if(footerFine)footerFine.t
       var anyVisible=Array.prototype.some.call(urgent.querySelectorAll('.urgent-link'),function(a){return !a.hidden});
       urgent.hidden=!anyVisible;
       var title=document.getElementById('urgent-traffic-title');
-      if(title) title.textContent=now.date>='2026-11-16' ? '跨日封街｜八德路至 11/16 02:00' : (now.date>='2026-11-15' ? '11/15（日）仍有效的跨日交管' : '11/14（六）重要交通管制');
+      if(title) title.textContent=now.date>='2026-11-22' ? '11/22～11/29 重要交通提醒' : (now.date>='2026-11-16' ? '跨日封街｜八德路至 11/16 02:00' : (now.date>='2026-11-15' ? '11/15（日）仍有效的跨日交管' : '11/14（六）重要交通管制'));
     }
   }
   function layoutVisibleDateTabs() {
