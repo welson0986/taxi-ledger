@@ -621,10 +621,20 @@ var PLATFORM_DEFS = [
   {key:'tipbox', label:'小費', icon:'💰', color:'#2FA0A0', tipOnly:true},
   {key:'bonus', label:'活動獎勵', icon:'🎁', color:'#D4A017', tipOnly:true, bonus:true}
 ];
+// 取消費 (取消接客, 2026.11.21.2): the money a fleet pays when an order is cancelled. It is kept as one income record
+// made and changed only from its 取消單 (state.cancels, see the 取消接客 section), the way a 活動獎勵 is: counted in
+// 實收, 結餘, 時薪 and 可支配所得, never as a trip (tipOnly), and paid out with the fleet named in r.bonusPlatform (the
+// same field a bonus uses, so payKey, 撥款對帳 and settlement treat both alike). No fee is taken off: the driver types in
+// what was received. It is not one of PLATFORM_DEFS, so it never shows up as a platform to pick or to set up.
+var CANCEL_FEE_DEF = {key:'cancelfee', label:'取消費', icon:'🚫', color:'#8A8272', tipOnly:true, bonus:true};
+function isCancelFeeRec(r){ return !!r && r.platform==='cancelfee'; }
+// a bonus or a 取消費: money from a fleet on top of the fares, paid with that fleet
+function bonusLike(r){ return r.platform==='bonus' || r.platform==='cancelfee'; }
 var BONUS_TYPES_DEFAULT = ['趟次獎勵','限時活動','推薦獎金','其他'];
 function bonusTypes(){ return state.bonusTypes || BONUS_TYPES_DEFAULT; }
 // a bonus is paid by the platform it came from, so payouts and settlement follow that platform
 function payKey(r){
+  if(r.platform==='cancelfee') return r.bonusPlatform||'cancelfee';
   if(r.platform==='bonus') return r.bonusPlatform||'bonus';
   var via = r.platform==='reservation' ? r.subPlatform : (r.platform==='phonecall' ? r.subtype : null);
   if(via && (r.payment==='綁定支付' || (r.platform==='phonecall' && r.feeV))){
@@ -726,7 +736,7 @@ function platformDef(key){
     var m = {}; allPlatforms().forEach(function(p){ if(!(p.key in m)) m[p.key] = p; });
     platMemo = {gen:dataGen, st:state, map:m};
   }
-  return platMemo.map[key] || {key:key, label:key};
+  return platMemo.map[key] || (key==='cancelfee' ? CANCEL_FEE_DEF : {key:key, label:key});
 }
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -822,7 +832,8 @@ function defaultState(){
     payoutSettings:{},
     payouts:[],
     activeTrip:null,
-    pendingTrips:[]
+    pendingTrips:[],
+    cancels:[]
   };
 }
 // a ledger read from storage, a file or the cloud gets the parts it does not have yet. Only a brand-new ledger takes
@@ -1029,6 +1040,8 @@ function reloadFromStore(afterConflict){
 }
 if(ledgerChannel) ledgerChannel.onmessage = function(ev){ if(+ev.data > lastKnownRev) reloadFromStore(false); };
 document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='visible') reloadFromStore(false); });
+// coming back to the app: an order left open for hours is asked about (once per start, see maybeAskStaleAccept)
+document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='visible') setTimeout(function(){ if(typeof maybeAskStaleAccept==='function' && !ledgerBusy() && maybeAskStaleAccept()) renderAll(); }, 600); });
 // first start on this version: copy the old localStorage data into IndexedDB
 if(__BOOT.idb && __BOOT.state==null && !storageStale){ writeStore(); }
 noteHadData();
@@ -1317,7 +1330,7 @@ function isTicketPay(p){ return p==='悠遊卡' || p==='愛心卡'; }
 function rawNet(r){
   var gross = +r.revenue||0;
   if(gross<=0) return 0;
-  if(r.platform==='bonus') return gross;
+  if(bonusLike(r)) return gross;
   if(isNetMarked(r)) return gross;  // 記帳時填實收: the amount is already net
   var fees = r.fees||state.feeRules||{};
   if(r.platform==='hailyellow'){
@@ -1430,7 +1443,7 @@ function tripKmOf(r){ var k = +r.tripKm; return (typeof r.tripKm!=='boolean' && 
 function grossBase(r){
   var v = +r.revenue||0;
   if(v<=0) return 0;
-  if(r.platform==='bonus') return v;
+  if(bonusLike(r)) return v;
   var fees = r.fees||state.feeRules||{};
   if(r.platform==='uber' && !isUberTaxiRec(r)){
     var pctU = fees.uber!=null?fees.uber:25;
@@ -1476,6 +1489,7 @@ function linegoFareOf(x, fees){
 function describeRecord(r){
   var parts=[];
   if(r.platform==='bonus'){ if(r.bonusPlatform) parts.push(platformDef(r.bonusPlatform).label); if(r.bonusType) parts.push(r.bonusType); }
+  if(r.platform==='cancelfee' && r.bonusPlatform) parts.push(platformDef(r.bonusPlatform).label);
   if(r.subtype) parts.push(r.subtype);
   if(r.subPlatform) parts.push('→'+r.subPlatform);
   if(r.fareType) parts.push(r.fareType);
@@ -1514,7 +1528,7 @@ function buildCloudSnapshot(){
   var recs = state.records.slice().sort(function(a,b){ return a.date<b.date?-1:(a.date>b.date?1:(a.ts||0)-(b.ts||0)); });
   var income = recs.map(function(r){
     return [r.date, platformDef(r.platform).label, Math.round(computeGrossRevenue(r)*100)/100, +r.tip||0,
-      Math.round(computeNetRevenue(r)*100)/100, sheetText(r.platform==='bonus' ? describeRecord(r) : r.subtype), sheetText(r.fareType), sheetText(r.payment),
+      Math.round(computeNetRevenue(r)*100)/100, sheetText(bonusLike(r) ? describeRecord(r) : r.subtype), sheetText(r.fareType), sheetText(r.payment),
       sheetText(r.discountTier), sheetText(r.estimateType), r.markupAmount||'', r.markupMultiplier||(r.markupPercent?r.markupPercent+'%':''),
       sheetText(r.subPlatform), sheetText(r.note), fmtTs(r.ts)];
   });
@@ -2070,6 +2084,7 @@ function fuelStatsInRange(from,to){
 function breakdownLabel(r){
   var parts=[];
   if(r.platform==='bonus'){ if(r.bonusPlatform) parts.push(platformDef(r.bonusPlatform).label); if(r.bonusType) parts.push(r.bonusType); }
+  if(r.platform==='cancelfee' && r.bonusPlatform) parts.push(platformDef(r.bonusPlatform).label);
   if(r.subtype) parts.push(r.subtype);
   if(r.subPlatform) parts.push('→'+r.subPlatform);
   if(r.fareType) parts.push(r.fareType);
@@ -2408,7 +2423,7 @@ function payoutCfg(key){
   return out;
 }
 function isCashRecord(r){
-  if(r.platform==='bonus') return payoutCfg(payKey(r)).collect==='cash' && !platformDef(payKey(r)).paymentOptions;
+  if(bonusLike(r)) return payoutCfg(payKey(r)).collect==='cash' && !platformDef(payKey(r)).paymentOptions;
   var def = platformDef(r.platform);
   if(!r.payment && ['reservation','phonecall','hailyellow'].indexOf(r.platform)>=0) return payoutCfg(r.platform).collect==='cash';
   if(def.paymentOptions || isUberTaxiRec(r)){
@@ -2511,7 +2526,7 @@ function payoutLedgerCompute(){
       if(!map[b.id]) map[b.id] = {id:b.id, platform:pk, payDate:b.payDate, weekFrom:b.weekFrom||null, expected:0, trips:0, from:x.sd, to:x.sd, earned:0, cashFees:0};
       var m = map[b.id];
       m.earned += f.noncash; m.cashFees += ded; m.expected += f.noncash-ded;
-      if(r.platform==='bonus') m.bonus = (m.bonus||0) + f.noncash; else m.trips++;
+      if(r.platform==='bonus') m.bonus = (m.bonus||0) + f.noncash; else if(r.platform==='cancelfee') m.cancelFee = (m.cancelFee||0) + f.noncash; else m.trips++;
       if(x.sd<m.from) m.from=x.sd;
       if(x.sd>m.to) m.to=x.sd;
     });
@@ -2805,7 +2820,7 @@ function batchRowHtml(b, growing){
     var diff = (+b.payout.amount||0) - Math.round(bankExpected(b));
     diffHtml = '<div class="num" style="font-size:12px;color:'+(Math.abs(diff)<1?'var(--income)':'var(--expense)')+'">'+(Math.abs(diff)<1?'✓ 金額相符':('差 '+(diff>0?'+':'')+fmtMoney(diff)))+'</div>';
   }
-  var sub = b.trips+' 趟'+(b.bonus?' + 活動獎勵 '+fmtMoney(b.bonus):'')+' · '+shortDate(b.from)+(b.to!==b.from?('–'+shortDate(b.to)):'')+(b.cashFees>0?(' · 扣累積現金單手續費 '+fmtMoney(b.cashFees)):'')+(b.toll>0?(' · 含過路費退款 '+fmtMoney(b.toll)):'');
+  var sub = b.trips+' 趟'+(b.bonus?' + 活動獎勵 '+fmtMoney(b.bonus):'')+(b.cancelFee?' + 取消費 '+fmtMoney(b.cancelFee):'')+' · '+shortDate(b.from)+(b.to!==b.from?('–'+shortDate(b.to)):'')+(b.cashFees>0?(' · 扣累積現金單手續費 '+fmtMoney(b.cashFees)):'')+(b.toll>0?(' · 含過路費退款 '+fmtMoney(b.toll)):'');
   if(growing) sub += ' · 還在累計中';
   if(b.walletTopUp>0.5) sub += ' · 平台撥款 '+fmtMoney(b.expected)+',先補進大都會錢包 '+fmtMoney(b.walletTopUp);
   var bk = bankOf(b.platform); if(bk) sub += ' · 🏦 匯入 '+esc(bk);
@@ -3101,18 +3116,23 @@ function tripAccept(){
   var riding = !!state.activeTrip;
   if(riding && !state.trackAccept) return;
   var now = Date.now(), note = ensureShiftRunning(now);
-  state.pendingAccept = riding ? {ts:now, seamless:true} : {ts:now};
+  // the id ties this order to the trip it becomes or to its 取消單 (a second tap or a retry never makes two)
+  state.pendingAccept = riding ? {id:uid(), ts:now, seamless:true} : {id:uid(), ts:now};
   save(function(ok){ if(ok) showToast((riding ? '已記錄接下一單的時間,這趟下車後直接按「上車」就好' : '已記錄接單時間,到上車點客人上車再按「上車」')+note, note?5000:3500); }); renderAll();
   geoCapture(function(loc){
     if(!loc) return;
     // the fix can land after 上車 was already pressed, so look for this accept wherever it went
     var hits = [state.pendingAccept, state.activeTrip && state.activeTrip.accept].concat((state.pendingTrips||[]).map(function(t){ return t.accept; })).concat(state.records.map(function(r){ return r.accept; }));
     hits.forEach(function(a){ if(a && a.ts===now){ a.lat = loc.lat; a.lng = loc.lng; a.acc = loc.acc; } });
+    // or it was cancelled before the fix came in
+    cancelList().forEach(function(c){ if(c && c.acceptAt===now && !c.acceptLoc) c.acceptLoc = {lat:loc.lat, lng:loc.lng, acc:loc.acc}; });
     save();
   });
 }
 function tripStart(){
   if(state.activeTrip) return;
+  // an order left open for hours is settled first (cancelled or dropped), so it does not become this trip's accept
+  if(staleAccept()){ openStaleAcceptModal(true); return; }
   var now = Date.now(), note = ensureShiftRunning(now);
   var t = {id:uid(), pickup:{ts:now}};
   if(state.pendingAccept){ t.accept = state.pendingAccept; state.pendingAccept = null; }
@@ -3162,6 +3182,237 @@ function attachTripToRecord(t, rec){
   if(t.accept) rec.accept = t.accept;
   state.pendingTrips = (state.pendingTrips||[]).filter(function(x){ return x.id!==t.id; });
 }
+/* ---------- 取消接客 (2026.11.21.2; 規格 docs/規格草稿_取消接客與等候_2026-11-21.md) ----------
+   An order taken with 📲 接到單了 whose passenger never got in is kept as a 取消單 in state.cancels: the accept it came
+   from (acceptId, acceptAt, acceptLoc), when it was cancelled (cancelAt; date = its business day, where it is counted),
+   who cancelled (by: 'p' 乘客, 'd' 司機, '' 未註明), the fleet ('' when skipped) and, when a fee was received, the id of
+   its 取消費 income record (feeRecId, see CANCEL_FEE_DEF). A fee needs a fleet: the fleet pays it out.
+   One made from the pending accept takes the id 'cx_'+accept id, so a second tap or a retried save can never make two;
+   one added afterwards (補記, also the way in for 簡單記帳) has no accept time. A 取消單 is changed and deleted only from
+   itself, and its 取消費 record follows it. The list goes with the whole ledger (backup, restore, cloud copy); an older
+   ledger without it reads as none. Two phones are not merged entry by entry: the cloud's whole-ledger check that stops
+   and asks when the other phone is newer covers it, as it covers the fares.
+   Time: the order is open from its accept to its cancel. 🏁 我的車隊收益比較 gives that time to the cancel's fleet,
+   only inside work time and outside every ride (fcTimeline); 📍 下車地統計 waits from a drop-off up to the first accept,
+   cancelled or not (dsWait). An accept left open too long (staleAccept) is asked about and counts nowhere until then. */
+var CANCEL_BY = [['p','🙋 乘客取消','乘客'],['d','🚕 司機取消','司機']];
+function cancelList(){ return Array.isArray(state.cancels) ? state.cancels : []; }
+function findCancel(id){ return cancelList().filter(function(c){ return c.id===id; })[0]; }
+function cancelFeeRec(c){ return (c && c.feeRecId) ? state.records.filter(function(r){ return r.id===c.feeRecId; })[0] || null : null; }
+function cancelOfFeeRec(recId){
+  var r = state.records.filter(function(x){ return x.id===recId; })[0];
+  if(!isCancelFeeRec(r)) return null;
+  return cancelList().filter(function(c){ return c.feeRecId===recId || (r.cancelId && c.id===r.cancelId); })[0] || null;
+}
+function cancelFeeOf(c){ var r = cancelFeeRec(c); return r ? (+r.revenue||0) : 0; }
+function cancelsInRange(from, to){ return cancelList().filter(function(c){ return c && inRange(c.date, from, to); }); }
+// the accept → cancel time only counts when both are there and in order (a clock set back or an edit gone wrong: not)
+function cancelTimed(c){ return c.acceptAt>0 && c.cancelAt>0 && c.cancelAt>=c.acceptAt; }
+function cancelSum(list){
+  var s = {n:0, p:0, d:0, u:0, fee:0};
+  list.forEach(function(c){ s.n++; if(c.by==='p') s.p++; else if(c.by==='d') s.d++; else s.u++; s.fee += cancelFeeOf(c); });
+  return s;
+}
+// 「取消 3 單(乘客 1、司機 1、未註明 1)· 取消費 $50」, '' when there were none
+function cancelSumText(s){
+  if(!s.n) return '';
+  var parts = [];
+  if(s.p) parts.push('乘客 '+s.p);
+  if(s.d) parts.push('司機 '+s.d);
+  if(s.u) parts.push('未註明 '+s.u);
+  return '取消 '+s.n+'&nbsp;單('+parts.join('、')+')'+(s.fee>0 ? ' · 取消費 '+fmtMoney(s.fee) : '');
+}
+// the 取消費 among recs, for the sums that are per trip (平均每趟, 還要跑幾趟): a cancel is not a trip
+function cancelFeeTotal(recs){ var t = 0; recs.forEach(function(r){ if(isCancelFeeRec(r)) t += computeNetRevenue(r); }); return t; }
+// the fleet of the latest entry, picked for a new 取消單 (it can be changed or cleared)
+function lastFleetKey(){
+  var best = null;
+  state.records.forEach(function(r){
+    var k = bonusLike(r) ? r.bonusPlatform : r.platform;
+    if(k && isFleetKey(k) && (!best || (+r.ts||0) >= best.ts)) best = {k:k, ts:+r.ts||0};
+  });
+  return best ? best.k : '';
+}
+function cancelFleetOpts(cur){
+  var keys = visiblePlatforms().filter(function(p){ return isFleetKey(p.key); }).map(function(p){ return p.key; });
+  if(cur && keys.indexOf(cur)<0) keys.push(cur);
+  return keys;
+}
+function dtLocalOf(ts){ var d = new Date(ts); return toDateStr(d)+'T'+pad(d.getHours())+':'+pad(d.getMinutes()); }
+function mdHm(ts){ var d = new Date(ts); return (d.getMonth()+1)+'/'+d.getDate()+' '+hhmm(ts); }
+// a pending accept left open: over EMPTY_GAP_CAP_MIN on the way (taken during a ride: from that drop-off), which every
+// accept left overnight is. Crossing the business-day change alone does not count: an order taken at 23:58 whose
+// passenger gets in at 00:04 is an ordinary pickup. While its passenger is still in the car it is not stale.
+function staleAccept(){
+  var pa = state.pendingAccept;
+  if(!pa || !(pa.ts>0) || state.activeTrip) return null;
+  var from = pa.seamless ? Math.max(pa.ts, lastDropoffTs()) : pa.ts;
+  return Date.now()-from > EMPTY_GAP_CAP_MIN*60000 ? pa : null;
+}
+var staleAskedFor = null;   // asked once per start of the app, so coming back to it does not ask again and again
+function maybeAskStaleAccept(){
+  var pa = staleAccept();
+  if(!pa || document.getElementById('modalBody') || staleAskedFor===(pa.id||pa.ts)) return false;
+  staleAskedFor = pa.id||pa.ts;
+  openStaleAcceptModal(false);
+  return true;
+}
+// thenStart: opened by 上車, which goes on once the old order is settled
+function openStaleAcceptModal(thenStart){
+  var pa = state.pendingAccept; if(!pa) return;
+  var h = '<div class="modal-title">上一筆接單還沒結束<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div style="font-size:13px;line-height:1.7;margin-bottom:14px">📲 <b>'+mdHm(pa.ts)+'</b> 按了「接到單了」,之後沒有按「上車」,也沒有記取消。這單後來怎麼了?</div>';
+  h += '<button class="btn btn-primary" style="width:100%;min-height:48px;margin-bottom:10px" data-act="cx-open:'+(thenStart?'start':'live')+'">✕ 這單被取消了(補記取消時間)</button>';
+  h += '<button class="btn btn-ghost" style="width:100%;min-height:48px" data-act="cx-stale-drop:'+(thenStart?'start':'')+'">沒被取消(客人有上車或按錯了),刪掉這筆接單</button>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:10px;line-height:1.6">'+(thenStart ? '處理完就會接著記這一趟的上車。' : '先不處理可以按右上角 ✕,下次打開 App 會再問。')+'還沒結束前,這筆接單不算進任何統計。</div>';
+  openModal(h);
+}
+var cxForm = null;
+// mode 'live': the pending accept (thenStart: 上車 follows); 'add': 補記 on business day arg; 'edit': 取消單 arg
+function openCancelModal(mode, arg, thenStart){
+  var pa = state.pendingAccept, c = null, title, h = '';
+  if(mode==='live'){
+    if(!pa){ closeModal(); renderAll(); return; }
+    if(!pa.id) pa.id = uid();   // an accept from before 2026.11.21.2 had no id
+    cxForm = {mode:'live', acceptId:pa.id, by:'', fleet:lastFleetKey(), stale:!!staleAccept(), thenStart:!!thenStart};
+    title = (state.activeTrip && pa.seamless) ? '下一單被取消了' : '這單被取消了';
+  } else if(mode==='edit'){
+    c = findCancel(arg); if(!c) return;
+    cxForm = {mode:'edit', id:c.id, by:c.by||'', fleet:c.fleet||''};
+    title = '取消單 · '+c.date;
+  } else {
+    var day = arg || currentEntryDate();
+    cxForm = {mode:'add', date:day, by:'', fleet:lastFleetKey()};
+    title = '補記被取消的單'+(day!==todayStr() ? ' · '+day : '');
+  }
+  var F = cxForm, lbl = 'font-size:13px;font-weight:700;margin:0 0 6px';
+  h += '<div class="modal-title">'+esc(title)+'<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  if(F.mode==='live' && !F.stale){
+    var from = pa.seamless ? Math.max(pa.ts, lastDropoffTs()) : pa.ts;
+    h += '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 12px">📲 '+hhmm(pa.ts)+' 接單'+(state.activeTrip && pa.seamless ? '(載客中接的)' : ' · 已 '+Math.max(0, Math.round((Date.now()-from)/60000))+' 分鐘')+'</div>';
+  } else if(F.mode==='live'){
+    h += '<div class="form-row"><label for="f-cx-at">什麼時候取消的?('+mdHm(pa.ts)+' 接單)</label><input type="datetime-local" id="f-cx-at" value="'+dtLocalOf(pa.ts)+'"><div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">改成實際取消的時間;不記得就不用改,這單只算次數、不算時間。</div></div>';
+  } else if(F.mode==='add'){
+    var defTs = F.date===todayStr() ? Date.now() : new Date(F.date+'T12:00:00').getTime();
+    h += '<div class="form-row"><label for="f-cx-at">什麼時候取消的?</label><input type="datetime-local" id="f-cx-at" value="'+dtLocalOf(defTs)+'"></div>';
+  } else {
+    h += '<div class="form-row"><label for="f-cx-acc">接單時間(預約單、沒按接單可以清空)</label><input type="datetime-local" id="f-cx-acc" value="'+(c.acceptAt>0 ? dtLocalOf(c.acceptAt) : '')+'"></div>';
+    h += '<div class="form-row"><label for="f-cx-at">取消時間</label><input type="datetime-local" id="f-cx-at" value="'+dtLocalOf(c.cancelAt)+'"></div>';
+    if(c.acceptAt>0 && !cancelTimed(c)) h += '<div style="font-size:12px;color:var(--expense);margin:-4px 0 10px;line-height:1.5">取消時間比接單時間早,這單的時間先不算,請改正確。</div>';
+  }
+  h += '<div style="'+lbl+'">誰取消的?<span style="font-weight:400;color:var(--text-muted)">(可略過)</span></div><div class="chip-row" style="margin-bottom:12px">'+
+    CANCEL_BY.map(function(b){ return '<button type="button" class="chip-opt'+(F.by===b[0]?' selected':'')+'" data-act="cx-by:'+b[0]+'" data-cxby="'+b[0]+'" aria-pressed="'+(F.by===b[0])+'" style="min-height:44px">'+b[1]+'</button>'; }).join('')+'</div>';
+  h += '<div style="'+lbl+'">哪個車隊?<span style="font-weight:400;color:var(--text-muted)">(可略過)</span></div><div class="chip-row" style="margin-bottom:12px">'+
+    cancelFleetOpts(F.fleet).map(function(k){ return '<button type="button" class="chip-opt'+(F.fleet===k?' selected':'')+'" data-act="cx-fleet:'+esc(k)+'" data-cxfleet="'+esc(k)+'" aria-pressed="'+(F.fleet===k)+'" style="min-height:44px">'+esc(platformDef(k).label)+'</button>'; }).join('')+'</div>';
+  var fee0 = c ? cancelFeeOf(c) : 0;
+  h += '<div class="form-row"><label for="f-cx-fee">取消費(有收再填)</label><input class="num-input" id="f-cx-fee" type="number" min="0" step="1" inputmode="numeric" placeholder="0" value="'+(fee0>0 ? fee0 : '')+'">'+
+    '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">填實際拿到的錢,不會再扣手續費。算進實收和時薪,不算趟數;會跟選的車隊一起列入撥款對帳。</div></div>';
+  h += '<div id="cx-err" role="alert" style="font-size:13px;font-weight:700;color:var(--expense);margin:0 0 8px" hidden></div>';
+  h += '<button class="btn btn-primary" style="width:100%;min-height:52px;font-size:16px" data-act="cx-save">'+(F.mode==='edit' ? '儲存' : '記下取消')+'</button>';
+  if(F.mode==='live') h += '<div style="text-align:center;margin-top:14px"><a data-act="cx-wrong" role="button" tabindex="0" style="font-size:12.5px;color:var(--text-muted);cursor:pointer;text-decoration:underline">按錯了,刪掉這筆接單</a></div>';
+  if(F.mode==='edit') h += '<div class="btn-row" style="margin-top:12px"><button class="btn btn-danger" style="flex:1" data-act="cx-del:'+esc(c.id)+'">刪除這筆取消</button></div>';
+  openModal(h);
+}
+// the chips of the open 取消 sheet can be picked and picked again to clear (both may be skipped)
+function cxPick(kind, v){
+  var F = cxForm; if(!F) return;
+  if(kind==='by') F.by = F.by===v ? '' : v; else F.fleet = F.fleet===v ? '' : v;
+  var attr = kind==='by' ? 'data-cxby' : 'data-cxfleet', cur = kind==='by' ? F.by : F.fleet;
+  document.querySelectorAll('['+attr+']').forEach(function(b){ var on = b.getAttribute(attr)===cur; b.classList.toggle('selected', on); b.setAttribute('aria-pressed', on); });
+  if(kind==='fleet' && cur){ var e = document.getElementById('cx-err'); if(e) e.hidden = true; }
+}
+function cxTimeIn(id){
+  var el = document.getElementById(id); if(!el) return undefined;
+  if(!el.value) return null;
+  var t = new Date(el.value).getTime();
+  return isFinite(t) ? t : NaN;
+}
+// the 取消費 record of c follows c: made, changed or removed with it
+function cancelFeeApply(c, fee){
+  var r = cancelFeeRec(c);
+  if(!(fee>0)){
+    if(r) state.records = state.records.filter(function(x){ return x!==r; });
+    delete c.feeRecId;
+    return;
+  }
+  if(!r){ r = {id:uid(), platform:'cancelfee', tip:0, cancelId:c.id, fees:resolvedFeeRules()}; state.records.push(r); c.feeRecId = r.id; }
+  r.revenue = fee; r.date = c.date; r.ts = c.cancelAt;
+  if(c.fleet) r.bonusPlatform = c.fleet; else delete r.bonusPlatform;
+}
+function saveCancel(){
+  var F = cxForm; if(!F) return;
+  var errEl = document.getElementById('cx-err');
+  function bad(m){ if(errEl){ errEl.textContent = m; errEl.hidden = false; } return false; }
+  var feeEl = document.getElementById('f-cx-fee'), fv = feeEl ? String(feeEl.value).trim() : '', fee = fv==='' ? 0 : +fv;
+  if(!isFinite(fee) || fee<0) return bad('取消費請填 0 以上的數字');
+  fee = Math.round(fee*100)/100;
+  if(fee>0 && !F.fleet) return bad('取消費要選是哪個車隊');
+  var now = Date.now(), c, at = cxTimeIn('f-cx-at');
+  if(at!==undefined && (at==null || isNaN(at))) return bad('請選取消的時間');
+  if(at!=null && at > now+5*60000) return bad('取消時間不能比現在晚');
+  if(F.mode==='live'){
+    var cid = 'cx_'+F.acceptId, pa = state.pendingAccept;
+    // already kept (a second tap, a retry): never a second one
+    if(findCancel(cid)){ cxForm = null; closeModal(); renderAll(); return true; }
+    if(!pa || pa.id!==F.acceptId){ cxForm = null; closeModal(); renderAll(); showToast('這筆接單已經結束了,沒有另外記取消'); return false; }
+    // the time box has whole minutes: a cancel in the accept's own minute is not earlier than the accept
+    if(at!=null && at < pa.ts && pa.ts - at < 60000) at = pa.ts;
+    c = {id:cid, acceptId:pa.id, acceptAt:pa.ts, cancelAt:at!=null ? at : now, by:F.by, fleet:F.fleet, createdAt:now};
+    if(pa.lat!=null && pa.lng!=null) c.acceptLoc = {lat:pa.lat, lng:pa.lng, acc:pa.acc};
+    if(pa.seamless) c.seamless = true;
+    state.pendingAccept = null;
+  } else if(F.mode==='add'){
+    c = {id:'cx_'+uid(), acceptId:null, acceptAt:null, cancelAt:at, by:F.by, fleet:F.fleet, createdAt:now};
+  } else {
+    c = findCancel(F.id); if(!c){ cxForm = null; closeModal(); renderAll(); return false; }
+    // the boxes show whole minutes: a time left as it was keeps its seconds (and its business day)
+    var acc = cxTimeIn('f-cx-acc'), accEl = document.getElementById('f-cx-acc'), atEl = document.getElementById('f-cx-at');
+    if(acc!==undefined && accEl.value!==(c.acceptAt>0 ? dtLocalOf(c.acceptAt) : '')){ if(acc!=null && isNaN(acc)) return bad('接單時間格式不對'); c.acceptAt = acc; }
+    if(atEl.value!==dtLocalOf(c.cancelAt)) c.cancelAt = (c.acceptAt>0 && at < c.acceptAt && c.acceptAt - at < 60000) ? c.acceptAt : at;
+    c.by = F.by; c.fleet = F.fleet; c.updatedAt = now;
+  }
+  c.date = businessDayOf(c.cancelAt);
+  if(F.mode!=='edit') state.cancels = cancelList().concat([c]);
+  cancelFeeApply(c, fee);
+  var then = F.thenStart, msg = (F.mode==='edit' ? '✓ 已更新取消單' : '✓ 已記下取消')+(fee>0 ? ' · 取消費 '+fmtMoney(fee) : '')+
+    (c.acceptAt>0 && !cancelTimed(c) ? '(取消時間比接單時間早,時間先不算,可以到歷史修正)' : '');
+  cxForm = null;
+  save(function(ok){ if(ok && !then) showToast(msg, 3000); }); closeModal(); renderAll();
+  if(then) tripStart();
+  return true;
+}
+function deleteCancel(id){
+  var c = findCancel(id); if(!c) return;
+  var fee = cancelFeeOf(c);
+  if(!confirm('刪除這筆取消紀錄?'+(fee>0 ? '\n取消費 '+fmtMoney(fee)+' 會一起刪掉。' : ''))) return;
+  if(c.feeRecId) state.records = state.records.filter(function(r){ return r.id!==c.feeRecId; });
+  state.cancels = cancelList().filter(function(x){ return x.id!==id; });
+  cxForm = null;
+  save(); closeModal(); renderAll();
+}
+// 按錯了: the pending accept goes, nothing is kept
+function dropPendingAccept(thenStart){
+  if(state.pendingAccept){ state.pendingAccept = null; save(); }
+  cxForm = null; closeModal(); renderAll();
+  if(thenStart) tripStart(); else showToast('已刪掉這筆接單', 2500);
+}
+// a 取消單 as a grey line in a day's list (歷史 and the entry page), tap to change, 🗑 to delete
+function cancelRowHtml(c){
+  var fee = cancelFeeOf(c), by = c.by==='p' ? '乘客取消' : c.by==='d' ? '司機取消' : '未註明誰取消';
+  var parts = [hhmm(c.cancelAt)+' 取消'];
+  if(c.acceptAt>0) parts.push(cancelTimed(c) ? '接單 '+hhmm(c.acceptAt)+' · 前往 '+Math.round((c.cancelAt-c.acceptAt)/60000)+'&nbsp;分' : '⚠️ 時間有誤');
+  if(c.fleet) parts.push(esc(platformDef(c.fleet).label));
+  return '<div class="list-item" style="opacity:.72">'+
+    '<div class="li-icon" style="background:var(--surface-sunken);color:var(--text-muted)">🚫</div>'+
+    '<div class="li-body" data-act="cx-edit:'+esc(c.id)+'" style="cursor:pointer"><div class="li-title" style="color:var(--text-muted)">取消接客 · '+by+'</div><div class="li-sub">'+parts.join(' · ')+'</div></div>'+
+    '<div class="li-amt num" style="color:var(--text-muted)">'+(fee>0 ? '+'+fmtMoney(fee) : '—')+'</div>'+
+    '<button class="li-del" data-act="cx-del:'+esc(c.id)+'">'+ICON_TRASH+'</button></div>';
+}
+// 第一次出現「接到單了」 (完整分析 new installs have it on): one line, until an order or a 上車 is in the ledger
+function acceptFirstHintHtml(){
+  if(state.records.some(function(r){ return r.accept || r.pickup; }) || (state.pendingTrips||[]).length || cancelList().some(function(c){ return c.acceptId; })) return '';
+  return '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;line-height:1.6">接到單先按這裡,被取消也記得到。不想用可以到 ⚙️「記錄接單時間」關掉。</div>';
+}
 // once a driver has used 上車/下車 for 30 trips, offer the 接到單了 step one time
 function acceptTipHtml(){
   if(state.trackAccept || state.acceptTipDone || state.activeTrip || state.pendingAccept) return '';
@@ -3175,25 +3426,28 @@ function tripCardHtml(){
   var big = 'width:100%;border:none;border-radius:16px;padding:18px;font-size:22px;font-weight:900;color:var(--on-fill);cursor:pointer;font-family:inherit;letter-spacing:2px';
   var h = '<div class="section"><div class="card" style="padding:14px">';
   if(a){
-    h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">🚕 載客中 · '+hhmm(a.pickup.ts)+' 上車 · 已 '+Math.round((Date.now()-a.pickup.ts)/60000)+' 分鐘'+(a.pickup.lat!=null?' · 📍已定位':'')+'</div>';
+    h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">🚕 載客中 · '+hhmm(a.pickup.ts)+' 上車 · 已 '+Math.round((Date.now()-a.pickup.ts)/60000)+' 分鐘'+(a.pickup.lat!=null?' · 📍已定位':'')+(state.pendingAccept ? ' · <b style="color:var(--text)">📲 已接下一單 '+hhmm(state.pendingAccept.ts)+'</b>' : '')+'</div>';
     h += '<button data-act="trip-end" style="'+big+';background:var(--expense-fill)">下車</button>';
     if(state.pendingAccept){
-      h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;padding:9px 12px;border-radius:12px;background:var(--surface-sunken);font-size:13px"><span>📲 已接下一單 '+hhmm(state.pendingAccept.ts)+'</span><a data-act="accept-cancel" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline;flex:none">取消／按錯了</a></div>';
+      h += '<button class="btn btn-ghost" data-act="cx-open:live" style="width:100%;min-height:48px;margin-top:10px">✕ 下一單被取消</button>';
     } else if(state.trackAccept){
       h += '<button class="btn btn-ghost" data-act="trip-accept" style="width:100%;margin-top:10px">📲 接到下一單</button>';
     }
     h += '<div style="text-align:right;margin-top:8px"><a data-act="trip-cancel" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">按錯了,取消這趟</a></div>';
   } else if(state.trackAccept && !state.pendingAccept){
     h += '<button data-act="trip-accept" style="'+big+';background:var(--accent-fill)">📲 接到單了</button>';
+    h += acceptFirstHintHtml();
     h += '<div style="text-align:right;margin-top:8px"><a data-act="trip-start" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">路招/沒有接單時間,直接上車</a></div>';
   } else {
     if(state.pendingAccept){
       var pa = state.pendingAccept, paFrom = pa.ts, paDrop = pa.seamless ? lastDropoffTs() : 0;
       if(paDrop > paFrom) paFrom = paDrop;  // taken during the last ride: on the way since that drop-off
-      h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">📲 '+hhmm(pa.ts)+(paDrop>pa.ts ? ' 載客中接單 · 下車後前往上車點 ' : ' 接單 · 前往上車點 ')+Math.round((Date.now()-paFrom)/60000)+' 分鐘</div>';
+      if(staleAccept()) h += '<div style="font-size:13px;color:var(--expense);font-weight:700;margin-bottom:10px;line-height:1.5">⚠️ 上一筆接單還沒結束('+mdHm(pa.ts)+' 接單)<br><span style="font-weight:400">被取消了就按下面「✕ 取消這單」補記時間</span></div>';
+      else h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">📲 '+hhmm(pa.ts)+(paDrop>pa.ts ? ' 載客中接單 · 下車後前往上車點 ' : ' 接單 · 前往上車點 ')+Math.round((Date.now()-paFrom)/60000)+' 分鐘</div>';
     }
     h += '<button data-act="trip-start" style="'+big+';background:var(--income-fill)">上車</button>';
-    if(state.pendingAccept) h += '<div style="text-align:right;margin-top:8px"><a data-act="accept-cancel" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">客人取消了 / 按錯了</a></div>';
+    if(state.pendingAccept) h += '<button class="btn btn-ghost" data-act="cx-open:live" style="width:100%;min-height:48px;margin-top:10px">✕ 取消這單</button>';
+    else h += '<div style="text-align:right;margin-top:8px"><a data-act="cx-add" style="font-size:12px;color:var(--text-muted);cursor:pointer;text-decoration:underline">剛剛被取消一單?</a></div>';
     if(!state.geoAsked) h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;line-height:1.5">第一次按,手機會問要不要讓記帳本取得位置,請按「允許」。只在按下的那一刻抓一次位置,不會一直追蹤。</div>';
   }
   if(pend.length){
@@ -3334,14 +3588,15 @@ function targetPaceHtml(left, from, to){
   if(!(left>0)) return '';
   var recs = recordsInRange(from, to), net = sumNetIncome(recs).total, hrs = totalHoursInRange(from, to);
   var trips = recs.filter(function(r){ return !platformDef(r.platform).tipOnly && r.platform!=='bonus'; }).length;
+  var tripNet = net - cancelFeeTotal(recs);   // 還要跑幾趟 goes by the fares: a 取消費 is not a trip
   var src = '';
   if(hrs < 0.5 || trips < 1){
     // too little today to judge: fall back to the last 30 days
     var f2 = addDays(to, -30), r2 = recordsInRange(f2, addDays(to, -1));
-    net = sumNetIncome(r2).total; hrs = totalHoursInRange(f2, addDays(to, -1));
+    net = sumNetIncome(r2).total; hrs = totalHoursInRange(f2, addDays(to, -1)); tripNet = net - cancelFeeTotal(r2);
     trips = r2.filter(function(r){ return !platformDef(r.platform).tipOnly && r.platform!=='bonus'; }).length; src = '近 30 天';
   }
-  var rate = hrs >= 0.5 ? net/hrs : null, per = trips > 0 ? net/trips : null;
+  var rate = hrs >= 0.5 ? net/hrs : null, per = (trips > 0 && tripNet > 0) ? tripNet/trips : null;
   if(!rate && !per) return '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px">記幾趟、打卡之後,這裡會算出還要跑多久</div>';
   var parts = [];
   if(rate) parts.push('約 <b>'+fmtNum(left/rate,1)+' 小時</b>');
@@ -3528,7 +3783,11 @@ function renderEntry(){
          '<div class="pname">'+esc(p.label)+'</div>'+
          '<div class="ptotal '+(pt>0?'has':'')+' num">'+(pt>0?fmtMoney(pt):'—')+'</div></div>';
   });
-  B.platforms = hp + '</div></div>';
+  // 取消接客: today's count, and the way to add one afterwards where there is no 上車/下車 card (簡單記帳)
+  var cxT = cancelSum(cancelsInRange(todayStr(), todayStr()));
+  var cxLine = (!B.trips || cxT.n) ? '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:10px;font-size:12.5px;line-height:1.5;color:var(--text-muted)"><span>🚫 '+(cxT.n ? '今天'+cancelSumText(cxT) : '有單被取消、拿到取消費?')+'</span>'+
+    '<a data-act="cx-add" role="button" tabindex="0" style="color:var(--accent);cursor:pointer;flex:none;font-weight:700;padding:6px 0">＋ 補記取消</a></div>' : '';
+  B.platforms = hp + '</div>' + cxLine + '</div>';
 
   var he = '<div class="section" id="homeExpenses"><div class="section-title">支出</div><div class="expense-grid">';
   visibleCats().forEach(function(c){
@@ -3634,11 +3893,15 @@ function saveHomeLayout(){
 }
 
 function renderDayList(dateStr){
-  var recs = state.records.filter(function(r){return r.date===dateStr;}).sort(function(a,b){return b.ts-a.ts;});
+  // a 取消費 shows on its 取消單's grey line (its fee is changed from there); an orphan one (its 取消單 gone) as itself
+  var recs = state.records.filter(function(r){return r.date===dateStr && !(isCancelFeeRec(r) && cancelOfFeeRec(r.id));}).sort(function(a,b){return b.ts-a.ts;});
   var exps = state.expenses.filter(function(e){return e.date===dateStr;}).sort(function(a,b){return b.ts-a.ts;});
-  if(!recs.length && !exps.length) return '<div class="empty-state"><div class="ic">🗒️</div><div class="t">這天還沒有記錄</div></div>';
-  var h='';
+  var cxs = cancelsInRange(dateStr, dateStr).slice().sort(function(a,b){ return b.cancelAt-a.cancelAt; });
+  if(!recs.length && !exps.length && !cxs.length) return '<div class="empty-state"><div class="ic">🗒️</div><div class="t">這天還沒有記錄</div></div>';
+  var h='', ci = 0;
+  function cxBefore(ts){ while(ci<cxs.length && cxs[ci].cancelAt >= (ts||0)){ h += cancelRowHtml(cxs[ci]); ci++; } }
   recs.forEach(function(r){
+    cxBefore(r.ts);
     var net = computeNetRevenue(r);
     var grossEst = computeGrossRevenue(r);
     var fee = grossEst-net-(r.couponType==='absorb' ? (+r.coupon||0) : 0);
@@ -3657,6 +3920,7 @@ function renderDayList(dateStr){
       '<div class="li-amt income num">+'+fmtMoneyFor(r.platform, amt)+'</div>'+
       '<button class="li-del" data-act="del-income:'+r.id+'">'+ICON_TRASH+'</button></div>';
   });
+  cxBefore(-Infinity);
   exps.forEach(function(e){
     var ci = catInfo(e.category);
     h += '<div class="list-item">'+
@@ -3750,6 +4014,7 @@ function renderHistory(){
   visiblePlatforms().forEach(function(p){
     h += '<div class="platform-chip" data-act="open-income:'+p.key+'"><div class="plat-badge" style="background:'+(p.color||'#8A8272')+'">'+iconHtml(p.icon||'🚘')+'</div><div class="pname">'+esc(p.label)+'</div></div>';
   });
+  h += '<div class="platform-chip" data-act="cx-add:'+selectedDay+'"><div class="plat-badge" style="background:'+CANCEL_FEE_DEF.color+'">'+iconHtml(CANCEL_FEE_DEF.icon)+'</div><div class="pname">取消單</div></div>';
   h += '</div></div>';
   h += '<div class="section"><div class="section-title">幫 '+selectedDay+' 補記支出</div><div class="expense-grid">';
   visibleCats().forEach(function(c){
@@ -3974,10 +4239,59 @@ function fcSlotOf(d, ts){
 // Inside a work period from the clock-in log (punchSegs) the time from the period's start or the drop-off before goes
 // to the trip; on days without a usable log, the drop-off before on the same business day within EMPTY_GAP_CAP_MIN,
 // else 接到單了, else 上車.
-function fcTimed(from, to){
-  var days = timedTripsByDay(from, to), all = [], segs = [], out = [], d0 = addDays(from, -1), d1 = addDays(to, 1);
-  Object.keys(state.dailyMeta).forEach(function(d){ if(d>=d0 && d<=d1){ var sg = punchSegs(d); if(sg) segs = segs.concat(sg); } });
+// 取消接客 (規格第四節 8, ChatGPT C12): one time line, each minute given once. ① A ride is its trip's (a next order taken
+// during it takes nothing from it). ② The time from a cancelled order's accept to its cancel goes to that cancel's fleet
+// (none chosen: to no fleet), only inside the work periods and outside every ride; two cancels that overlap: the one
+// accepted first keeps it. On a day without a usable clock-in log it counts when it is no longer than
+// EMPTY_GAP_CAP_MIN; a day with a log but the cancel outside it (after 下班, in a 休息) gives it nothing. ③ The next trip
+// counts from the end of the last such cancel in its gap (at most its own 上車), so the wait before the first cancel and
+// between cancels goes to no fleet; it stays in the punched hours all the same. Cancel time is split by business day
+// and only the part inside from..to is counted. Returns {trips (as fcTimed), cancels:[{c, min, feeT}]}; feeT: its fee
+// may join the fleet's per-hour take-home (a fleet, the cancel inside work time).
+function bizDaySplit(a, b, fn){
+  while(a < b){
+    var d = businessDayOf(a), nb = new Date(d+'T00:00:00'); nb.setDate(nb.getDate()+1); nb.setHours(dayCutoffHour(), 0, 0, 0);
+    var e = Math.min(b, nb.getTime()); if(!(e > a)) e = b;
+    fn(d, a, e); a = e;
+  }
+}
+// [[a,b]] minus [[a,b]] (both any order; the result in order, empty pieces left out)
+function ivMinus(list, cut){
+  var out = list.slice();
+  cut.forEach(function(c){
+    var next = [];
+    out.forEach(function(p){
+      if(c[1] <= p[0] || c[0] >= p[1]){ next.push(p); return; }
+      if(c[0] > p[0]) next.push([p[0], c[0]]);
+      if(c[1] < p[1]) next.push([c[1], p[1]]);
+    });
+    out = next;
+  });
+  return out.sort(function(x, y){ return x[0]-y[0]; });
+}
+function ivSum(list){ return list.reduce(function(t, p){ return t + (p[1]-p[0]); }, 0); }
+function fcTimed(from, to){ return fcTimeline(from, to).trips; }
+function fcTimeline(from, to){
+  var days = timedTripsByDay(from, to), all = [], segs = [], out = [], d0 = addDays(from, -1), d1 = addDays(to, 1), logDays = {};
+  Object.keys(state.dailyMeta).forEach(function(d){ if(d>=d0 && d<=d1){ var sg = punchSegs(d); if(sg){ segs = segs.concat(sg); logDays[d] = true; } } });
   Object.keys(days).sort().forEach(function(d){ days[d].forEach(function(o){ all.push({o:o, d:d}); }); });
+  // ① every ride near the period, then ② each cancel's own time
+  var rides = [], wide = timedTripsByDay(d0, d1);
+  Object.keys(wide).forEach(function(d){ wide[d].forEach(function(o){ if(o.dropoff.ts >= o.pickup.ts) rides.push([o.pickup.ts, o.dropoff.ts]); }); });
+  var cxs = cancelList().filter(function(c){ return c && c.date>=d0 && c.date<=d1 && cancelTimed(c); })
+    .sort(function(a, b){ return (a.acceptAt-b.acceptAt) || (a.id<b.id ? -1 : (a.id>b.id ? 1 : 0)); });
+  var taken = [];
+  cxs = cxs.map(function(c){
+    var iv = [[c.acceptAt, c.cancelAt]], inSeg = ivMinus(iv, ivMinus(iv, segs));
+    if(!inSeg.length){
+      var logged = logDays[businessDayOf(c.acceptAt)] || logDays[c.date];
+      inSeg = (!logged && (c.cancelAt-c.acceptAt)/60000 <= EMPTY_GAP_CAP_MIN) ? iv : [];
+    }
+    var pcs = ivMinus(ivMinus(inSeg, rides), taken);
+    taken = taken.concat(pcs);
+    var atWork = segs.some(function(sg){ return sg[0]<=c.cancelAt && c.cancelAt<=sg[1]; }) || (!logDays[c.date] && pcs.length>0);
+    return {c:c, pcs:pcs, atWork:atWork};
+  });
   all.forEach(function(x, i){
     var o = x.o; if(tripMin(o.pickup, o.dropoff) < 0) return;
     var prev = i>0 ? all[i-1].o : null, seg = null, start, linked;
@@ -3990,9 +4304,18 @@ function fcTimed(from, to){
       if(linked) start = Math.min(prev.dropoff.ts, o.pickup.ts);
       else start = (o.accept && o.accept.ts<=o.pickup.ts && (o.pickup.ts - o.accept.ts)/60000 <= EMPTY_GAP_CAP_MIN) ? o.accept.ts : o.pickup.ts;
     }
-    out.push({o:o, d:x.d, min:(o.dropoff.ts - start)/60000, linked:linked, punch:!!seg});
+    // ③ after a cancelled order in the gap, this trip counts from the end of the last one
+    cxs.forEach(function(y){ if(y.pcs.length){ var e = y.pcs[y.pcs.length-1][1]; if(e > start && e <= o.pickup.ts) start = e; } });
+    out.push({o:o, d:x.d, min:(o.dropoff.ts - start)/60000, linked:linked, punch:!!seg, start:start});
   });
-  return out;
+  // nothing given twice: a cancel's time never inside a trip's own stretch (only an edit gone wrong could put it there)
+  var spans = out.map(function(x){ return [x.start, x.o.dropoff.ts]; }), cancels = [];
+  cxs.forEach(function(y){
+    var pcs = ivMinus(y.pcs, spans), ms = 0;
+    pcs.forEach(function(p){ bizDaySplit(p[0], p[1], function(d, a, b){ if(inRange(d, from, to)) ms += b-a; }); });
+    if(ms>0 || inRange(y.c.date, from, to)) cancels.push({c:y.c, min:ms/60000, feeT:!!y.c.fleet && y.atWork && inRange(y.c.date, from, to)});
+  });
+  return {trips:out, cancels:cancels};
 }
 var fcMemo = null;
 function fcStats(from, to){
@@ -4002,7 +4325,8 @@ function fcStats(from, to){
   function F(k){
     if(!map[k]){
       var def = platformDef(k), m = {key:k, label:def.label, trips:0, gross:0, fee:0, net:0, tripBonus:0, bonus:0, est:false,
-        tN:0, tNet:0, min:0, kmN:0, kmReal:0, kmNet:0, km:0, len:[], slots:[], cashN:0, cashFee:0, cashSep:0, payN:0, payDays:0, payNone:0};
+        tN:0, tNet:0, min:0, kmN:0, kmReal:0, kmNet:0, km:0, len:[], slots:[], cashN:0, cashFee:0, cashSep:0, payN:0, payDays:0, payNone:0,
+        cxN:0, cxFee:0, cxMin:0, cxFeeT:0};
       for(var i=0;i<6;i++) m.slots.push({n:0, net:0, min:0});
       for(var j=0;j<3;j++) m.len.push({n:0, net:0, km:0});
       map[k] = m; list.push(m);
@@ -4023,8 +4347,17 @@ function fcStats(from, to){
     if(isCashRecord(r)){ var mf = moneyFlow(r); m.cashN++; m.cashFee += mf.cashFee; if(!mf.netted) m.cashSep += mf.cashFee; }
     else if(!r.paperSlip){ var b = payoutBatchOf(r); if(b && b.payDate){ m.payN++; m.payDays += Math.max(0, daysBetween(r.date, b.payDate)); } else m.payNone++; }
   });
-  var allMin = 0, punchN = 0, timedN = 0;
-  fcTimed(from, to).forEach(function(x){
+  var allMin = 0, punchN = 0, timedN = 0, TL = fcTimeline(from, to), cxFree = 0;
+  // 取消接客: each fleet's cancels, their fees and the minutes from accept to cancel (no fleet: counted, given to none)
+  TL.cancels.forEach(function(y){
+    var k = y.c.fleet;
+    if(!k || !isFleetKey(k)){ cxFree += y.min; return; }
+    allMin += y.min;
+    var m = F(k);
+    if(inRange(y.c.date, from, to)){ m.cxN++; m.cxFee += cancelFeeOf(y.c); }
+    m.cxMin += y.min; if(y.feeT) m.cxFeeT += cancelFeeOf(y.c);
+  });
+  TL.trips.forEach(function(x){
     allMin += x.min; timedN++; if(x.punch) punchN++;
     var r = x.o.rec; if(!r || !map[r.platform] || !inRange(r.date, from, to) || platformDef(r.platform).tipOnly) return;
     var m = map[r.platform], n = computeNetRevenue(r)+(+r.tip||0), s = m.slots[fcSlotOf(x.d, x.o.pickup.ts)];
@@ -4032,11 +4365,11 @@ function fcStats(from, to){
   });
   list.forEach(function(m){
     m.avg = m.trips ? m.net/m.trips : null; m.feePct = m.gross>0 ? m.fee/m.gross*100 : null;
-    m.hourly = m.min>=30 ? m.tNet/(m.min/60) : null; m.perKm = m.km>=1 ? m.kmNet/m.km : null;
+    m.hourly = (m.min+m.cxMin)>=30 ? (m.tNet+m.cxFeeT)/((m.min+m.cxMin)/60) : null; m.perKm = m.km>=1 ? m.kmNet/m.km : null;
     m.bonusAll = m.bonus + m.tripBonus; m.feeAfterBonus = (m.gross>0 && m.bonusAll>0) ? (m.fee - m.bonusAll)/m.gross*100 : null;
   });
   list.sort(function(a,b){ return (b.net-a.net) || (b.bonus-a.bonus); });
-  var val = {list:list, B:B, allMin:allMin, worked:totalHoursInRange(from, to), punchN:punchN, timedN:timedN};
+  var val = {list:list, B:B, allMin:allMin, worked:totalHoursInRange(from, to), punchN:punchN, timedN:timedN, cxFree:cxFree, anyCx:TL.cancels.length>0};
   fcMemo = {gen:dataGen, st:state, key:key, val:val};
   return val;
 }
@@ -4112,10 +4445,11 @@ function fcRealHtml(S){
       h += fcRow('實收(扣手續費,含小費)', fmtMoney(m.net));
       h += fcRow('平均每趟實收', fmtMoney2(m.avg));
       h += fcRow('手續費率(實際)', m.feePct!=null ? fmtNum(m.feePct,1)+'%' : dash, '手續費 ÷ 車資');
-      h += fcRow('每小時實收(估)', m.hourly!=null ? fmtMoney(m.hourly) : dash, m.tN ? '有按上下車的 '+m.tN+' 趟,共 '+fmtNum(m.min/60,1)+' 小時' : '沒有按上下車的趟次');
+      h += fcRow('每小時實收(估)', m.hourly!=null ? fmtMoney(m.hourly) : dash, (m.tN ? '有按上下車的 '+m.tN+' 趟,共 '+fmtNum(m.min/60,1)+' 小時' : '沒有按上下車的趟次')+(m.cxMin>=0.5 ? ';含被取消的單 '+fmtNum(m.cxMin,0)+'&nbsp;分鐘'+(m.cxFeeT>0 ? '和取消費 '+fmtMoney(m.cxFeeT) : '') : ''));
       var kmSub = !m.kmN ? '沒有填里程,也沒有記到上下車位置' : (m.kmReal===m.kmN ? m.kmN+' 趟有填里程' : (m.kmReal ? m.kmReal+' 趟有填里程、'+(m.kmN-m.kmReal)+' 趟用上下車直線距離(偏高)' : m.kmN+' 趟用上下車直線距離(偏高)'));
       h += fcRow('每公里實收', m.perKm!=null ? fmtMoney2(m.perKm) : dash, kmSub);
     }
+    if(m.cxN) h += fcRow('被取消的單', m.cxN+'&nbsp;單'+(m.cxFee>0 ? ' · 取消費 '+fmtMoney(m.cxFee) : ''), m.cxMin>=0.5 ? '接單到取消共 '+fmtNum(m.cxMin,0)+'&nbsp;分鐘' : '沒有可算的接單時間');
     if(m.bonusAll>0){
       var parts = [];
       if(m.tripBonus>0) parts.push('趟趟加給 '+fmtMoney(m.tripBonus)+'(已含在實收)');
@@ -4127,6 +4461,7 @@ function fcRealHtml(S){
   });
   if(S.list.some(function(m){ return m.est; })) h += '<div style="'+FC_NOTE+'">'+(S.list.some(function(m){ return m.estNet; }) ? '標「(估)」的車隊有記「實收」的單(Uber 多元,或 ⚙️ 打開「記帳時填實收」的平台),車資和手續費是用你設定的抽成 % 反推的估算。一天只記一筆總額的,平均每趟實收會偏高。' : 'Uber 多元記的是實收,車資和手續費是用你設定的抽成 % 反推的估算。')+'</div>';
   h += '<div style="'+FC_NOTE+'">⏱️ 每小時實收是<b>估算</b>:上一趟下車到這一趟下車的時間(等單＋接客＋載客)算給這一趟的車隊。同時開好幾個車隊 App 時分不出來,等單時間算給接到的那一家。有記到上班時間的日子(2026.11.19.11 版以後的打卡),上班後、休息結束後的第一趟,從打卡或休息結束算起;以前的日子或在「歷史」改過工時的,空檔超過 '+(EMPTY_GAP_CAP_MIN/60)+' 小時當成休息不算,第一趟從按「接到單了」算起,沒按就只算載客時間。載客中接到的下一單(無縫接單)等單算 0。'+
+    (S.anyCx ? '<br>被取消的單:從接單到取消的時間算給那單選的車隊(只算上班時間、不跟載客重疊),下一趟從最後一次取消起算;取消費算進那家的每小時實收。'+(S.cxFree>=0.5 ? '沒選車隊的取消單共 '+fmtNum(S.cxFree,0)+' 分鐘,沒有算給哪一家。' : '') : '')+
     (S.timedN ? '<br>有按上下車的 '+S.timedN+' 趟中,'+S.punchN+' 趟有對到上班時間。' : '')+
     (S.worked > S.allMin/60 + 0.05 ? '<br>這段期間打卡 '+fmtNum(S.worked,1)+' 小時,其中 '+fmtNum(S.allMin/60,1)+' 小時算給了各趟;其餘(最後一趟到下班、沒按上下車的趟,以及沒記到上班時間那幾天第一趟以前)分不出是哪一家,沒有算進去,所以各車隊的每小時實收通常會比平均時薪高一些。' : '')+'</div>';
   h += fcSlotsHtml(S) + fcPayHtml(S) + fcLenHtml(S);
@@ -4368,7 +4703,7 @@ function anWdOk(f, dateStr, ts){
   return f.wdays.indexOf((d.getDay()+6)%7)>=0;
 }
 function anMatch(f, r){
-  if(f.plats.length && f.plats.indexOf(r.platform)<0 && !(r.platform==='bonus' && r.bonusPlatform && f.plats.indexOf(r.bonusPlatform)>=0)) return false;
+  if(f.plats.length && f.plats.indexOf(r.platform)<0 && !(bonusLike(r) && r.bonusPlatform && f.plats.indexOf(r.bonusPlatform)>=0)) return false;
   if(!anHasTime(f)) return anDayOk(f, r.date);
   if(platformDef(r.platform).tipOnly) return false;  // the tip box and bonuses are not a fare at a time of day
   var ts = anRecTs(r);
@@ -6718,14 +7053,18 @@ var DS_DAYS = [30, 90, 180, 365], DS_DAYS_DEF = 90, DS_TOP = 10, DS_DEAD_TOP = 5
 var DS_DEAD_RATIO = 1.5, DS_DEAD_MORE = 5;
 var dsDays = DS_DAYS_DEF;
 // the wait after trip t (in minutes), or null when it is not waiting for a fare
-function dsWait(t, nx, segs){
-  if(!nx) return null;  // the last trip of the business day
-  if(nx.pickup.ts < t.dropoff.ts) return null;  // the times overlap: something was pressed wrong
-  var end = (nx.accept && nx.accept.ts>0 && nx.accept.ts<=nx.pickup.ts) ? nx.accept.ts : nx.pickup.ts;
+// 取消接客 (規格第四節 9, C13): accs, the cancelled orders of that business day ({a: accept, c: cancel}), end the wait
+// too: the first order after the drop-off counts, cancelled or not (one taken during the ride and still open at the
+// drop-off: 0; one cancelled before the drop-off is not after it). A 補記 without an accept time is not used.
+function dsWait(t, nx, segs, accs){
+  if(nx && nx.pickup.ts < t.dropoff.ts) return null;  // the times overlap: something was pressed wrong
+  var end = nx ? ((nx.accept && nx.accept.ts>0 && nx.accept.ts<=nx.pickup.ts) ? nx.accept.ts : nx.pickup.ts) : null, byCx = false;
+  (accs||[]).forEach(function(x){ if(x.c > t.dropoff.ts && (end==null || x.a < end)){ end = x.a; byCx = true; } });
+  if(end==null) return null;  // the last trip of the business day, nothing after it
   var min = Math.max(0, (end - t.dropoff.ts)/60000);
   if(segs){
     for(var k=0;k<segs.length;k++){
-      if(segs[k][0]<=t.dropoff.ts && t.dropoff.ts<=segs[k][1]) return nx.pickup.ts<=segs[k][1] ? {min:min, punch:true} : null;
+      if(segs[k][0]<=t.dropoff.ts && t.dropoff.ts<=segs[k][1]) return (byCx ? end : nx.pickup.ts)<=segs[k][1] ? {min:min, punch:true} : null;
     }
     return null;  // dropped off after 下班 or during a 休息
   }
@@ -6735,7 +7074,8 @@ var dsMemo = null;
 function dsStats(from, to){
   var key = from+'|'+to+'|'+Math.floor(Date.now()/600000);
   if(dsMemo && dsMemo.gen===dataGen && dsMemo.st===state && dsMemo.key===key) return dsMemo.val;
-  var days = timedTripsByDay(from, to), cells = {}, S = {n:0, noPos:0, waitN:0, waitSum:0, punchN:0};
+  var days = timedTripsByDay(from, to), cells = {}, S = {n:0, noPos:0, waitN:0, waitSum:0, punchN:0}, accBy = {};
+  cancelList().forEach(function(c){ if(c && cancelTimed(c)){ var ad = businessDayOf(c.acceptAt); (accBy[ad] = accBy[ad] || []).push({a:c.acceptAt, c:c.cancelAt}); } });
   Object.keys(days).sort().forEach(function(d){
     var list = days[d], segs = punchSegs(d);
     list.forEach(function(t, i){
@@ -6746,7 +7086,7 @@ function dsStats(from, to){
       var k = cellKeyOf(+dr.lat, +dr.lng), c = cells[k] || (cells[k] = {key:k, n:0, lat:0, lng:0, wN:0, w:0, fareN:0, fare:0});
       c.n++; c.lat += +dr.lat; c.lng += +dr.lng;
       if(t.rec){ c.fareN++; c.fare += computeNetRevenue(t.rec)+(+t.rec.tip||0); }
-      var w = dsWait(t, list[i+1], segs);
+      var w = dsWait(t, list[i+1], segs, accBy[d]);
       if(w){ c.wN++; c.w += w.min; S.waitN++; S.waitSum += w.min; if(w.punch) S.punchN++; }
     });
   });
@@ -9086,10 +9426,11 @@ function saveShiftFix(){
   save(function(ok){ if(ok) showToast('已補登上班時間'); }); closeModal(); renderAll();
 }
 function openDayReport(t){
-  var recs = recordsInRange(t, t);
-  if(!recs.length) return;
+  var recs = recordsInRange(t, t), cxS = cancelSum(cancelsInRange(t, t));
+  if(!recs.length && !cxS.n) return;
   var net = sumNetIncome(recs).total, exp = sumExpense(expensesInRange(t, t));
-  var hours = totalHoursInRange(t, t), trips = recs.filter(function(r){ return r.platform!=='bonus'; }).length;
+  // 取消費 is in 實收, 結餘 and 時薪, not in 趟數 or 每趟平均
+  var hours = totalHoursInRange(t, t), trips = recs.filter(function(r){ return r.platform!=='bonus' && r.platform!=='cancelfee'; }).length, tripNet = net - cancelFeeTotal(recs);
   var p7from = addDays(t, -7), p7to = addDays(t, -1);
   var h7 = totalHoursInRange(p7from, p7to), n7 = sumNetIncome(recordsInRange(p7from, p7to)).total;
   var rate = hours>=0.5 ? net/hours : null, rate7 = h7>=0.5 ? n7/h7 : null;
@@ -9098,7 +9439,7 @@ function openDayReport(t){
   h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">'+t+' · 辛苦了!</div>';
   h += '<div class="summary-row" style="grid-template-columns:1fr 1fr;margin-bottom:10px">';
   h += tile('今日實收', fmtMoney(net), 'income') + tile('今日結餘(扣今日支出)', fmtMoney(net-exp));
-  h += tile('趟數', trips+' 趟') + tile('每趟平均', trips?fmtMoney(net/trips):'—');
+  h += tile('趟數', trips+' 趟') + tile('每趟平均', trips?fmtMoney(tripNet/trips):'—');
   h += tile('工時(已扣休息)', hours>0?fmtNum(hours,2)+' 小時':'—') + tile('平均時薪', rate!=null?fmtMoney(rate):'—', 'income');
   var addOn = uiOn('addOn') ? recs.filter(function(r){ return r.addOn>0; }) : [];
   if(addOn.length) h += tile('加價單', addOn.length+' 單') + tile('加價多收', fmtMoney(addOn.reduce(function(a,r){ return a+r.addOn; },0)), 'income');
@@ -9109,6 +9450,7 @@ function openDayReport(t){
     var diff = Math.round((rate-rate7)/rate7*100);
     note = '前 7 天平均時薪 '+fmtMoney(rate7)+',今天'+(diff>=0?'高 ':'低 ')+Math.abs(diff)+'%'+(diff>=10?' 👍':'');
   }
+  if(cxS.n) h += '<div style="font-size:12.5px;line-height:1.6;margin-bottom:8px">🚫 '+cancelSumText(cxS)+'</div>';
   if(note) h += '<div style="font-size:12.5px;line-height:1.6;margin-bottom:12px">'+note+'</div>';
   h += '<div class="btn-row"><button class="btn" data-act="close-modal">知道了</button><button class="btn btn-primary" data-act="quick-backup">💾 順便備份</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px">不想每天看到:⚙️ 功能開關關掉「今日跑車報告」</div>';
@@ -9320,7 +9662,7 @@ function openSettingsModal(){
     Array.apply(null, Array(DAY_CUTOFF_MAX+1)).map(function(x, hh){ return '<option value="'+hh+'"'+(hh===cutoffNow?' selected':'')+'>'+cutoffLabel(hh)+'</option>'; }).join('')+
     '</select></div>';
   S.basic += h; h = '';
-  h += '<div class="form-row" style="margin-top:6px"><label>進階:記錄接單時間</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-track-accept" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.trackAccept?' checked':'')+'>打開後,下車後的大按鈕會變成「📲 接到單了」。接單時按一下,客人上車再按「上車」,分析頁就能把空檔拆成「等單」和「接駁」兩段。載客中就接到下一單,可以按行程卡上的「📲 接到下一單」,下車後直接按「上車」。不打開就跟原本一樣。</label></div>';
+  h += '<div class="form-row" style="margin-top:6px"><label>進階:記錄接單時間</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-track-accept" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.trackAccept?' checked':'')+'>打開後,接到單先按「📲 接到單了」,客人上車再按「上車」。被乘客或自己取消的單也能記下來(含取消費),分析頁會把空檔分成等單和前往接客兩段。<br>不想多按可以關掉:記帳照常;被取消的單改成事後補記,前往接客的時間會算在等單裡。</label></div>';
   if(HOT_URL) h += '<div class="form-row"><label>分享上車熱區(車友熱區)</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-share-hot" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.shareHot===true?' checked':'')+'><span>分享你的上車熱區,就能在分析頁看「車友熱區」。只送約 1 公里一格的區域、日期、時段、趟數,<b>不送精確位置、金額、平台</b>;3 位以上車友都上過車的地方才會顯示。取消勾選會一併刪除你分享過的資料。</span></label></div>';
   if(HOT_URL && (state.hotDelPending||[]).length) h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-6px 0 12px;line-height:1.6">⏳ 已停止分享。之前分享的資料還在等網路刪除,連上網後會自動再送,不用重新打開分享。</div>';
   h += '<div class="form-row"><label>不具名使用人數統計</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-stat-on" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.statOptOut?'':' checked')+'><span>參與不具名統計,幫製作者知道有多少司機在用。每天只送一次:隨機編號、日期、版本、簡單/完整模式、手機系統、是否從主畫面打開、你在路況卡「我主要跑」勾的城市(不是定位)、是否訂閱 VIP。<b>不含任何金額、平台、精確位置或個人資料。</b></span></label></div>';
@@ -9370,12 +9712,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.21.1';
+var APP_VERSION = '2026.11.21.2';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.21.2', '🚫 被取消的單也記得到了:前往接客途中被取消、到了等不到客人,按「✕ 取消這單」選誰取消、哪個車隊,有取消費就填實際拿到的錢(算進實收和時薪,不算趟數,會跟那家車隊一起列入撥款對帳)。沒有用「接到單了」或用簡單記帳的人,在記帳頁按「＋ 補記取消」事後補記;歷史裡灰色那一行可以改、可以刪'],
   ['2026.11.21.1', '💵 每個平台都能「記帳時填實收」:到 ⚙️ 設定 → 平台管理打開後,記 BOLT、LINE GO 等平台時直接打實際拿到的錢,不會再被扣一次手續費;車資和手續費由 App 估算。打開前記的帳照原本的算法,之後關掉也不影響'],
   ['2026.11.20.8', '💡 測試版:VIP 功能還缺資料時(例如沒記每日里程、沒按上車/下車、沒打卡),會直接告訴你還缺什麼、去哪裡補,有的可以一鍵打開;VIP 介紹和 👑 預覽多一行「需要:…」,先知道要記哪些資料才看得到', 'beta'],
   ['2026.11.20.7', '🚗 測試版:只填了「車輛成本」也能在加油、保養維修時填儀表板里程;可支配所得變負數時,會說主要是哪一筆扣最多;大字時數字和單位不會被拆成兩行', 'beta'],
@@ -9724,7 +10067,7 @@ function openImportModal(){
   openModal(h);
 }
 function ledgerSummary(st){
-  var recs = (st.records||[]).filter(function(r){ return r.platform!=='bonus'; });
+  var recs = (st.records||[]).filter(function(r){ return r.platform!=='bonus' && r.platform!=='cancelfee'; });
   var dates = (st.records||[]).map(function(r){ return r.date; }).concat((st.expenses||[]).map(function(e){ return e.date; })).filter(Boolean).sort();
   // the newest income entry, so a check can catch a changed amount and not only a changed count
   var last = null;
@@ -9761,7 +10104,7 @@ function keepUndoCopy(label, done){
 // settings that belong to this phone, not to the ledger: a restored backup must not switch sharing or
 // statistics back on, bring back an old sharing id, or claim this phone's cloud backup state
 var DEVICE_KEYS = ['undoMeta','seenVersion','syncUrl','syncEvery','lastCloudBasicAt','cloudBaseTime','cloudSentSids','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale','layoutWidth'];
-var LEDGER_PART_NAMES = {expenses:'支出', dailyMeta:'每日工時與里程', fixedCosts:'固定成本', fixedOverrides:'固定成本覆寫', targets:'目標', feeRules:'手續費設定', platformOverrides:'平台設定', customPlatforms:'自訂平台', platformOrder:'平台排列', netEntryPlats:'記帳時填實收', payoutSettings:'撥款設定', payouts:'撥款核對', pendingTrips:'行程', tollRefunds:'過路費退款', metroWallet:'大都會錢包', vehicle:'車輛提醒'};
+var LEDGER_PART_NAMES = {expenses:'支出', dailyMeta:'每日工時與里程', fixedCosts:'固定成本', fixedOverrides:'固定成本覆寫', targets:'目標', feeRules:'手續費設定', platformOverrides:'平台設定', customPlatforms:'自訂平台', platformOrder:'平台排列', netEntryPlats:'記帳時填實收', payoutSettings:'撥款設定', payouts:'撥款核對', pendingTrips:'行程', cancels:'取消接客', tollRefunds:'過路費退款', metroWallet:'大都會錢包', vehicle:'車輛提醒'};
 // '' when the data can be used as a ledger, otherwise what is wrong with it
 function ledgerProblem(p, strictDates){
   if(!p || typeof p!=='object' || Array.isArray(p)) return '這不是記帳本的備份資料';
@@ -9811,6 +10154,7 @@ function ledgerProblem(p, strictDates){
     objList(p.customPlatforms||[], '自訂平台', function(c){ return typeof c.key==='string' && /^custom_/.test(c.key) && typeof c.label==='string'; }) ||
     objList(p.fixedCosts||[], '固定成本', function(c){ return finiteOrEmpty(c.amount); }) ||
     objList(p.payouts||[], '撥款核對') || objList(p.pendingTrips||[], '行程') ||
+    objList(p.cancels||[], '取消接客', function(c){ return typeof c.id==='string' && validDate(c.date) && isFinite(+c.cancelAt) && +c.cancelAt>0 && (c.acceptAt==null || isFinite(+c.acceptAt)); }) ||
     ((p.platformOrder||[]).some(function(k){ return typeof k!=='string'; }) ? '「平台排列」的格式不對' : '') ||
     objValues(p.dailyMeta||{}, '每日工時與里程') || objValues(p.payoutSettings||{}, '撥款設定') ||
     ((p.tollRefunds!=null && (typeof p.tollRefunds!=='object' || Array.isArray(p.tollRefunds))) ? '「過路費退款」的格式不對' : objValues(p.tollRefunds||{}, '過路費退款')) ||
@@ -10272,6 +10616,11 @@ document.addEventListener('click', function(e){
   else if(cmd==='save-income'){ var si=arg.split(':'); saveIncome(si[0], si[1]); }
   else if(cmd==='open-expense'){ openExpenseModal(arg); }
   else if(cmd==='save-expense'){ var se=arg.split(':'); saveExpense(se[0], se[1]); }
+  else if((cmd==='del-income' || cmd==='del-income-close' || cmd==='edit-income') && isCancelFeeRec(state.records.filter(function(r){ return r.id===arg; })[0]) && !cancelOfFeeRec(arg)){
+    // its 取消單 is gone (an older backup or another phone's ledger): it can only be deleted, never edited as a bonus
+    if(confirm('這筆取消費找不到它的取消單(可能是還原或同步造成的)。要刪掉這筆取消費嗎?')){ state.records = state.records.filter(function(r){ return r.id!==arg; }); save(); closeModal(); renderAll(); }
+  }
+  else if((cmd==='del-income' || cmd==='del-income-close' || cmd==='edit-income') && cancelOfFeeRec(arg)){ openCancelModal('edit', cancelOfFeeRec(arg).id); }  // a 取消費 is changed from its 取消單
   else if(cmd==='del-income'){ state.records=state.records.filter(function(r){return r.id!==arg;}); save(); renderAll(); }
   else if(cmd==='del-expense'){ state.expenses=state.expenses.filter(function(r){return r.id!==arg;}); save(); renderAll(); }
   else if(cmd==='del-income-close'){ state.records=state.records.filter(function(r){return r.id!==arg;}); save(); closeModal(); renderAll(); }
@@ -10324,7 +10673,7 @@ document.addEventListener('click', function(e){
     if(state.activeTrip) coLeft.push('・還在「載客中」,沒有按下車');
     var coPend = (state.pendingTrips||[]).length;
     if(coPend) coLeft.push('・'+coPend+' 趟已下車、還沒記車資');
-    if(state.pendingAccept) coLeft.push('・按了「接到單了」,但客人還沒上車');
+    if(state.pendingAccept) coLeft.push('・按了「接到單了」,但客人還沒上車(被取消的話,先按「✕ 取消這單」記下來)');
     if(coLeft.length && !confirm('下班前提醒:\n'+coLeft.join('\n')+'\n\n按「確定」照樣下班(之後還是可以補記),按「取消」先回去處理。')) return;
     if(state.pendingAccept) state.pendingAccept = null;
     var m2 = dm(todayStr());
@@ -10604,6 +10953,15 @@ document.addEventListener('click', function(e){
   else if(cmd==='accept-tip-on'){ state.trackAccept = true; state.acceptTipDone = true; save(); renderAll(); showToast('已打開:接到單時先按「接到單了」,客人上車再按「上車」', 4000); }
   else if(cmd==='accept-tip-off'){ state.acceptTipDone = true; save(); renderAll(); }
   else if(cmd==='accept-cancel'){ if(confirm('取消這次接單紀錄?')){ state.pendingAccept = null; save(); renderAll(); } }
+  else if(cmd==='cx-open'){ openCancelModal('live', null, arg==='start'); }
+  else if(cmd==='cx-add'){ openCancelModal('add', arg||null); }
+  else if(cmd==='cx-edit'){ openCancelModal('edit', arg); }
+  else if(cmd==='cx-by'){ cxPick('by', arg); }
+  else if(cmd==='cx-fleet'){ cxPick('fleet', arg); }
+  else if(cmd==='cx-save'){ saveCancel(); }
+  else if(cmd==='cx-wrong'){ dropPendingAccept(!!(cxForm && cxForm.thenStart)); }
+  else if(cmd==='cx-stale-drop'){ dropPendingAccept(arg==='start'); }
+  else if(cmd==='cx-del'){ deleteCancel(arg); }
   else if(cmd==='trip-end'){ tripEnd(); }
   else if(cmd==='trip-resume'){ tripResume(arg); }
   else if(cmd==='traffic-here'){ openTrafficHere(); }
@@ -10791,7 +11149,10 @@ document.addEventListener('click', function(e){
     var ml = document.getElementById('uiModeLbl'); if(ml) ml.textContent = arg==='simple' ? '🟢 簡單記帳(按最下面「儲存設定」才會生效)' : '🔵 完整分析(按最下面「儲存設定」才會生效)';
   }
   else if(cmd==='ui-choose'){
-    state.ui = uiPreset(arg); state.uiMode = arg; save(); renderAll();
+    state.ui = uiPreset(arg); state.uiMode = arg;
+    // 取消接客 (11/21): a new 完整分析 ledger starts with 接到單了 on, so cancelled orders are kept; 簡單記帳 stays off
+    if(!hasMeaningfulData() && state.trackAccept==null) state.trackAccept = arg==='full';
+    save(); renderAll();
     if(!state.onboarded) openOnboardCar(); else closeModal();
   }
   else if(cmd==='ob-car'){ state.carType = arg==='yellow'||arg==='rental' ? arg : 'multi'; save(); renderAll(); openOnboardCity(); }
@@ -10980,6 +11341,7 @@ detectAppEnv().then(function(env){
 });
 var _staleShiftDate = findStaleOpenShiftDate();
 if(_staleShiftDate){ openStaleShiftModal(_staleShiftDate); }
+else if(staleAccept()){ maybeAskStaleAccept(); }
 else if(!state.uiMode && !hasMeaningfulData()){ state.seenVersion = APP_VERSION; openModeChooser(); }
 else { if(!state.uiMode){ state.uiMode = uiModeOf(state.ui||{}); saveQuiet(); } var _missingKmDate = findMissingKmDate(); if(_missingKmDate) openMissingKmModal(_missingKmDate); else if(!maybeShowWhatsNew()) maybeAskShareHot(); }
 setTimeout(function(){ notifySync(false); }, 2500);
