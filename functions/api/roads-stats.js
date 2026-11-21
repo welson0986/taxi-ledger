@@ -74,8 +74,140 @@ const NAME3 = {};
 for (const k in CITIES) CITIES[k].names.forEach(n => { NAME3[n] = k; });
 function cityOfName(s) { return NAME3[String(s || '').slice(0, 3)] || null; }
 function inBox(k, la, lo) { const b = CITIES[k].box; return la != null && lo != null && la >= b[0] && la <= b[1] && lo >= b[2] && lo <= b[3]; }
-// 這一筆屬不屬於選的城市：地區欄有城市就看城市，沒有（國道、省道）就看座標
-function picker(sel) { return it => it.c ? sel.indexOf(it.c) >= 0 : sel.some(k => inBox(k, it.la, it.lo)); }
+
+// ---------- 位置判斷（2026-11-22：交接_路況位置判斷與地區標籤）----------
+// 警廣對沒辦法精確定位的通報會塞「預設座標」（例如台北 25.0911,121.5598 一個點就 70 筆、台1線起點在台北徐州路）。
+// 同一個座標（小數 4 位）被這麼多筆不同通報共用 → 當成「位置不確定」：座標不給（App 不顯示「看路況」），也不推播。
+const DEFAULT_PT_MIN = 8;
+// 交通部 TDX 會轉載警廣的通報（機關代碼 A15030000H，來源寫「警廣」）：內容跟我們直接讀的警廣一樣，
+// 但沒有區名、熱心聽眾變成像官方、更新時間被刷新、座標也是預設的 → 不收（2026-11-22 威爾森同意）
+const PBS_AGENCY = 'A15030000H';
+function isPbsCopy(x) { return String((x && x.EventID) || '').indexOf(PBS_AGENCY) === 0 || String((x && x.Source) || '').trim() === '警廣'; }
+/* TOWN_NAMES_START（tools/make_town_data.mjs 產生，不要手改）*/
+// 來源：內政部國土測繪中心「鄉鎮市區界線」（政府資料開放授權條款第 1 版）
+const TOWN_NAMES = {
+  tpe: '中山區,中正區,信義區,內湖區,北投區,南港區,士林區,大同區,大安區,文山區,松山區,萬華區',
+  ntpc: '三峽區,三芝區,三重區,中和區,五股區,八里區,土城區,坪林區,平溪區,新店區,新莊區,板橋區,林口區,樹林區,永和區,汐止區,泰山區,淡水區,深坑區,烏來區,瑞芳區,石碇區,石門區,萬里區,蘆洲區,貢寮區,金山區,雙溪區,鶯歌區',
+  tyc: '中壢區,八德區,大園區,大溪區,平鎮區,復興區,新屋區,桃園區,楊梅區,蘆竹區,觀音區,龍潭區,龜山區',
+  kel: '七堵區,中山區,中正區,仁愛區,信義區,安樂區,暖暖區',
+  ila: '三星鄉,五結鄉,冬山鄉,南澳鄉,員山鄉,壯圍鄉,大同鄉,宜蘭市,礁溪鄉,羅東鎮,蘇澳鎮,頭城鎮',
+  hsz: '北區,東區,香山區,五峰鄉,北埔鄉,寶山鄉,尖石鄉,峨眉鄉,新埔鎮,新豐鄉,橫山鄉,湖口鄉,竹北市,竹東鎮,芎林鄉,關西鎮',
+  mlc: '三灣鄉,三義鄉,公館鄉,卓蘭鎮,南庄鄉,大湖鄉,後龍鎮,泰安鄉,獅潭鄉,竹南鎮,苑裡鎮,苗栗市,西湖鄉,通霄鎮,造橋鄉,銅鑼鄉,頭份市,頭屋鄉',
+  txg: '中區,北區,北屯區,南區,南屯區,后里區,和平區,外埔區,大安區,大甲區,大肚區,大里區,大雅區,太平區,新社區,東勢區,東區,梧棲區,沙鹿區,清水區,潭子區,烏日區,石岡區,神岡區,西區,西屯區,豐原區,霧峰區,龍井區',
+  chw: '二林鎮,二水鄉,伸港鄉,北斗鎮,和美鎮,員林市,埔心鄉,埔鹽鄉,埤頭鄉,大城鄉,大村鄉,彰化市,永靖鄉,溪州鄉,溪湖鎮,田中鎮,田尾鄉,社頭鄉,福興鄉,秀水鄉,竹塘鄉,線西鄉,芬園鄉,花壇鄉,芳苑鄉,鹿港鎮',
+  nto: '中寮鄉,仁愛鄉,信義鄉,南投市,名間鄉,國姓鄉,埔里鎮,水里鄉,竹山鎮,草屯鎮,集集鎮,魚池鄉,鹿谷鄉',
+  yun: '二崙鄉,元長鄉,北港鎮,口湖鄉,古坑鄉,四湖鄉,土庫鎮,大埤鄉,崙背鄉,斗六市,斗南鎮,東勢鄉,林內鄉,水林鄉,臺西鄉,莿桐鄉,虎尾鎮,褒忠鄉,西螺鎮,麥寮鄉',
+  cyi: '東區,西區,中埔鄉,六腳鄉,大埔鄉,大林鎮,太保市,布袋鎮,新港鄉,朴子市,東石鄉,梅山鄉,民雄鄉,水上鄉,溪口鄉,番路鄉,竹崎鄉,義竹鄉,阿里山鄉,鹿草鄉',
+  tnn: '七股區,下營區,中西區,仁德區,佳里區,六甲區,北區,北門區,南化區,南區,善化區,大內區,學甲區,安南區,安定區,安平區,官田區,將軍區,山上區,左鎮區,後壁區,新化區,新市區,新營區,東區,東山區,柳營區,楠西區,歸仁區,永康區,玉井區,白河區,西港區,關廟區,鹽水區,麻豆區,龍崎區',
+  khh: '三民區,仁武區,內門區,六龜區,前金區,前鎮區,大寮區,大樹區,大社區,小港區,岡山區,左營區,彌陀區,新興區,旗山區,旗津區,杉林區,林園區,桃源區,梓官區,楠梓區,橋頭區,永安區,湖內區,燕巢區,田寮區,甲仙區,美濃區,苓雅區,茂林區,茄萣區,路竹區,那瑪夏區,阿蓮區,鳥松區,鳳山區,鹽埕區,鼓山區',
+  pif: '三地門鄉,九如鄉,佳冬鄉,來義鄉,內埔鄉,南州鄉,屏東市,崁頂鄉,恆春鎮,新園鄉,新埤鄉,春日鄉,東港鎮,枋寮鄉,枋山鄉,林邊鄉,泰武鄉,滿州鄉,潮州鎮,牡丹鄉,獅子鄉,琉球鄉,瑪家鄉,竹田鄉,萬丹鄉,萬巒鄉,車城鄉,里港鄉,長治鄉,霧臺鄉,高樹鄉,鹽埔鄉,麟洛鄉',
+  hun: '光復鄉,卓溪鄉,吉安鄉,壽豐鄉,富里鄉,新城鄉,玉里鎮,瑞穗鄉,秀林鄉,花蓮市,萬榮鄉,豐濱鄉,鳳林鎮',
+  ttt: '卑南鄉,大武鄉,太麻里鄉,延平鄉,成功鎮,東河鄉,池上鄉,海端鄉,綠島鄉,臺東市,蘭嶼鄉,達仁鄉,金峰鄉,長濱鄉,關山鎮,鹿野鄉',
+  '_phc': '七美鄉,望安鄉,湖西鄉,白沙鄉,西嶼鄉,馬公市',
+  '_kmn': '烈嶼鄉,烏坵鄉,金城鎮,金寧鄉,金沙鎮,金湖鎮',
+  '_lcc': '北竿鄉,南竿鄉,東引鄉,莒光鄉'
+};
+/* TOWN_NAMES_END */
+// 縣市簡稱（說明文字常這樣寫：「過桃園」「彰化出口」「台中系統」）；澎湖、金門、連江沒有路況城市，只用來認「別的縣市」
+const COUNTY_WORDS = {
+  tpe: ['臺北', '台北', '北市交', '北市警', '北市府'], ntpc: ['新北'], tyc: ['桃園'], kel: ['基隆'], ila: ['宜蘭'], hsz: ['新竹'], mlc: ['苗栗'],
+  txg: ['臺中', '台中'], chw: ['彰化'], nto: ['南投'], yun: ['雲林'], cyi: ['嘉義'], tnn: ['臺南', '台南'], khh: ['高雄'], pif: ['屏東'],
+  hun: ['花蓮'], ttt: ['臺東', '台東'], _phc: ['澎湖'], _kmn: ['金門'], _lcc: ['連江', '馬祖']
+};
+// 交流道、地標（不是區名的）：只用來認「是我選的城市」（收），不拿來排除
+const PLACE_WORDS = {
+  tpe: ['圓山', '建國高架', '堤頂', '環東', '市民大道', '水源快速', '新生高架', '洲美快速', '大直'],
+  ntpc: ['安坑', '碧潭', '三鶯', '大漢', '環快'],
+  tyc: ['南崁', '機場系統', '內壢', '幼獅', '高原', '大湳', '埔心', '航廈', '航站', '桃園機場']
+};
+// 區名後面接這些字就是路名、學校、地名，不算（中和路、復興北路、光復橋、觀音山、石門水庫、三民國中）
+const NOT_PLACE = /^[東西南北中一二三四五六七八九十]{0,2}(?:路|街|巷|弄|大道|橋|里|村|國|高|山|水)/;
+let townIdx = null;
+// 每個縣市的區名：全台唯一才算（中山區、信義區、東區好幾個縣市都有，不算）；不帶「區鄉鎮市」的寫法（楊梅、中壢）也算，但後面接路名的不算
+// → { 縣市代號: [{ w: 字, np: 要檢查後面是不是路名 }] }
+function towns() {
+  if (townIdx) return townIdx;
+  const all = {}, stems = {};
+  // 東區、中區這種方位區名常出現在單位名稱（新工處中區工務所在台北、公路局北區養護工程分局），不拿來判斷
+  for (const k in TOWN_NAMES) String(TOWN_NAMES[k] || '').split(',').filter(t => t && !/^[東西南北中]區$/.test(t)).forEach(t => {
+    const stem = t.length > 2 ? t.slice(0, -1) : t;
+    (all[t] = all[t] || new Set()).add(k); (stems[stem] = stems[stem] || new Set()).add(k);
+  });
+  townIdx = {};
+  for (const t in all) if (all[t].size === 1) { const k = [...all[t]][0]; (townIdx[k] = townIdx[k] || []).push({ w: t }); }
+  for (const s in stems) if (stems[s].size === 1 && s.length >= 2 && !all[s]) { const k = [...stems[s]][0]; (townIdx[k] = townIdx[k] || []).push({ w: s, np: 1 }); }
+  return townIdx;
+}
+// 「往台北」「台北方向」是方向，不是事件在台北（掃描時判斷：「往」後面 4 個字內、或地名後面 4 個字內有「方向」的不算）
+const STOP = /[\s.,，。、:：()（）+＋*~～\-]/;
+const placeCache = new Map();
+// sel 選的城市 → 用「前兩個字」查的表：{ 兩個字的字碼: [{ w, own, np, nx }] }（一個大 regex 每筆要 7 µs，Worker CPU 不夠）
+// own＝選的城市代號（別的縣市是 null）；np＝後面接路名不算；nx＝前一個字是「新」不算（「新北」不是「北市」）。
+// first：第一個字有沒有可能是地名開頭（大部分的字不是，直接跳過）；memo：同一筆算過就記在這個 Symbol 欄位（不會寫進快照 JSON）
+// Worker 同一台機器會重複用
+function placeMap(sel) {
+  const key = sel.slice().sort().join(',');
+  let m = placeCache.get(key);
+  if (m) return m;
+  const T = towns();
+  m = new Map();
+  m.first = new Uint8Array(65536); m.memo = Symbol(key);
+  const add = (w, own, np, nx, k) => { const h = w.charCodeAt(0) * 65536 + w.charCodeAt(1); m.first[w.charCodeAt(0)] = 1; if (!m.has(h)) m.set(h, []); m.get(h).push({ w, own: own ? k : null, np, nx }); };
+  for (const k in COUNTY_WORDS) {
+    const own = sel.indexOf(k) >= 0;
+    COUNTY_WORDS[k].forEach(w => add(w, own, 0, k === 'tpe' ? 1 : 0, k));
+    (T[k] || []).forEach(t => add(t.w, own, t.np, 0, k));
+    if (own && PLACE_WORDS[k]) PLACE_WORDS[k].forEach(w => add(w, true, 0, 0, k));
+  }
+  placeCache.set(key, m);
+  return m;
+}
+// 說明文字（不含地區欄：國道、省道的地區欄是路線名，例如「(台北楓港)-台１線」，不是事件在哪）＋通報單位
+function placeText(e) { return (e.tx || '') + ' ' + (e.tx2 || '') + ' ' + (typeof e.so === 'string' ? e.so : (e.so || []).join(' ')); }
+// 'own'：寫了選的城市（或它的區、交流道）；'other'：只寫了別的縣市；null：都沒寫。m 可以先用 placeMap(sel) 拿好
+function placeOf(e, sel, m) { const v = placeScan(e, sel, m); return v && v !== 'other' ? 'own' : v; }
+// 寫到的是選的哪一個城市（代號）；沒寫到選的城市 → null。給 App 標「台北·位置不確定」用
+function placeCity(e, sel, m) { const v = placeScan(e, sel, m); return v && v !== 'other' ? v : null; }
+function placeScan(e, sel, m) {
+  m = m || placeMap(sel);
+  const got = e[m.memo];
+  if (got !== undefined) return got;
+  return (e[m.memo] = scanPlace(placeText(e), m));
+}
+function scanPlace(t, m) {
+  const first = m.first;
+  let other = false, dir = -1;
+  for (let i = 0; i < t.length - 1; i++) {
+    if (t[i] === '往') { dir = i + 4; continue; }   // 往台北、往三重機車道
+    if (i <= dir && STOP.test(t[i])) dir = -1;
+    if (!first[t.charCodeAt(i)]) continue;
+    const list = m.get(t.charCodeAt(i) * 65536 + t.charCodeAt(i + 1));
+    if (!list) continue;
+    for (const p of list) {
+      if (p.w.length > 2 && !t.startsWith(p.w, i)) continue;
+      if (p.nx && t[i - 1] === '新') continue;
+      if (p.np && NOT_PLACE.test(t.substr(i + p.w.length, 4))) continue;
+      if (i <= dir || t.substr(i + p.w.length, 4).indexOf('方向') >= 0) continue;
+      if (p.own) return p.own;   // 選的城市代號
+      other = true;
+    }
+  }
+  return other ? 'other' : null;
+}
+function boxHit(sel, e) { const la = e.uc ? e.qa : e.la, lo = e.uc ? e.qo : e.lo; return sel.some(k => inBox(k, la, lo)); }
+// 這一筆屬不屬於選的城市：
+//   地區欄有縣市（「桃園市-楊梅區」）→ 看縣市。
+//   沒有（國道、省道、路名）→ 說明寫了選的城市就收、只寫了別的縣市就不收；都沒寫 → 看座標落在城市範圍內
+//   （預設座標的也是看那個座標，但標「位置不確定」）。
+function cityHit(e, sel, m) {
+  if (e.c) return sel.indexOf(e.c) >= 0;
+  const p = placeOf(e, sel, m);
+  if (p) return p === 'own';
+  return boxHit(sel, e);
+}
+// 先用便宜的條件篩（警廣每輪 1000 筆，整理文字前先丟掉明顯不要的）：有縣市看縣市；位置不確定的都要看文字；其他要落在範圍內
+function prePick(sel) { return e => e.c ? sel.indexOf(e.c) >= 0 : (e.uc || boxHit(sel, e)); }
+function picker(sel) { const pre = prePick(sel), m = placeMap(sel), f = e => pre(e) && cityHit(e, sel, m); f.pre = pre; return f; }
 function num(v) { const n = parseFloat(v); return isFinite(n) ? n : null; }
 // TDX 的點位字串格式沒有公開範例：找第一組「經度 118～123、緯度 21～27」的數字，順序不拘
 function lonLat(s) {
@@ -107,15 +239,31 @@ function keepNewest(list) {
 
 // ---------- 警廣 ----------
 // pick：只要某些城市時先篩（排程 Worker 只要雙北），省下整理其他 700 多筆文字的時間
+// 預設座標：整份警廣資料裡，同一個點（小數 4 位）有 DEFAULT_PT_MIN 筆以上不同通報
+// 用原始座標字串比（預設座標每筆都一字不差；不用先轉數字，省 CPU）
+function ptKey(y, x) { return y && x ? y + ',' + x : null; }
+// 先只數緯度（便宜），緯度夠多的才再看經度
+function defaultPoints(result) {
+  const ny = new Map(), n = {}, out = {};
+  result = result || [];
+  for (const x of result) { const y = x.y1; if (y) ny.set(y, (ny.get(y) || 0) + 1); }
+  for (const x of result) { if ((ny.get(x.y1) || 0) < DEFAULT_PT_MIN) continue; const k = ptKey(x.y1, x.x1); if (k) n[k] = (n[k] || 0) + 1; }
+  for (const k in n) if (n[k] >= DEFAULT_PT_MIN) out[k] = n[k];
+  return out;
+}
 function parsePbs(text, now, pick) {
-  const d = JSON.parse(text), list = [];
-  (d && d.result || []).forEach(x => {
+  const d = JSON.parse(text), list = [], res = (d && d.result) || [], dflt = defaultPoints(res);
+  res.forEach(x => {
     const m = twTime(x.modDttm) || twTime((x.happendate || '') + ' ' + (x.happentime || ''));
     if (!m || !x.UID) return;
     const ty = String(x.roadtype || '其他');
     if (!freshItem({ ty, m }, now)) return;
     const it = { id: 'p' + x.UID, s: 'pbs', ty, la: r5(num(x.y1)), lo: r5(num(x.x1)), m: m, c: cityOfName(x.areaNm) };
-    if (pick && !pick(it)) return;
+    // 位置不確定：座標不給 App（qa／qo 只給篩選看範圍，回給 App 前拿掉）
+    if (dflt[ptKey(x.y1, x.x1)]) { it.uc = 1; it.qa = it.la; it.qo = it.lo; it.la = it.lo = null; }
+    if (pick && pick.pre && !pick.pre(it)) return;
+    // 沒有縣市的先用原始文字判斷要不要（認地名不需要整理過的文字），不要的就不用整理
+    if (pick && !it.c) { it.tx = String(x.comment || ''); it.so = String(x.srcdetail || ''); if (!pick(it)) return; }
     it.ar = cleanText(x.areaNm).slice(0, 60); it.tx = cleanText(x.comment); it.so = cleanText(x.srcdetail).slice(0, 40); it.di = cleanText(x.direction).slice(0, 10);
     if (isTestItem(it.ar, it.tx)) return;
     list.push(it);
@@ -181,7 +329,7 @@ function parseTdx(d, cityKey, now, pick) {
   const src = Array.isArray(d) ? d : ((d && (d.Items || d.LiveEvents || d.Events)) || []), list = [];
   src.forEach(x => {
     const m = isoTime(x.LastUpdateTime) || isoTime(x.PublishTime);
-    if (!m || !x.EventID) return;
+    if (!m || !x.EventID || isPbsCopy(x)) return;
     const ll = lonLat(x.Positions);
     const imp = x.Impact || {}, dur = imp.Duration && [].concat(imp.Duration)[0];
     const end = isoTime(x.ExpireTime) || (dur && isoTime(dur.DurationEndTime)) || null;
@@ -189,12 +337,15 @@ function parseTdx(d, cityKey, now, pick) {
     if (x.EventSubType === 805) ty = '號誌故障';
     if (!freshItem({ ty, m, end }, now)) return;
     const c = cityKey || tdxCity(x.Location);
-    if (pick && !pick({ c, la: r5(ll[0]), lo: r5(ll[1]) })) return;
+    const it = { c, la: r5(ll[0]), lo: r5(ll[1]) };
+    if (pick && pick.pre && !pick.pre(it)) return;
     // TDX 的說明有時夾著系統內部編號（例如「事故-17951081390001654222000112124」），12 位以上的純數字對司機沒用，拿掉
-    const tx = cleanText([x.EventTitle, x.Description].filter((v, i, a) => v && a.indexOf(v) === i).join(' ').replace(/[-_#:：]?\d{12,}/g, ''));
+    it.tx = cleanText([x.EventTitle, x.Description].filter((v, i, a) => v && a.indexOf(v) === i).join(' ').replace(/[-_#:：]?\d{12,}/g, ''));
+    it.so = cleanText(x.Source).slice(0, 40);
+    if (pick && !pick(it)) return;
     const ar = cleanText(tdxArea(x.Location)).slice(0, 60);
-    if (isTestItem(ar, tx)) return;
-    list.push({ id: 't' + x.EventID, s: 'tdx', ty, st: x.EventSubType || null, ar, tx, la: r5(ll[0]), lo: r5(ll[1]), m, so: cleanText(x.Source).slice(0, 40), c, end: end });
+    if (isTestItem(ar, it.tx)) return;
+    list.push({ id: 't' + x.EventID, s: 'tdx', ty, st: x.EventSubType || null, ar, tx: it.tx, la: it.la, lo: it.lo, m, so: it.so, c, end: end });
   });
   return keepNewest(list);
 }
@@ -223,7 +374,8 @@ function mergeSources(items) {
       const e = out[i];
       if (e.srcs.indexOf(it.s) < 0 && (GROUP[e.ty] || 'obs') === g && Math.abs(e.m - it.m) <= 30 * MIN && dist(e, it) <= 300) hit = e;
     }
-    if (!hit) { out.push({ id: it.id, ids: [it.id], ty: it.ty, st: it.st || null, ar: it.ar || '', tx: it.tx || '', tx2: '', la: it.la, lo: it.lo, m: it.m, srcs: [it.s], so: [it.so || ''].filter(Boolean), c: it.c || null, di: it.di || '' }); return; }
+    // 位置不確定的沒有座標（距離算不出來），不會跟別筆合併
+    if (!hit) { out.push({ id: it.id, ids: [it.id], ty: it.ty, st: it.st || null, ar: it.ar || '', tx: it.tx || '', tx2: '', la: it.la, lo: it.lo, m: it.m, srcs: [it.s], so: [it.so || ''].filter(Boolean), c: it.c || null, di: it.di || '', uc: it.uc ? 1 : 0, qa: it.qa, qo: it.qo }); return; }
     hit.ids.push(it.id); hit.srcs.push(it.s);
     if (!hit.c && it.c) hit.c = it.c;
     if (!hit.di && it.di) hit.di = it.di;
@@ -288,6 +440,7 @@ const WHY_NAMES = {
   baseline: '啟動基準（剛開始或服務恢復，現有的先記為已看過）',
   stale: '不新鮮（來源更新超過 15 分鐘）',
   listener: '只有熱心聽眾（列「待確認」，不推）',
+  uc: '位置不確定（警廣預設座標，不推）',
   neg: '有「解除、未、預計、明日、今晚、預告」等字眼',
   aux: '只有火災、翻覆、多車等字，沒有寫到影響行車',
   workClose: '施工封路（列重大候選，不推）',
@@ -297,7 +450,7 @@ const WHY_NAMES = {
 
 function newDay() {
   return { runs: 0, fails: { pbs: 0, tdx: 0 }, batches: 0, events: 0, hours: new Array(24).fill(0), cand: [], peak: { n: 0, at: 0 },
-    why: { baseline: 0, stale: 0, listener: 0, neg: 0, aux: 0, workClose: 0, tenMin: 0, dayCap: 0 }, dups: 0, cleared: 0, cleared60: 0, samples: [], negs: [] };
+    why: { baseline: 0, stale: 0, listener: 0, uc: 0, neg: 0, aux: 0, workClose: 0, tenMin: 0, dayCap: 0 }, dups: 0, cleared: 0, cleared60: 0, samples: [], negs: [] };
 }
 function short(e) { return ((e.ar ? e.ar + '｜' : '') + (e.tx || e.tx2 || '')).slice(0, 60); }
 
@@ -315,7 +468,7 @@ function simulate(state, events, now, base) {
 
   const once = (ids, why, e) => {
     if (ids.some(id => seen[id] && seen[id].w && seen[id].w.indexOf(why) >= 0)) return;
-    day.why[why]++;
+    day.why[why] = (day.why[why] || 0) + 1;   // 新加的原因（例如 uc）在升級當天的舊統計裡還沒有這一格
     ids.forEach(id => { if (seen[id]) (seen[id].w = seen[id].w || []).push(why); });
     if (why === 'neg') { day.negs.push({ at: now, tx: short(e) }); if (day.negs.length > 10) day.negs.shift(); }
   };
@@ -339,6 +492,8 @@ function simulate(state, events, now, base) {
     }
     if (c.why) once(ids, c.why, e);
     if (c.lv !== 'major' || prev >= 2) return;
+    // 位置不確定（警廣預設座標、說明裡也沒寫在哪個縣市以外）：清單照列，推播只推位置可信的
+    if (e.uc && !e.c) return once(ids, 'uc', e);
     if (startup || e.srcs.every(s => base[s])) return once(ids, 'baseline', e);
     if (now - e.m > FRESH_MS) return once(ids, 'stale', e);
     cands.push({ e, ids });
