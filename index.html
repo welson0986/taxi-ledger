@@ -157,6 +157,7 @@ body{
 
 .card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:14px;box-shadow:var(--shadow)}
 .section{margin-bottom:16px}
+.section.wn-flash{outline:3px solid var(--accent);outline-offset:4px;border-radius:14px;transition:outline-color .6s}
 .section-title{font-size:13px;font-weight:700;color:var(--text-muted);margin:0 0 8px 2px;display:flex;align-items:center;justify-content:space-between}
 
 .summary-row{display:grid;gap:8px}
@@ -2101,14 +2102,14 @@ function subBreakdown(recs){
     var detail = breakdownLabel(r);
     var label = detail ? (def.label+' · '+detail) : def.label;
     var val = computeNetRevenue(r)+(+r.tip||0);
-    if(!map[label]) map[label]={count:0,total:0,ids:[]};
+    if(!map[label]) map[label]={count:0,total:0,ids:[],notTrip:!!def.tipOnly};
     map[label].count++; map[label].total+=val; map[label].ids.push(r.id);
   });
-  return Object.keys(map).map(function(k){return {label:k,count:map[k].count,total:map[k].total,ids:map[k].ids};}).sort(function(a,b){return b.total-a.total;});
+  return Object.keys(map).map(function(k){return {label:k,count:map[k].count,total:map[k].total,ids:map[k].ids,notTrip:map[k].notTrip};}).sort(function(a,b){return b.total-a.total;});
 }
 function openSubBreakdownModal(item){
   var h = '<div class="modal-title">'+esc(item.label)+'<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
-  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">共 '+item.count+' 趟,合計 '+fmtMoney(item.total)+'(點項目可查看/修改)</div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">共 '+item.count+(item.notTrip?' 筆':' 趟')+',合計 '+fmtMoney(item.total)+'(點項目可查看/修改)</div>';
   var recsList = item.ids.map(function(id){ return state.records.filter(function(r){return r.id===id;})[0]; }).filter(Boolean);
   recsList.sort(function(a,b){ return a.date<b.date?1:(a.date>b.date?-1:(b.ts||0)-(a.ts||0)); });
   h += '<div class="card">' + recsList.map(function(r){
@@ -4271,11 +4272,11 @@ function ivMinus(list, cut){
 }
 function ivSum(list){ return list.reduce(function(t, p){ return t + (p[1]-p[0]); }, 0); }
 function fcTimed(from, to){ return fcTimeline(from, to).trips; }
-function fcTimeline(from, to){
-  var days = timedTripsByDay(from, to), all = [], segs = [], out = [], d0 = addDays(from, -1), d1 = addDays(to, 1), logDays = {};
+// ① every ride near from..to, then ② each cancel's own time (the steps ① ② of fcTimeline, shared with the free
+// 空檔拆解 so both count a cancelled order's minutes the same way): {segs, logDays, cxs:[{c, pcs, atWork}]}
+function cxPieces(from, to){
+  var segs = [], d0 = addDays(from, -1), d1 = addDays(to, 1), logDays = {};
   Object.keys(state.dailyMeta).forEach(function(d){ if(d>=d0 && d<=d1){ var sg = punchSegs(d); if(sg){ segs = segs.concat(sg); logDays[d] = true; } } });
-  Object.keys(days).sort().forEach(function(d){ days[d].forEach(function(o){ all.push({o:o, d:d}); }); });
-  // ① every ride near the period, then ② each cancel's own time
   var rides = [], wide = timedTripsByDay(d0, d1);
   Object.keys(wide).forEach(function(d){ wide[d].forEach(function(o){ if(o.dropoff.ts >= o.pickup.ts) rides.push([o.pickup.ts, o.dropoff.ts]); }); });
   var cxs = cancelList().filter(function(c){ return c && c.date>=d0 && c.date<=d1 && cancelTimed(c); })
@@ -4292,6 +4293,12 @@ function fcTimeline(from, to){
     var atWork = segs.some(function(sg){ return sg[0]<=c.cancelAt && c.cancelAt<=sg[1]; }) || (!logDays[c.date] && pcs.length>0);
     return {c:c, pcs:pcs, atWork:atWork};
   });
+  return {segs:segs, logDays:logDays, cxs:cxs};
+}
+function fcTimeline(from, to){
+  var days = timedTripsByDay(from, to), all = [], out = [];
+  var CP = cxPieces(from, to), segs = CP.segs, cxs = CP.cxs;
+  Object.keys(days).sort().forEach(function(d){ days[d].forEach(function(o){ all.push({o:o, d:d}); }); });
   all.forEach(function(x, i){
     var o = x.o; if(tripMin(o.pickup, o.dropoff) < 0) return;
     var prev = i>0 ? all[i-1].o : null, seg = null, start, linked;
@@ -5153,8 +5160,18 @@ function tripInsightsHtml(range, f){
     return uiShow('tripEff') ? '<div class="section"><div class="section-title">🚕 載客效率(上下車紀錄)</div><div class="card"><div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">'+(dayKeys.length ? '符合篩選條件的趟次都沒有上下車紀錄。' : '這段期間還沒有上下車紀錄。')+'載客時按記帳頁的「上車」「下車」,這裡就會算出載客率、空車時間、搭車長短和上車熱區。</div></div></div>' : '';
   }
   var n=0, occMin=0, gaps=[], plat={}, buckets=[0,0,0], kmBuckets=[0,0,0], kmSum=0, kmN=0;
-  var accN=0, waitN=0, waitSum=0, approachSum=0, apKmSum=0, apKmN=0, accPlat={}, seamN=0;
+  var accN=0, waitN=0, waitSum=0, approachSum=0, apKmSum=0, apKmN=0, accPlat={}, seamN=0, cxSum=0, cxIds={};
   var fullOcc=0, fullWork=0, fullDays=0;
+  // 被取消 (待辦 2-14 ①): a cancelled order's accept → cancel inside the wait before a trip is taken out of that wait,
+  // by the very pieces 🏁 車隊比較 gives the cancel (cxPieces: only inside the punched hours, outside every ride and
+  // 休息, each minute once). The wait then runs from the drop-off or the cancel to the next accept; the gap in total
+  // does not change, a day without a cancel gives the same numbers as before.
+  var cxP = cxPieces(range.from, range.to).cxs.filter(function(y){ return y.pcs.length; });
+  function cxIn(a, b){
+    var ms = 0;
+    cxP.forEach(function(y){ y.pcs.forEach(function(p){ var s = Math.max(a, p[0]), e = Math.min(b, p[1]); if(e > s){ ms += e-s; cxIds[y.c.id] = 1; } }); });
+    return ms/60000;
+  }
   // the last trip of the business day before each one, for an order taken during the ride before it
   var wide = timedTripsByDay(addDays(range.from, -1), range.to), wk = Object.keys(wide).sort(), lastBefore = {};
   wk.forEach(function(k, j){ if(j>0){ var pl = wide[wk[j-1]]; lastBefore[k] = pl[pl.length-1]; } });
@@ -5174,6 +5191,7 @@ function tripInsightsHtml(range, f){
         var ap = (o.pickup.ts - (sd!=null ? sd : o.accept.ts))/60000;
         var wt = sd!=null ? 0 : (i>0 ? (o.accept.ts - list[i-1].dropoff.ts)/60000 : null);
         if(ap<=EMPTY_GAP_CAP_MIN && (wt==null || (wt>=0 && wt<=EMPTY_GAP_CAP_MIN))){
+          if(wt!=null && wt>0){ var cxm = Math.min(wt, cxIn(list[i-1].dropoff.ts, o.accept.ts)); wt -= cxm; cxSum += cxm; }
           accN++; approachSum += ap; if(sd!=null) seamN++;
           var akm = straightKm(sd!=null ? prevO.dropoff : o.accept, o.pickup); if(akm!=null){ apKmSum += akm; apKmN++; }
           var ak = o.rec ? o.rec.platform : null;
@@ -5220,16 +5238,19 @@ function tripInsightsHtml(range, f){
   if(!accN && !state.trackAccept) h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:10px;line-height:1.6">📲 想知道空檔裡等單和開去接客各花多久?到 ⚙️「隱私與分享」打開「記錄接單時間」,上車前多按一下「接到單了」就好。</div>';
   if(accN){
     h += '<div style="font-size:12.5px;font-weight:700;margin:14px 0 6px">📲 空檔拆解(有按「接到單了」的 '+accN+' 趟)</div>';
+    var cxN = Object.keys(cxIds).length;
     h += '<div class="summary-row" style="grid-template-columns:1fr 1fr">';
-    h += '<div class="stat-tile"><div class="lbl">平均等單(下車→接單)</div><div class="val num">'+(waitN?fmtNum(waitSum/waitN,1)+' 分':'—')+'</div></div>';
+    h += '<div class="stat-tile"><div class="lbl">'+(cxN?'平均等單(下車或取消→接單)':'平均等單(下車→接單)')+'</div><div class="val num">'+(waitN?fmtNum(waitSum/waitN,1)+' 分':'—')+'</div></div>';
+    if(cxN) h += '<div class="stat-tile"><div class="lbl">平均被取消(接單→取消)</div><div class="val num">'+(waitN?fmtNum(cxSum/waitN,1)+' 分':'—')+'</div></div>';
     h += '<div class="stat-tile"><div class="lbl">平均接駁(接單→上車)</div><div class="val num">'+fmtNum(approachSum/accN,1)+' 分</div></div>';
     h += '</div>';
+    if(cxN) h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;line-height:1.6">🚫 中間有 '+cxN+'&nbsp;單被取消,共 '+fmtNum(cxSum,0)+'&nbsp;分鐘(接單到取消)。這段從等單裡分出來,下一次等單從取消那一刻算起;三段加起來還是一樣的空檔。只算上班時間、不跟載客重疊。</div>';
     if(apKmN) h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:6px">平均接駁直線距離 '+fmtNum(apKmSum/apKmN,1)+' 公里</div>';
     if(seamN) h += '<div class="list-item"><div class="li-body"><div class="li-title">🔗 無縫接單</div><div class="li-sub">載客中就接到下一單:等單算 0,接駁從上一趟下車算起</div></div><div class="li-amt num" style="font-size:13px">'+seamN+' 趟(佔 '+Math.round(seamN/accN*100)+'%)</div></div>';
     var apl2 = Object.keys(accPlat).map(function(k){ return accPlat[k]; }).sort(function(a,b){ return a.ap/a.apN-b.ap/b.apN; });
     h += apl2.map(function(p){ return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(p.label)+'</div><div class="li-sub">'+p.apN+' 趟</div></div><div class="li-amt num" style="font-size:13px">等單 '+(p.wtN?fmtNum(p.wt/p.wtN,1):'—')+' · 接駁 '+fmtNum(p.ap/p.apN,1)+' 分</div></div>'; }).join('');
   }
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">載客率=載客時間÷工時,只算整天每趟都有按上下車的日子('+fullDays+' 天)。空檔時間=上一趟下車到下一趟上車(包含等單、開去上車點、等客人),超過 '+EMPTY_GAP_CAP_MIN+' 分鐘的視為休息不列入,每天第一趟也不算。距離是上下車兩點的直線距離,上下車都有抓到位置的趟次才算。</div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">載客率=載客時間÷工時,只算整天每趟都有按上下車的日子('+fullDays+' 天)。空檔時間=上一趟下車到下一趟上車(包含等單、開去上車點、等客人'+(cxN?'、被取消的單':'')+'),超過 '+EMPTY_GAP_CAP_MIN+' 分鐘的視為休息不列入,每天第一趟也不算。距離是上下車兩點的直線距離,上下車都有抓到位置的趟次才算。</div>';
   if(f && !anDayOnly(f)) h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">🔎 篩選平台或時段時不算載客率(打卡工時分不出來);其他數字只算符合條件的趟次。</div>';
   h += '</div></div>';
   var hotDays = days, hotKeys = dayKeys;
@@ -5616,10 +5637,24 @@ function vipBuyBoxHtml(){
   if(!vipProducts) return '<div style="font-size:12.5px;color:var(--text-muted);padding:10px 0;text-align:center">讀取方案中…</div>';
   var per = {year:'年', month:'月'}, list = vipProducts.filter(function(x){ return per[x.plan]; });
   if(!list.length) return '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">目前沒有可以購買的方案。</div>';
-  return list.map(function(x, i){
+  var pt = vipPriceLines(list);
+  return (pt.one ? '<div style="font-size:14px;font-weight:700;line-height:1.6;margin-bottom:8px">'+pt.one+'</div>' : '') + list.map(function(x, i){
     return '<div class="btn-row" style="margin-bottom:8px"><button class="btn '+(i===0?'btn-primary':'btn-ghost')+'" data-act="vip-buy:'+esc(x.id)+'"'+(vipBusy?' disabled':'')+'>'+
       (vipBusy===x.id ? '處理中…' : VIP_PLAN_ZH[x.plan]+' '+esc(x.priceText)+'／'+per[x.plan])+'</button></div>';
-  }).join('');
+  }).join('') + (pt.year ? '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;margin:-2px 0 8px">'+pt.year+'</div>' : '');
+}
+// 行銷文案 (比對_行銷文案_三家AI 第四節), worked out from the prices the store gave, never typed in: 「一個方案 N 元」 from
+// the monthly plan, and the yearly line only when both are whole NT$ amounts and the year costs less than 12 months
+// (「等於付 k 個月用 12 個月」 only when it comes out whole). Anything else (another currency, no monthly plan): left out.
+function vipPriceLines(list){
+  function twd(plan){ var x = list.filter(function(p){ return p.plan===plan; })[0], n = x ? +x.price : NaN; return (x && x.currency==='TWD' && isFinite(n) && n>0 && n===Math.round(n)) ? n : null; }
+  var m = twd('month'), y = twd('year'), out = {one:'', year:''};
+  if(m) out.one = '一個方案 '+fmtNum(m, 0)+'&nbsp;元,全部功能,沒有廣告';
+  if(m && y && y < m*12){
+    var k = y/m;
+    out.year = 'NT$'+fmtNum(y, 0)+'／年,每年一次收取。比月繳 12 個月(NT$'+fmtNum(m*12, 0)+')省 NT$'+fmtNum(m*12-y, 0)+(k===Math.round(k) ? ',等於付 '+k+' 個月用 12 個月' : '')+'。';
+  }
+  return out;
 }
 function vipBuyBoxFill(){
   var box = document.getElementById('vipBuyBox'); if(box) box.innerHTML = vipBuyBoxHtml();
@@ -5631,7 +5666,12 @@ function openVipIntro(feature, period){
   var v = vipVerdict(), c = v.ent, vip = isVip(), canBuy = vipCanBuy(), store = vipStore();
   var link = 'color:var(--accent);text-decoration:none;font-weight:700', small = 'font-size:12px;color:var(--text-muted);line-height:1.6';
   var h = '<div class="modal-title">👑 跑車人生 VIP<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div><div id="vipPaywall">';
+  // 行銷文案 (比對_行銷文案_三家AI 第四節). Never 「最便宜」, another app's name, or 推播／通知; the website sells nothing,
+  // so the lines on price and on subscribing are only where it can be bought.
+  h += '<div class="vip-head" style="margin:0 0 12px"><div style="font-size:20px;font-weight:800;line-height:1.4">跑到月底,手上能留多少?</div>'+
+    '<div style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-top:2px">扣掉跑車支出與固定成本,依目前紀錄估算月底能留多少。</div></div>';
   if(feature && !vip) h += '<div style="font-size:14px;line-height:1.7;margin-bottom:10px">「<b>'+esc(feature)+'</b>」是 VIP 功能。</div>';
+  if(canBuy && !v.vip) h += '<div style="font-size:12.5px;line-height:1.6;margin-bottom:10px">記帳核心永久免費。VIP 提供進一步分析,想多了解自己的跑車收支,再訂閱就好。</div>';
   var note = '';
   if(v.vip){
     note = '<b>'+esc(vipStatusText())+'</b>';
@@ -5646,6 +5686,7 @@ function openVipIntro(feature, period){
   h += '<div class="card" style="padding:10px 14px;margin-bottom:12px">'+VIP_FEATURES.map(function(f){
     return '<div style="display:flex;gap:10px;padding:7px 0;line-height:1.5"><span style="font-size:18px">'+f[0]+'</span><div><b style="font-size:13.5px">'+esc(f[1])+'</b><div style="font-size:12px;color:var(--text-muted)">'+esc(f[2])+'</div>'+vipNeedsHtml(f[1])+'</div></div>';
   }).join('')+'</div>';
+  h += '<div style="'+small+';margin:-4px 0 12px">預測與試算依你輸入的資料及設定計算,實際結果可能不同。</div>';
   if(!canBuy){
     h += '<div style="'+small+'">'+(isNativeApp() ? 'VIP 訂閱即將推出。' : 'VIP 功能在手機 App「跑車人生」裡提供,網頁版沒有。網頁版的記帳功能照常免費。')+'</div>';
   } else if(v.vip){
@@ -9425,12 +9466,38 @@ function saveShiftFix(){
   }
   save(function(ok){ if(ok) showToast('已補登上班時間'); }); closeModal(); renderAll();
 }
+// 載客里程 (待辦 2-10): the km of each trip of day t (每趟公里數 when typed, else the straight line from 上車 to 下車, as
+// 🏁 車隊比較 does), against the day's 每日里程. Nothing without a 每日里程 or without one trip that has a distance.
+function dayLoadedKm(t, recs){
+  var m = state.dailyMeta[t], dayKm = m ? +m.km : NaN;
+  if(!(isFinite(dayKm) && dayKm>0)) return '';
+  var trips = 0, kmN = 0, real = 0, sum = 0;
+  recs.forEach(function(r){
+    if(platformDef(r.platform).tipOnly) return;
+    trips++;
+    var km = tripKmOf(r), isReal = km!=null;
+    if(!isReal && r.pickup && r.dropoff) km = straightKm(r.pickup, r.dropoff);
+    if(km==null || !(km>=0.1)) return;
+    kmN++; sum += km; if(isReal) real++;
+  });
+  if(!kmN) return '';
+  // a number and its unit never split over two lines
+  var nb = function(v, u){ return '<span class="num" style="white-space:nowrap">'+v+(u==='%' ? '' : '&nbsp;')+u+'</span>'; };
+  var s = '載客里程 '+nb(fmtNum(sum, 1), '公里');
+  if(sum <= dayKm) s += ',佔今天里程 '+nb(Math.round(sum/dayKm*100), '%')+'(空車約 '+nb(fmtNum(dayKm-sum, 1), '公里')+')';
+  else s += '(比今天記的里程 '+nb(fmtNum(dayKm, 1), '公里')+'還多,今日里程可能少記了)';
+  var sub = [];
+  if(kmN < trips) sub.push('只算有里程的 '+nb(kmN, '趟')+'(共 '+nb(trips, '趟')+')');
+  if(real < kmN) sub.push((real ? '部分用直線距離估算' : '用上下車直線距離估算')+',實際開的路通常比較長');
+  return s + (sub.length ? '<div style="font-size:11.5px;color:var(--text-muted)">'+sub.join(';')+'</div>' : '');
+}
 function openDayReport(t){
   var recs = recordsInRange(t, t), cxS = cancelSum(cancelsInRange(t, t));
   if(!recs.length && !cxS.n) return;
   var net = sumNetIncome(recs).total, exp = sumExpense(expensesInRange(t, t));
-  // 取消費 is in 實收, 結餘 and 時薪, not in 趟數 or 每趟平均
-  var hours = totalHoursInRange(t, t), trips = recs.filter(function(r){ return r.platform!=='bonus' && r.platform!=='cancelfee'; }).length, tripNet = net - cancelFeeTotal(recs);
+  // 取消費 is in 實收, 結餘 and 時薪, not in 趟數 or 每趟平均; 小費, 活動獎勵 and 取消費 are never a trip (tipOnly, as on
+  // every other screen)
+  var hours = totalHoursInRange(t, t), trips = recs.filter(function(r){ return !platformDef(r.platform).tipOnly; }).length, tripNet = net - cancelFeeTotal(recs);
   var p7from = addDays(t, -7), p7to = addDays(t, -1);
   var h7 = totalHoursInRange(p7from, p7to), n7 = sumNetIncome(recordsInRange(p7from, p7to)).total;
   var rate = hours>=0.5 ? net/hours : null, rate7 = h7>=0.5 ? n7/h7 : null;
@@ -9451,7 +9518,9 @@ function openDayReport(t){
     note = '前 7 天平均時薪 '+fmtMoney(rate7)+',今天'+(diff>=0?'高 ':'低 ')+Math.abs(diff)+'%'+(diff>=10?' 👍':'');
   }
   if(cxS.n) h += '<div style="font-size:12.5px;line-height:1.6;margin-bottom:8px">🚫 '+cancelSumText(cxS)+'</div>';
-  if(note) h += '<div style="font-size:12.5px;line-height:1.6;margin-bottom:12px">'+note+'</div>';
+  var lk = dayLoadedKm(t, recs);
+  if(lk) h += '<div style="font-size:12.5px;line-height:1.6;margin-bottom:8px">🛣️ '+lk+'</div>';
+  if(note) h +='<div style="font-size:12.5px;line-height:1.6;margin-bottom:12px">'+note+'</div>';
   h += '<div class="btn-row"><button class="btn" data-act="close-modal">知道了</button><button class="btn btn-primary" data-act="quick-backup">💾 順便備份</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px">不想每天看到:⚙️ 功能開關關掉「今日跑車報告」</div>';
   openModal(h);
@@ -9712,36 +9781,40 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.21.2';
+var APP_VERSION = '2026.11.21.3';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
-  ['2026.11.21.2', '🚫 被取消的單也記得到了:前往接客途中被取消、到了等不到客人,按「✕ 取消這單」選誰取消、哪個車隊,有取消費就填實際拿到的錢(算進實收和時薪,不算趟數,會跟那家車隊一起列入撥款對帳)。沒有用「接到單了」或用簡單記帳的人,在記帳頁按「＋ 補記取消」事後補記;歷史裡灰色那一行可以改、可以刪'],
-  ['2026.11.21.1', '💵 每個平台都能「記帳時填實收」:到 ⚙️ 設定 → 平台管理打開後,記 BOLT、LINE GO 等平台時直接打實際拿到的錢,不會再被扣一次手續費;車資和手續費由 App 估算。打開前記的帳照原本的算法,之後關掉也不影響'],
+  ['2026.11.21.3', '📲 分析頁「空檔拆解」多一段「被取消」:中間有單被取消時,接單到取消那段另外列出,下一次等單從取消那一刻算起,等單時間更準(空檔總長不變)', '', {tab:'analytics', find:'🚕 載客效率'}],
+  ['2026.11.21.3', '🛣️ 今日跑車報告多一行「載客里程」:有填今日里程,也有每趟公里數(或上下車位置)時,看載客佔今天里程多少、空車大約跑了幾公里', '', {report:true}],
+  ['2026.11.21.3', '✨ 更新說明的新功能後面多了「去看看 ›」,點一下直接跳到那個功能'],
+  ['2026.11.21.3', '🔧 今日跑車報告的趟數不再把「小費」那筆算成 1 趟'],
+  ['2026.11.21.2', '🚫 被取消的單也記得到了:前往接客途中被取消、到了等不到客人,按「✕ 取消這單」選誰取消、哪個車隊,有取消費就填實際拿到的錢(算進實收和時薪,不算趟數,會跟那家車隊一起列入撥款對帳)。沒有用「接到單了」或用簡單記帳的人,在記帳頁按「＋ 補記取消」事後補記;歷史裡灰色那一行可以改、可以刪', '', {tab:'entry', find:['📲 接到單了','✕ 取消這單','下一單被取消','剛剛被取消一單','補記取消']}],
+  ['2026.11.21.1', '💵 每個平台都能「記帳時填實收」:到 ⚙️ 設定 → 平台管理打開後,記 BOLT、LINE GO 等平台時直接打實際拿到的錢,不會再被扣一次手續費;車資和手續費由 App 估算。打開前記的帳照原本的算法,之後關掉也不影響', '', {set:'platforms'}],
   ['2026.11.20.8', '💡 測試版:VIP 功能還缺資料時(例如沒記每日里程、沒按上車/下車、沒打卡),會直接告訴你還缺什麼、去哪裡補,有的可以一鍵打開;VIP 介紹和 👑 預覽多一行「需要:…」,先知道要記哪些資料才看得到', 'beta'],
   ['2026.11.20.7', '🚗 測試版:只填了「車輛成本」也能在加油、保養維修時填儀表板里程;可支配所得變負數時,會說主要是哪一筆扣最多;大字時數字和單位不會被拆成兩行', 'beta'],
   ['2026.11.20.6', '📍 測試版:下車地統計的「死區提醒」只列等單明顯比你平均久的地方(你平均的 1.5 倍以上);等得比平均短的地方不再被叫死區,一個都沒有時寫「目前沒有明顯的死區」', 'beta'],
   ['2026.11.20.6', '🔔 測試版:VIP 到期時,重大路況通知會自動暫停;恢復 VIP 後自動打開,不用重新設定。路況快報不再列出資料來源留下的測試資料', 'beta'],
-  ['2026.11.20.4', '🔔 測試版:路況快報可以在上班時收「重大路況」通知(封路、無法通行這類,無聲、不震動,10 分鐘最多 1 則、一天最多 5 則,目前只有台北、新北)。預設不收,第一次打開會問你;路況快報右上角 ⚙️ 可以改通知、記帳頁摘要、不打擾時段、暫停 1 小時。記帳頁會多一行摘要:重大、事故各幾則', 'beta'],
+  ['2026.11.20.4', '🔔 測試版:路況快報可以在上班時收「重大路況」通知(封路、無法通行這類,無聲、不震動,10 分鐘最多 1 則、一天最多 5 則,目前只有台北、新北)。預設不收,第一次打開會問你;路況快報右上角 ⚙️ 可以改通知、記帳頁摘要、不打擾時段、暫停 1 小時。記帳頁會多一行摘要:重大、事故各幾則', 'beta', {tab:'entry', find:'路況快報'}],
   ['2026.11.20.3', '🚦 測試版:「路況快報」變成記帳首頁獨立的一塊,可以單獨打開、關掉、排上下順序;不開「看即時路況」也能用。打開「看即時路況」時會一起打開', 'beta'],
   ['2026.11.20.3', '🔥 測試版:「人潮」按鈕改名「🔥 人潮情報」;收入/平台旁的按鈕在小螢幕、大字時會自動換行,不會擠在一起', 'beta'],
   ['2026.11.20.3', '🤔 測試版:「接不接」先收起來(派單當下看不到車資、公里數,用不上),之後有新想法再打開', 'beta'],
   ['2026.11.20.3', '🚦 測試版:路況快報顯示時間更貼近現況:警廣的事故、壅塞 1 小時沒更新會變淡並標「可能已排除」,2 小時後消失;重大事件留 4 小時;交通部 TDX 的事件在結束前都會顯示(最多 6 小時)', 'beta'],
   ['2026.11.20.2', '🚦 測試版:路況快報每則的來源改成只寫通報單位(例如高公局北區交控中心),畫面比較清爽;熱心聽眾提供的照樣用黃字提醒', 'beta'],
   ['2026.11.20.1', '🚦 測試版:路況快報的「重大」標示更準,寫著「已解除、未封路、預計、明日、今晚、預告」的不再標重大;沒有消息時改寫「目前沒有收到通報（不代表道路通暢）」;台北、新北改由伺服器每 3 分鐘自動整理,打開更快', 'beta'],
-  ['2026.11.19.13', '🚦 測試版新功能:記帳頁「看即時路況」下面多了「路況快報」,依你勾的我主要跑城市,列出警廣和交通部公布的事故、壅塞、封路、施工,點一則看地圖路況。只送出城市、不送你的位置;打開才讀,不推播。上架後是 VIP 功能', 'beta'],
-  ['2026.11.19.12', '📍 測試版新功能:分析頁「下車地統計」,看客人常把你載去哪裡(下車熱區前 10 名),以及在哪裡下車後最久才接到下一單(死區前 5 名)。最近 90 天,只在手機上算。上架後是 VIP 功能', 'beta'],
+  ['2026.11.19.13', '🚦 測試版新功能:記帳頁「看即時路況」下面多了「路況快報」,依你勾的我主要跑城市,列出警廣和交通部公布的事故、壅塞、封路、施工,點一則看地圖路況。只送出城市、不送你的位置;打開才讀,不推播。上架後是 VIP 功能', 'beta', {tab:'entry', find:'路況快報'}],
+  ['2026.11.19.12', '📍 測試版新功能:分析頁「下車地統計」,看客人常把你載去哪裡(下車熱區前 10 名),以及在哪裡下車後最久才接到下一單(死區前 5 名)。最近 90 天,只在手機上算。上架後是 VIP 功能', 'beta', {tab:'analytics', find:'下車地統計'}],
   ['2026.11.19.11', '📏 測試版新的選填欄位「每趟公里數」(到 ⚙️ 功能開關打開):記車資時填車隊 App 上這趟的里程,算各車隊實際的每公里實收。預設關閉,不想填的不用開', 'beta'],
   ['2026.11.19.11', '🏁 測試版:我的車隊收益比較改用你填的每趟公里數(沒填的才用上下車直線距離);上班、休息的打卡時間開始記下來,每小時實收的第一趟從打卡算起', 'beta'],
-  ['2026.11.19.10', '🏁 測試版新功能(到 ⚙️ 功能開關打開):分析頁「我的車隊收益比較」,用你自己的紀錄比各車隊的手續費率、每小時和每公里實收、各時段哪家最好、多久入帳;還能試算「這些單如果在別家跑」實收差多少、車資要差多少才打平。上架後是 VIP 功能', 'beta'],
+  ['2026.11.19.10', '🏁 測試版新功能(到 ⚙️ 功能開關打開):分析頁「我的車隊收益比較」,用你自己的紀錄比各車隊的手續費率、每小時和每公里實收、各時段哪家最好、多久入帳;還能試算「這些單如果在別家跑」實收差多少、車資要差多少才打平。上架後是 VIP 功能', 'beta', {tab:'analytics', find:'我的車隊收益比較'}],
   ['2026.11.19.9', '🔧 支出頁「車輛提醒」超過保養里程時,改寫「已超過 X 公里」,不再顯示「還差」負數'],
   ['2026.11.19.8', '🔧 支出細項「保養維修」預設多了煞車、電瓶、其他維修,機油標「小保養」、定期保養標「大保養」(兩個填了儀表板里程都會自動算下次保養);自己改過細項的不會變'],
-  ['2026.11.19.8', '🚗 測試版新功能:「支出」頁多一張「車輛成本」,算每開 1 公里車子花你多少(油錢、保養、折舊)、回本進度、下次保養約幾天後到、大概花多少;購車價、車貸都是選填。上架後是 VIP 功能', 'beta'],
+  ['2026.11.19.8', '🚗 測試版新功能:「支出」頁多一張「車輛成本」,算每開 1 公里車子花你多少(油錢、保養、折舊)、回本進度、下次保養約幾天後到、大概花多少;購車價、車貸都是選填。上架後是 VIP 功能', 'beta', {tab:'expense', find:'車輛成本'}],
   ['2026.11.19.8', '💰 測試版:可支配所得的保養預留改用車輛成本算出的每公里保養成本(資料不到 3 個月才用你填的),換車預留填了車輛成本就能開', 'beta'],
   ['2026.11.19.7', '🎯 記帳首頁的「本月目標」進度條和還差多少錢,現在設了每月目標就直接顯示(原本要打開「目標還要跑多久」才看得到)'],
-  ['2026.11.19.7', '💰 測試版新功能:分析頁選本週或本月,多一張「可支配所得」,實收扣掉支出、固定成本和你自己開啟的預留款(保養、稅金,預設都不扣),看真正落袋多少,本月還有月底預測。上架後是 VIP 功能', 'beta'],
+  ['2026.11.19.7', '💰 測試版新功能:分析頁選本週或本月,多一張「可支配所得」,實收扣掉支出、固定成本和你自己開啟的預留款(保養、稅金,預設都不扣),看真正落袋多少,本月還有月底預測。上架後是 VIP 功能', 'beta', {tab:'analytics', find:'可支配所得'}],
   ['2026.11.19.7', '⏱️ 測試版:目標下面的「還要跑幾小時、幾趟」上架後改成 VIP 功能,目標進度條和還差多少錢一樣免費。測試版沒開「VIP 測試」時會看到「👑 想知道還要跑多久?」', 'beta'],
   ['2026.11.19.6', '🔒 隱私權政策更新:不具名使用統計多送兩項,你在路況卡「我主要跑」自己勾的城市(不是定位)、是否訂閱 VIP 與方案,讓我們知道新功能該先支援哪些城市;一樣不含金額、平台、精確位置。不想參與,到 ⚙️「隱私與分享」取消勾選'],
   ['2026.11.19.6', '⭐ 路況卡勾了好幾個城市時,「編輯常用地點」可以點一個設成最主要的城市(預設是第一個勾的)'],
@@ -9837,6 +9910,41 @@ function versionAfter(a, b){
   return false;
 }
 var WHATS_NEW_MAX = 10;
+/* 「去看看 ›」(待辦 2-7): a 新功能 line may carry a 4th item, where it leads (fixes and 優化 lines carry none; a line
+   without it shows its text only, as before):
+     {tab, find}  that tab, scrolled to the first .section whose text has find (a string, or a list tried in order).
+                  A VIP feature shows its free 👑 預覽 card in the same place to a driver without VIP, so the same find
+                  lands on the preview; it never opens the paywall.
+     {set}        ⚙️ opened on that section (SETTINGS_SECS key)
+     {report}     the 今日跑車報告 of the latest business day that has something in it (none: no link) */
+function wnReportDay(){
+  var t = todayStr(), best = '';
+  state.records.forEach(function(r){ if(r.date && r.date<=t && r.date>best) best = r.date; });
+  cancelList().forEach(function(c){ if(c && c.date && c.date<=t && c.date>best) best = c.date; });
+  return best;
+}
+function wnGoOk(g){
+  if(!g || typeof g!=='object') return false;
+  if(g.report) return !!wnReportDay();
+  if(g.set) return SETTINGS_SECS.some(function(s){ return s[0]===g.set; });
+  return !!(g.tab && g.find);
+}
+function wnGo(i){
+  var x = WHATS_NEW[+i], g = x && x[3];
+  if(!wnGoOk(g)) return;
+  closeModal();
+  if(g.report){ openDayReport(wnReportDay()); return; }
+  if(g.set){ settingsOpenSec = g.set; openSettingsModal(); var sc = document.querySelector('.set-sec.open'); if(sc){ try{ sc.scrollIntoView({block:'start'}); }catch(e){} } return; }
+  currentTab = g.tab; renderAll();
+  var c = document.getElementById('content'), finds = [].concat(g.find), hit = null;
+  var secs = c ? c.querySelectorAll('.section') : [];
+  for(var k=0;k<finds.length && !hit;k++){
+    for(var j=0;j<secs.length;j++){ if((secs[j].textContent||'').indexOf(finds[k])>=0){ hit = secs[j]; break; } }
+  }
+  if(!hit){ window.scrollTo(0, 0); showToast('這個功能現在沒有顯示,可能被關掉了:到 ⚙️「記帳首頁與功能」→ 功能開關打開', 5000); return; }
+  try{ hit.scrollIntoView({behavior:'smooth', block:'start'}); }catch(e){ hit.scrollIntoView(); }
+  hit.classList.add('wn-flash'); setTimeout(function(){ hit.classList.remove('wn-flash'); }, 2200);
+}
 function maybeShowWhatsNew(){
   if(state.seenVersion===APP_VERSION) return false;
   // brand-new users get the full guide from whoever shared the link, not a change list
@@ -9849,7 +9957,10 @@ function maybeShowWhatsNew(){
   var shown = news.slice(0, WHATS_NEW_MAX), more = news.length - shown.length;
   var h = '<div class="modal-title">記帳本更新了 🎉<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
   h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">版本 '+APP_VERSION+' · 你的資料都還在,不用重新設定</div>';
-  h += '<div style="font-size:13px;line-height:1.7">'+shown.map(function(x){ return '<div style="margin-bottom:6px">'+esc(x[1])+'</div>'; }).join('')+
+  h += '<div style="font-size:13px;line-height:1.7">'+shown.map(function(x){
+    var i = WHATS_NEW.indexOf(x);
+    return '<div style="margin-bottom:6px">'+esc(x[1])+(wnGoOk(x[3]) ? ' <span data-act="wn-go:'+i+'" role="button" tabindex="0" style="cursor:pointer;color:var(--accent);font-weight:700;white-space:nowrap">去看看&nbsp;›</span>' : '')+'</div>';
+  }).join('')+
     (more>0 ? '<div style="font-size:12px;color:var(--text-muted)">…還有 '+more+' 項較早的更新,可以到 ⚙️「功能說明」看每個功能在哪裡。</div>' : '')+'</div>';
   h += '<div class="btn-row" style="margin-top:12px"><button class="btn btn-primary" data-act="close-modal">知道了</button></div>';
   openModal(h);
@@ -10504,13 +10615,15 @@ var a11yQueued = false, a11yUid = 0;
 // TalkBack reads "$" as US dollars and reads every emoji by its long name ("鉛筆類別的表情符號"),
 // so amounts get a spoken "元" twin and decorative emoji and the "—" placeholders are skipped
 var A11Y_EMOJI = '(?:[\\u2600-\\u27BF\\u2B00-\\u2BFF]|\\uD83C[\\uDC00-\\uDFFF]|\\uD83D[\\uDC00-\\uDFFF]|\\uD83E[\\uDC00-\\uDFFF])[\\uFE0F\\u200D]*';
-var A11Y_MONEY = '([+\\-\\u2212]?)\\$\\s?([\\d,]+(?:\\.\\d+)?)';
+// (the number ends on a digit: 「省 NT$78,等於…」 is read 78 元, not 「78, 元」)
+var A11Y_MONEY = '([+\\-\\u2212]?)\\$\\s?(\\d(?:[\\d,]*\\d)?(?:\\.\\d+)?)';
 function a11ySpeak(s){
   return String(s).replace(new RegExp(A11Y_MONEY, 'g'), function(m, sign, num){ return (sign && sign!=='+' ? '負 ' : '')+num+' 元'; })
     .replace(new RegExp(A11Y_EMOJI, 'g'), '').replace(/\s+/g, ' ').trim();
 }
 function a11yText(){
-  var hit = new RegExp(A11Y_EMOJI+'|\\$\\s?[\\d,]|^\\s*[\\u2014\\u2013]\\s*$'), todo = [], n;
+  // (the same start as A11Y_MONEY: a node picked here and matched by nothing there would be rebuilt on every pass)
+  var hit = new RegExp(A11Y_EMOJI+'|\\$\\s?\\d|^\\s*[\\u2014\\u2013]\\s*$'), todo = [], n;
   var w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
   while((n = w.nextNode())){
     var p = n.parentNode;
@@ -10608,6 +10721,7 @@ document.addEventListener('click', function(e){
   var cmd = parts[0], arg = parts.slice(1).join(':');
 
   if(cmd==='tab'){ currentTab=arg; renderAll(); }
+  else if(cmd==='wn-go'){ wnGo(arg); }
   else if(cmd==='noop'){ /* absorb click inside modal card */ }
   else if(cmd==='close-modal'){ requestCloseModal(); }
   else if(cmd==='discard-settings'){ closeModal(); }
