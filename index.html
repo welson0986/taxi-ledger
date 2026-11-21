@@ -3274,7 +3274,7 @@ function openCancelModal(mode, arg, thenStart){
   if(mode==='live'){
     if(!pa){ closeModal(); renderAll(); return; }
     if(!pa.id) pa.id = uid();   // an accept from before 2026.11.21.2 had no id
-    cxForm = {mode:'live', acceptId:pa.id, by:'', fleet:lastFleetKey(), stale:!!staleAccept(), thenStart:!!thenStart};
+    cxForm = {mode:'live', acceptId:pa.id, by:'', fleet:'', stale:!!staleAccept(), thenStart:!!thenStart};
     title = (state.activeTrip && pa.seamless) ? '下一單被取消了' : '這單被取消了';
   } else if(mode==='edit'){
     c = findCancel(arg); if(!c) return;
@@ -3282,7 +3282,7 @@ function openCancelModal(mode, arg, thenStart){
     title = '取消單 · '+c.date;
   } else {
     var day = arg || currentEntryDate();
-    cxForm = {mode:'add', date:day, by:'', fleet:lastFleetKey()};
+    cxForm = {mode:'add', date:day, by:'', fleet:''};   // no fleet picked in advance (威爾森 11/21): the driver chooses
     title = '補記被取消的單'+(day!==todayStr() ? ' · '+day : '');
   }
   var F = cxForm, lbl = 'font-size:13px;font-weight:700;margin:0 0 6px';
