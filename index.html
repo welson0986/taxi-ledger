@@ -8480,10 +8480,12 @@ function requestCloseModal(){
       return false;
     }
   }
+  var rv = rvTakeArmed();
   closeModal();
+  if(rv) rvAfterReport();
   return true;
 }
-function closeModal(){ settingsSnap = null; pendingIncomeTripId = null; document.getElementById('modalRoot').innerHTML=''; syncSystemBars();
+function closeModal(){ rvArmed = ''; settingsSnap = null; pendingIncomeTripId = null; document.getElementById('modalRoot').innerHTML=''; syncSystemBars();
   if(obResume!=null){ var obNext = obResume; obResume = null; setTimeout(function(){ if(document.getElementById('modalRoot').innerHTML) obResume = obNext; else openOnboardExtra(obNext); }, 200); }
   var app = document.querySelector('.app'); if(app) app.removeAttribute('aria-hidden');
   renderAll();
@@ -9820,7 +9822,113 @@ function openDayReport(t){
   if(trips) h += '<button class="btn btn-ghost" style="width:100%;margin-bottom:10px" data-act="share-day:'+t+'">📤 分享'+shareDayWord(t)+'戰績</button>';
   h += '<div class="btn-row"><button class="btn" data-act="close-modal">知道了</button><button class="btn btn-primary" data-act="quick-backup">💾 順便備份</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px">不想每天看到:⚙️ 功能開關關掉「今日跑車報告」</div>';
+  h += '<span class="rv-day" data-day="'+t+'" hidden></span>';  // App 內評分: closing this sheet is the moment (rvTakeArmed)
   openModal(h);
+  return true;
+}
+/* ---------- App 內評分視窗 (待辦 2-2, 11/21 Welson) ----------
+   The stores' own rating card (Google Play In-App Review, Apple StoreKit) through TaxiNative.requestReview, asked
+   when BOTH hold:
+     1. 累計有記帳的日子 >= 5: distinct business days with an income record, counted from the ledger as it is (not days
+        since install, not trips: a full-time driver passes 20 trips on day one; part-timers get there across weeks);
+     2. the driver just clocked out and closed that 今日跑車報告 themselves (✕, 知道了, a tap outside, the back key:
+        every way goes through requestCloseModal). Opened from 歷史 it does not count.
+   Not when another sheet is up by then, a shift, a trip or an accepted order is still going, or the app is in the
+   background. The backup reminder on the home page is a banner, not a sheet, and stays up for good for a driver who
+   never backs up (7 days after the first fare), so it does not hold the card back: it would mean never asking them. Our own limit on top of the stores' (Apple: 3 a year; Google: a quota it
+   does not publish): at least 90 days apart, at most 3 asks, and never again once the driver tapped ⚙️「給我們評分」.
+   That record lives in this phone's localStorage only (REVIEW_LS: never in the ledger, a backup file or the cloud
+   copy) and is written before asking, so a crash or a store that shows nothing does not become asking again tomorrow.
+   The stores never say whether the card appeared or what was rated, so nothing here assumes it was seen. No "do you
+   like the app?" first (both stores forbid steering the card by an answer), no reward, no hint at a number of stars.
+   Only builds made with it say review:true in buildInfo; the web page and older APKs never call it nor show the link. */
+var REVIEW_LS = 'taxi_review_v1';
+var REVIEW_MIN_DAYS = 5, REVIEW_GAP_DAYS = 90, REVIEW_MAX = 3, REVIEW_WAIT_MS = 900;
+var STORE_ANDROID_ID = 'tw.com.realway.taxiledger';  // the 正式版 on Play (the 測試版 opens this page too)
+var STORE_ANDROID_LISTED = false;  // 上架當天改 true: until then the Play page does not exist, so only 測試版 shows the link
+var STORE_IOS_ID = '';             // App Store Connect 的 App ID(數字): empty = no link on iPhone
+var rvCanP = null, rvCan = null, rvArmed = '';
+function rvPlatform(){ try{ return window.Capacitor && window.Capacitor.getPlatform ? window.Capacitor.getPlatform() : ''; }catch(e){ return ''; } }
+// whether this app has the review calls: asked once (an older APK's buildInfo has no review), never true on the web
+function rvSupported(){
+  if(rvCanP) return rvCanP;
+  var nt = nativeTools();
+  if(!nt){ rvCan = false; return Promise.resolve(false); }
+  rvCanP = nt.buildInfo().then(function(i){ rvCan = !!(i && i.review===true); return rvCan; }, function(){ rvCan = false; rvCanP = null; return false; });
+  return rvCanP;
+}
+function rvLoad(){
+  var v = null; try{ v = JSON.parse(localStorage.getItem(REVIEW_LS)||'null'); }catch(e){}
+  if(!v || typeof v!=='object') v = {};
+  var n = Math.floor(+v.n), last = +v.last;
+  return {n: n>0 ? Math.min(n, 99) : 0, last: last>0 ? last : 0, rated: v.rated===true};
+}
+function rvKeep(m){ try{ localStorage.setItem(REVIEW_LS, JSON.stringify({n:m.n, last:m.last, rated:m.rated})); }catch(e){} }
+function rvLoggedDays(){
+  var seen = {}, n = 0;
+  (state.records||[]).forEach(function(r){ if(r && typeof r.date==='string' && r.date && !seen[r.date]){ seen[r.date] = 1; n++; } });
+  return n;
+}
+// our own limits and the 5 days; not the moment (rvQuietNow)
+function rvDue(now){
+  var m = rvLoad();
+  if(m.rated || m.n>=REVIEW_MAX) return false;
+  if(m.last && now - m.last < REVIEW_GAP_DAYS*86400000) return false;
+  return rvLoggedDays() >= REVIEW_MIN_DAYS;
+}
+// clock-out opened the report for this day
+function rvArm(day){ rvArmed = day || ''; }
+// requestCloseModal asks before closing: true when the sheet being closed is the report clock-out opened
+function rvTakeArmed(){
+  var day = rvArmed; rvArmed = '';
+  if(!day) return false;
+  var mk = document.querySelector('#modalBody .rv-day');
+  return !!mk && mk.getAttribute('data-day')===day;
+}
+function rvQuietNow(){
+  if(document.getElementById('modalRoot').innerHTML) return false;   // another sheet came up meanwhile
+  if(document.hidden) return false;
+  if(state.activeTrip || state.pendingAccept) return false;
+  var md = (state.dailyMeta||{})[todayStr()]||{};
+  if(md.activeShiftStart) return false;
+  return true;
+}
+function rvAfterReport(){
+  if(!rvDue(Date.now())) return;
+  rvSupported().then(function(ok){ if(ok) setTimeout(rvAskNow, REVIEW_WAIT_MS); });
+}
+function rvAskNow(){
+  var nt = nativeTools();
+  if(!nt || rvCan!==true || !rvDue(Date.now()) || !rvQuietNow()) return;
+  var m = rvLoad(); m.n++; m.last = Date.now(); rvKeep(m);
+  try{ nt.requestReview().then(function(){}, function(){}); }catch(e){}
+}
+// ⚙️「給我們評分」: the store page itself, never the card (a button that sometimes shows nothing would look broken)
+function rvStoreOk(){
+  if(rvCan!==true) return false;
+  var p = rvPlatform();
+  if(p==='android') return STORE_ANDROID_LISTED || APP_CHANNEL==='beta';
+  if(p==='ios') return /^[0-9]+$/.test(STORE_IOS_ID);
+  return false;
+}
+function rvStoreName(){ return rvPlatform()==='ios' ? 'App Store' : 'Google Play'; }
+function rvOpenStore(){
+  var nt = nativeTools();
+  if(!nt || !rvStoreOk()) return;
+  var fail = function(){ showToast('打不開商店,可以直接到 '+rvStoreName()+' 搜尋「跑車人生」', 5000); };
+  // the store page opened: the card is not asked any more (a page that did not open changes nothing)
+  var went = function(){ var m = rvLoad(); m.rated = true; rvKeep(m); };
+  try{ nt.openStore({android:STORE_ANDROID_ID, ios:STORE_IOS_ID}).then(went, fail); }catch(e){ fail(); }
+}
+function rvAboutHtml(para, link){
+  if(!rvStoreOk()) return '';
+  var w = rvStoreName();
+  var h = para('⭐ 給我們評分', '覺得好用,或有想改進的地方,都歡迎到 '+w+' 給我們評分、留言:<br><span data-act="rate-app" role="button" tabindex="0" style="'+link+';cursor:pointer">到 '+w+' 評分 ›</span>');
+  if(APP_CHANNEL==='beta'){
+    var m = rvLoad();
+    h += '<div class="rv-test" style="font-size:11.5px;color:var(--text-muted);line-height:1.6;margin:-6px 0 12px">🧪 測試版:評分視窗已問 '+m.n+' 次'+(m.last ? '(上次 '+toDateStr(new Date(m.last))+')' : '')+(m.rated ? ',按過「到商店評分」' : '')+',有記帳的日子 '+rvLoggedDays()+' 天。 <span data-act="rv-reset" role="button" tabindex="0" style="'+link+';cursor:pointer">清除這支手機的評分紀錄</span></div>';
+  }
+  return h;
 }
 /* 分享今日戰績 (待辦 2-12, free like the report): the day as one PNG the driver can send to LINE, 限動 or a group.
    Drawn on a canvas on the phone (nothing uploaded, no new plug-in, a canvas PNG carries no location or EXIF) and
@@ -10387,7 +10495,7 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.22.8';
+var APP_VERSION = '2026.11.22.9';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
@@ -10635,6 +10743,7 @@ function aboutHtml(){
   h += para('🔒 你的帳由你掌握', '帳本預設存在你的手機,我們不預設取得;選擇分享車友熱區時,才會送出約 1 公里的格點、時段和趟數;備份檔和雲端同步放在哪裡由你選擇(雲端同步存在你自己的 Google 帳號)。<br>為了保護你的資料,建議手機設定螢幕鎖,並定期備份。');
   h += para('📊 不具名使用人數統計', '為了知道有多少司機在用,記帳本每天會送出一次不具名資料:一組隨機編號、日期、版本、簡單/完整模式、手機系統(iPhone/安卓)、是否從主畫面打開。<br>不包含任何金額、平台、位置或個人資料,製作者也無法從編號知道你是誰。不想參與,可以在上面「不具名使用人數統計」取消勾選。');
   h += para('📄 隱私權政策', '完整說明記帳本會處理哪些資料、存在哪裡、保存多久:<br><a style="'+link+'" target="_blank" rel="noopener" href="https://app.realway.com.tw/privacy.html">查看隱私權政策 ›</a>');
+  h += rvAboutHtml(para, link);
   h += para('📍 車友熱區', '同意分享的人,記帳本每天會送出前一天的「約 1 公里一格的上車區域、時段、趟數」,不含精確位置、金額、平台。至少 3 位車友都上過車的地方才會顯示給有分享的人看,看不到任何人的個人紀錄。可以隨時在上面取消分享。');
   // the mail opens with the version and phone type filled in, nothing from the ledger
   var mailto = 'mailto:support@realway.com.tw?subject='+encodeURIComponent('跑車人生 建議與問題回報')+
@@ -11427,7 +11536,7 @@ document.addEventListener('click', function(e){
     if(m2.segmentStart){ var now2 = Date.now(); m2.workedMs += (now2-m2.segmentStart); m2.segmentStart=null; punchLog(m2, 'o', now2); }
     m2.activeShiftStart=null;
     save(); cloudSyncIfBehind(true); renderAll();
-    if(uiShow('dayReport')) openDayReport(todayStr());
+    if(uiShow('dayReport') && openDayReport(todayStr())) rvArm(todayStr());
   }
   else if(cmd==='break-start'){
     var m3 = dm(todayStr());
@@ -11835,6 +11944,8 @@ document.addEventListener('click', function(e){
   }
   else if(cmd==='do-restore'){ doCloudRestore(+arg); }
   else if(cmd==='quick-backup'){ openQuickBackup(); }
+  else if(cmd==='rate-app'){ rvOpenStore(); }
+  else if(cmd==='rv-reset'){ if(APP_CHANNEL==='beta'){ try{ localStorage.removeItem(REVIEW_LS); }catch(e){} showToast('已清除這支手機的評分紀錄', 3000); var rt = document.querySelector('.rv-test'); if(rt) rt.textContent = '🧪 已清除,下次符合條件就會再問'; } }
   else if(cmd==='share-day'){ openShareDay(arg); }
   else if(cmd==='share-back'){ openDayReport(arg); }
   else if(cmd==='hist-report'){ openDayReport(arg); }
@@ -12104,7 +12215,7 @@ else if(staleAccept()){ maybeAskStaleAccept(); }
 else if(!state.uiMode && !hasMeaningfulData()){ state.seenVersion = APP_VERSION; openModeChooser(); }
 else { if(!state.uiMode){ state.uiMode = uiModeOf(state.ui||{}); saveQuiet(); } var _missingKmDate = findMissingKmDate(); if(_missingKmDate) openMissingKmModal(_missingKmDate); else if(!maybeShowWhatsNew()) maybeAskShareHot(); }
 setTimeout(function(){ notifySync(false); }, 2500);
-initWebBeta(); if(APP_CHANNEL==='beta') renderAll(); setTimeout(detectAppChannel, 300);
+initWebBeta(); if(APP_CHANNEL==='beta') renderAll(); setTimeout(detectAppChannel, 300); setTimeout(rvSupported, 400);
 setTimeout(function(){ rnPushListen(); rnSumMaybeLoad(); }, 1500);   // new trips add payout days; km moves the maintenance guess
 }
 /* ---------- the installed app's own copy of the ledger ----------
