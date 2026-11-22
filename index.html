@@ -1188,17 +1188,178 @@ function findStaleOpenShiftDate(){
 }
 function finalizeStaleShift(dateStr, endTs){
   var m = state.dailyMeta[dateStr];
-  if(!m || !m.activeShiftStart) return;
-  if(m.onBreak && m.breakStart){
-    m.breakMs += Math.max(0, endTs-m.breakStart);
-    m.breakStart = null; m.onBreak = false;
-  } else if(m.segmentStart){
-    m.workedMs += Math.max(0, endTs-m.segmentStart);
-    m.segmentStart = null; punchLog(m, 'o', endTs);
-  }
-  m.activeShiftStart = null;
+  if(!m || !m.activeShiftStart) return dateStr;
+  var endDay = endShiftAt(dateStr, endTs);
+  noteCrossOut(dateStr, endDay, endTs);
   save();
- 
+  return endDay;
+}
+/* ---------- 夜班跨過營業日分界 (B1-02, 11/22 Welson) ----------
+   A shift still open when the business day changes is cut in two at that moment B (the next day's 營業日分界): the day
+   before is settled up to B as a 下班 would, the new day goes on from B as if clocked in then. Always at B, whenever
+   it is noticed (the app opened at 03:00 still cuts at 00:00), and only once (rollShiftOver is safe to call any time).
+   Screens and reminders treat both parts as one shift: the new day keeps
+     shiftFrom  the 上班打卡 the shift really began with (路況推播「通知到幾點」, the card's line, the report's line)
+     carryAt    B, the moment it was carried (the day's activeShiftStart equals it while that shift is still on)
+     carryMs    the work time of this shift counted on the day before (上班太久 counts the whole shift)
+     contFrom   where 連續開車 began on the day before (休息提醒 does not start again at B)
+   small fields of dailyMeta, so backup, restore and cloud sync carry them; a ledger without them has no carried shift.
+   Only one boundary is carried: a shift open since before yesterday has run more than a whole day and is taken as a
+   forgotten 下班打卡 (findStaleOpenShiftDate → 補登下班時間, filled in with the shift's last activity). No cap on
+   hours otherwise (11/22: some drivers really do run more than 16 hours). Fares were always dated by the boundary,
+   so the gap 最後一趟下車 → B belongs to the day before and B → 下一單 to the new day, as the hours now are. */
+// the moment business day d begins (its 營業日分界 on that calendar date)
+function dayStartTs(d){ var x = new Date(d+'T00:00:00'); x.setHours(dayCutoffHour()); return x.getTime(); }
+// day d's open shift is one carried over at its start and still that same shift
+function carriedOpen(d, m){ m = m || (state.dailyMeta||{})[d]; return !!(m && m.activeShiftStart && m.shiftFrom && m.carryAt && +m.activeShiftStart===+m.carryAt); }
+// when the shift open on day d began (0: none open)
+function shiftFromOf(d, m){ m = m || (state.dailyMeta||{})[d]; if(!m || !m.activeShiftStart) return 0; return carriedOpen(d, m) ? +m.shiftFrom : +m.activeShiftStart; }
+// the part of the open shift that was counted on the day before (0 for a shift begun on day d)
+function carriedMs(d, m){ m = m || (state.dailyMeta||{})[d]; return carriedOpen(d, m) ? Math.max(0, +m.carryMs||0) : 0; }
+function shiftOpenAny(){ var D = state.dailyMeta||{}; return Object.keys(D).some(function(d){ return D[d] && D[d].activeShiftStart; }); }
+// the work time of day d from `from` on, by its punch log (a log that does not add up: the whole day's workedMs)
+function shiftPartMs(d, m, from){
+  var segs = punchSegs(d);
+  if(!segs) return Math.max(0, +m.workedMs||0);
+  var t = 0;
+  segs.forEach(function(s){ if(s[1] > from) t += s[1] - Math.max(s[0], from); });
+  return t;
+}
+// day P's open shift goes on into the next day at its boundary B; false when that day has its own open shift
+function rollDayOver(P){
+  var pm = state.dailyMeta[P]; if(!pm || !pm.activeShiftStart) return false;
+  var N = addDays(P, 1), B = dayStartTs(N);
+  if(state.dailyMeta[N] && state.dailyMeta[N].activeShiftStart) return false;
+  dm(P);
+  var nm = dm(N), from = shiftFromOf(P, pm), onBrk = !!(pm.onBreak && pm.breakStart), contFrom = 0;
+  if(onBrk) pm.breakMs += Math.max(0, B - pm.breakStart);
+  else if(pm.segmentStart){
+    contFrom = Math.max(+pm.segmentStart, +pm.restResetAt||0);
+    pm.workedMs += Math.max(0, B - pm.segmentStart); punchLog(pm, 'o', B);
+  }
+  pm.activeShiftStart = null; pm.segmentStart = null; pm.onBreak = false; pm.breakStart = null;
+  nm.activeShiftStart = B; nm.shiftFrom = from; nm.carryAt = B; nm.carryMs = shiftPartMs(P, pm, from);
+  if(onBrk){ nm.onBreak = true; nm.breakStart = B; nm.segmentStart = null; delete nm.contFrom; }
+  else { nm.onBreak = false; nm.breakStart = null; nm.segmentStart = B; punchLog(nm, 'i', B); if(contFrom) nm.contFrom = contFrom; else delete nm.contFrom; }
+  if(+pm.restSnoozeUntil > (+nm.restSnoozeUntil||0)) nm.restSnoozeUntil = +pm.restSnoozeUntil;
+  if(pm.dayLongWarned) nm.dayLongWarned = true;
+  return true;
+}
+// called before anything reads or changes today's shift (the card, every clock button, the reminders, a fare,
+// start-up, coming back to the app); true when it carried a shift over (and saved)
+function rollShiftOver(){
+  if(!state || !state.dailyMeta || !uiOn('shift')) return false;
+  var today = todayStr(), P = addDays(today, -1), pm = state.dailyMeta[P];
+  if(!pm || !pm.activeShiftStart || carriedOpen(P, pm)) return false;
+  var D = state.dailyMeta;
+  if(Object.keys(D).some(function(d){ return d!==P && D[d] && D[d].activeShiftStart; })) return false;
+  if(!rollDayOver(P)) return false;
+  // 第三層: the first shift ever carried is remembered, for the one card shown after its 下班打卡
+  if(!state.cutCrossHint && !state.cutCross) state.cutCross = {p:P, n:today};
+  save();
+  return true;
+}
+// a carried shift ended before the boundary (a 下班打卡 forgotten, nothing done since): the part from B is taken off the
+// new day and the day before ends at E. Only called when nothing at all was recorded from B on (see endShiftAt).
+function uncarryShift(N, E){
+  var nm = state.dailyMeta[N], P = addDays(N, -1), pm = dm(P), B = +nm.carryAt;
+  if(Array.isArray(nm.punch)) nm.punch = nm.punch.filter(function(p){ return !(Array.isArray(p) && p[1]==='i' && +p[0]===B); });
+  nm.activeShiftStart = null; nm.segmentStart = null; nm.onBreak = false; nm.breakStart = null;
+  delete nm.shiftFrom; delete nm.carryAt; delete nm.carryMs; delete nm.contFrom;
+  pm.workedMs = Math.max(0, (+pm.workedMs||0) - (B - E));
+  var hit = false;
+  (Array.isArray(pm.punch) ? pm.punch : []).forEach(function(p){ if(!hit && Array.isArray(p) && p[1]==='o' && +p[0]===B){ p[0] = E; hit = true; } });
+  return P;
+}
+// ends day d's open shift at E (a time up to now) and returns the day it ended on. Later than the next day's start:
+// carried over first, so each day keeps its own part (a shift forgotten for more than a day); a carried shift ended
+// before its boundary B gives that part back (uncarryShift).
+function endShiftAt(d, E){
+  var m = state.dailyMeta[d]; if(!m || !m.activeShiftStart) return d;
+  dm(d);
+  for(var i=0; i<60 && E > dayStartTs(addDays(d, 1)); i++){ var n = addDays(d, 1); if(!rollDayOver(d)) break; d = n; m = state.dailyMeta[d]; }
+  if(carriedOpen(d, m) && !m.onBreak && +m.segmentStart===+m.carryAt && E < +m.carryAt) return uncarryShift(d, E);
+  if(m.onBreak && m.breakStart) m.breakMs += Math.max(0, E - m.breakStart);
+  else if(m.segmentStart){ m.workedMs += Math.max(0, E - m.segmentStart); punchLog(m, 'o', Math.max(E, +m.segmentStart)); }
+  m.activeShiftStart = null; m.segmentStart = null; m.onBreak = false; m.breakStart = null;
+  return d;
+}
+// the first carried shift has ended: its 下班 time is kept for the card (a part given back means no crossing after all)
+function noteCrossOut(day, endDay, E){
+  var c = state.cutCross;
+  if(state.cutCrossHint || !c || typeof c!=='object' || c.out || c.n!==day) return;
+  if(endDay===day) c.out = E; else delete state.cutCross;
+}
+// the last thing done in the shift open on day d: {ts, what}; none: the 上班打卡 itself
+function shiftLastAct(d){
+  var m = (state.dailyMeta||{})[d], from = shiftFromOf(d, m), best = {ts:from, what:'上班打卡'};
+  if(!from) return best;
+  var B = carriedOpen(d, m) ? +m.carryAt : 0;
+  function see(ts, what){ ts = +ts; if(ts>=from && ts<=Date.now()+60000 && ts>best.ts) best = {ts:ts, what:what}; }
+  (state.records||[]).forEach(function(r){
+    if(!r) return;
+    var dt = r.dropoff && +r.dropoff.ts;
+    see(r.ts, dt && +r.ts-dt>=0 && +r.ts-dt<=15*60000 ? '下車' : '記帳');
+    if(dt) see(dt, '下車');
+    if(r.pickup) see(r.pickup.ts, '上車');
+    if(r.accept) see(r.accept.ts, '接單');
+  });
+  (state.expenses||[]).forEach(function(e){ if(e) see(e.ts, '記支出'); });
+  (state.cancels||[]).forEach(function(c){ if(c) see(c.cancelAt, '取消'); });
+  (state.pendingTrips||[]).forEach(function(p){ if(p && p.dropoff) see(p.dropoff.ts, '下車'); if(p && p.pickup) see(p.pickup.ts, '上車'); });
+  if(state.activeTrip && state.activeTrip.pickup) see(state.activeTrip.pickup.ts, '上車');
+  if(state.pendingAccept) see(state.pendingAccept.ts, '接單');
+  [d, addDays(d, -1)].forEach(function(x){
+    var mx = state.dailyMeta[x]; if(!mx) return;
+    see(mx.restResetAt, '上廁所');
+    if(mx.onBreak) see(mx.breakStart, '休息');
+    (Array.isArray(mx.punch) ? mx.punch : []).forEach(function(p){
+      if(!Array.isArray(p) || +p[0]===from || +p[0]===B) return;
+      see(p[0], p[1]==='o' ? '休息' : '休息結束');
+    });
+  });
+  return best;
+}
+function dtLocal(ts){ var d = new Date(ts); return toDateStr(d)+'T'+pad(d.getHours())+':'+pad(d.getMinutes()); }
+function mdOf(d){ return (+d.slice(5,7))+'/'+(+d.slice(8,10)); }
+function mdhm(ts){ var d = new Date(ts); return (d.getMonth()+1)+'/'+d.getDate()+' '+hhmm(ts); }
+// 下班打卡 asks once when it may be a forgotten one: this shift over the 上班太久 hours (12 when that reminder is off)
+// and nothing done for EMPTY_GAP_CAP_MIN. force: asked for (the link on the 上班太久 reminder), no thresholds.
+function endAskInfo(t, now, force){
+  var m = (state.dailyMeta||{})[t]; if(!m || !m.activeShiftStart) return null;
+  if(m.onBreak && !force) return null;   // the end time of a break changes no work hours
+  var worked = (+m.workedMs||0) + (m.segmentStart ? now - m.segmentStart : 0) + carriedMs(t, m);
+  var lim = (uiShow('restRemind') && restDayHours()>0) ? restDayHours() : 12;
+  var la = shiftLastAct(t);
+  if(!force && (worked < lim*3600000 || now - la.ts < EMPTY_GAP_CAP_MIN*60000)) return null;
+  return {day:t, from:shiftFromOf(t, m), last:Math.min(la.ts, now), what:la.what, now:now};
+}
+var endAsk = null;
+function openEndAsk(a){
+  endAsk = a;
+  var hrs = (a.now - a.from)/3600000;
+  var h = '<div class="modal-title">這一班從 '+mdhm(a.from)+' 到現在 '+fmtNum(hrs,1)+' 小時<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div style="font-size:13.5px;line-height:1.7;margin-bottom:12px">最後一筆是 <b>'+hhmm(a.last)+'</b> '+esc(a.what)+'。是不是忘了按下班打卡?</div>';
+  h += '<div class="btn-row" style="flex-direction:column;gap:8px">';
+  h += '<button class="btn btn-primary" style="width:100%" data-act="co-end:now">現在下班</button>';
+  h += '<button class="btn" style="width:100%" data-act="co-end:last">'+hhmm(a.last)+' 就下班了</button></div>';
+  h += '<details style="margin-top:10px"><summary style="cursor:pointer;font-size:13.5px;font-weight:700;color:var(--accent)">選別的時間</summary>';
+  h += '<div class="form-row" style="margin-top:8px"><label>實際下班時間('+hhmm(a.last)+' 到現在)</label><input type="datetime-local" id="f-co-end" min="'+dtLocal(a.last)+'" max="'+dtLocal(a.now)+'" value="'+dtLocal(a.last)+'"></div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="co-end:pick">用這個時間下班</button></div></details>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:10px;line-height:1.6">按了「休息」的時間不算工時;沒按休息就算在工時裡(時薪含空檔、等單)。長時間停下來休息,記得按「休息」。</div>';
+  openModal(h);
+}
+// 下班打卡 at E (now, or the time chosen when asked); the report opens for the day the shift ended on
+function doClockOut(E){
+  if(state.pendingAccept) state.pendingAccept = null;
+  var t = todayStr(), m = (state.dailyMeta||{})[t];
+  if(!m || !m.activeShiftStart){ if(document.getElementById('modalBody')) closeModal(); renderAll(); return; }
+  var endDay = endShiftAt(t, E);
+  noteCrossOut(t, endDay, E);
+  save(); cloudSyncIfBehind(true);
+  if(document.getElementById('modalBody')) closeModal();
+  renderAll();
+  if(uiShow('dayReport') && openDayReport(endDay)) rvArm(endDay);
 }
 function findMissingKmDate(){
   if(!uiOn('km')) return null;
@@ -1226,8 +1387,11 @@ function openNextMissingKmOrClose(){
 }
 function openStaleShiftModal(dateStr){
   var h = '<div class="modal-title">補登下班時間<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
-  h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:14px;line-height:1.6">系統發現 <b style="color:var(--text)">'+dateStr+'</b> 有上班打卡,但沒有下班打卡,那天的工時一直沒有結算。請補選實際的下班時間,系統才會把那天的工時算進去(否則那天的工時、時薪都會少算)。</div>';
-  h += '<div class="form-row"><label>實際下班時間</label><input type="datetime-local" id="f-stale-endtime" value="'+dateStr+'T23:59"></div>';
+  // the default is the shift's last activity (11/22: no longer 23:59, which dropped the hours after midnight)
+  var la = shiftLastAct(dateStr), from = shiftFromOf(dateStr);
+  h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:14px;line-height:1.6">系統發現 <b style="color:var(--text)">'+dateStr+'</b> 有上班打卡,但沒有下班打卡,那天的工時一直沒有結算。請補選實際的下班時間,系統才會把那天的工時算進去(否則那天的工時、時薪都會少算)。'+
+    (from ? '<br>這一班從 <b style="color:var(--text)">'+mdhm(from)+'</b> 開始'+(la.ts>from ? ',最後一筆是 <b style="color:var(--text)">'+mdhm(la.ts)+'</b> '+esc(la.what)+',先幫你填這個時間' : '')+'。' : '')+'</div>';
+  h += '<div class="form-row"><label>實際下班時間</label><input type="datetime-local" id="f-stale-endtime" value="'+(from ? dtLocal(Math.min(la.ts, Date.now())) : dateStr+'T23:59')+'" max="'+dtLocal(Date.now())+'"></div>';
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="save-stale-shift:'+dateStr+'">確認補登</button></div>';
   openModal(h);
 }
@@ -3131,6 +3295,7 @@ function captureFor(tripId, which, ts, note){
 // a fare means the shift is running: clock in or end the break so hours aren't lost
 function ensureShiftRunning(now){
   if(!uiOn('shift')) return '';
+  rollShiftOver();
   var sm = dm(todayStr());
   if(!sm.activeShiftStart && !findStaleOpenShiftDate()){
     sm.activeShiftStart = now; sm.segmentStart = now; sm.onBreak = false; punchLog(sm, 'i', now);
@@ -3742,6 +3907,7 @@ function updateFareCompare(){
   box.innerHTML = fare>0 ? fareCompareHtml(fare, fareComparePay) : '<div style="font-size:12.5px;color:var(--text-muted);padding:6px 0">輸入車資後列出各車隊實拿</div>';
 }
 function renderEntry(){
+  rollShiftOver();
   var t = todayStr();
   var meta = dm(t);
   var todayRecs = recordsInRange(t,t);
@@ -3753,7 +3919,7 @@ function renderEntry(){
   var platformTotals = {};
   todayRecs.forEach(function(r){ platformTotals[r.platform]=(platformTotals[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
 
-  var h = moveNoticeHtml() + saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudConflictHtml() + cloudStaleHtml() + startCardHtml() + metroWalletHomeHtml() + vehHomeHtml() + summaryHomeHtml() + fontAskHtml() + uberCutHintHtml();
+  var h = moveNoticeHtml() + saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudConflictHtml() + cloudStaleHtml() + startCardHtml() + metroWalletHomeHtml() + vehHomeHtml() + summaryHomeHtml() + fontAskHtml() + cutCrossHintHtml() + uberCutHintHtml();
   if(state.syncUrl && cloudAuthStatus==='bad'){
     h += '<div class="card" style="border-color:var(--expense);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 雲端密碼不對,資料沒有同步到雲端</b><br>手機裡的帳都還在。請到右上角設定確認「雲端密碼」,改好後會自動補送。</div>';
   }
@@ -3853,6 +4019,11 @@ function renderEntry(){
   if(showDaily) h += '<div class="section"><div class="section-title">今日行車</div><div class="card daily-card">';
   if(uiShow('km')) h += '<div class="daily-row"><span class="l">今日里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(meta.km!=null?meta.km:'')+'" placeholder="0.0" data-km-input></div>';
   if(uiShow('shift')) h += '<div class="daily-row"><span class="l">工時(已扣休息)</span><div style="display:flex;align-items:center;gap:10px"><span class="hours-badge">'+esc(hoursLabel)+'</span>'+shiftBtn+'</div></div>';
+  if(uiShow('shift') && carriedOpen(t, meta)){
+    // a shift carried over the boundary: one line says where its first part went (11/22)
+    var cMs = carriedMs(t, meta), cP = addDays(t, -1);
+    h += '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.6;padding:0 0 6px">🌙 這一班 '+hhmm(meta.shiftFrom)+' 開始,'+hhmm(meta.carryAt)+' 前的 '+fmtNum(cMs/3600000,1)+' 小時算在 '+mdOf(cP)+'(這一班共 '+fmtNum((cMs+liveWorked)/3600000,1)+' 小時)</div>';
+  }
   if(uiShow('shift')) h += breakRow;
   if(uiShow('liveRate')) h += '<div class="daily-row"><span class="l">目前時薪</span><span class="hours-badge" style="color:var(--income)">'+(workedH>=0.5 ? fmtMoney(net.total/workedH) : '—')+'</span></div>';
   if(uiShow('shiftFix')) h += '<div style="text-align:right;padding:2px 0 4px"><a data-act="shift-fix" style="font-size:12.5px;color:var(--accent);cursor:pointer;font-weight:700">⏱️ 補登上班時間 ›</a></div>';
@@ -7889,7 +8060,8 @@ function rnPushId(){
 // 「通知到幾點」: 12 hours after the 上班打卡 that is still open (forgetting 下班打卡 runs out by itself)
 function rnShiftUntil(now){
   var best = 0, dm0 = state.dailyMeta||{};
-  Object.keys(dm0).forEach(function(d){ var m = dm0[d]; if(m && +m.activeShiftStart > best) best = +m.activeShiftStart; });
+  // a shift carried over midnight counts from its own 上班打卡, not from the boundary it was carried at
+  Object.keys(dm0).forEach(function(d){ var m = dm0[d], s = shiftFromOf(d, m); if(s > best) best = s; });
   var u = best ? best + RN_SHIFT_H*3600000 : 0;
   return u > now ? u : 0;
 }
@@ -9078,12 +9250,41 @@ function setFontScale(label, trying){
 var UBER_DAY_CUTOFF = 4;
 function uberShown(){ return visiblePlatforms().some(function(p){ return p.key==='uber'; }); }
 function uberCutHintHtml(){
-  if(state.uberCutHint || !state.onboarded || !uberShown() || dayCutoffHour()===UBER_DAY_CUTOFF) return '';
+  // not while a shift is open (the day must not change under it), nor next to the 跨過換日 card (one question at a time)
+  if(state.uberCutHint || !state.onboarded || !uberShown() || dayCutoffHour()===UBER_DAY_CUTOFF || shiftOpenAny() || cutCrossHintHtml()) return '';
   var b = 'flex:1;padding:9px 6px;border-radius:10px;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-weight:700;font-size:13px;cursor:pointer;font-family:inherit';
   return '<div class="card" id="uberCutHint" style="margin-bottom:12px;padding:12px 14px"><div style="font-size:14px;font-weight:700;margin-bottom:6px">🚗 跑 Uber 的提醒</div>'+
     '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;margin-bottom:10px">Uber 一天的車資結算是<b style="color:var(--text)">凌晨 04:00 到隔天 03:59</b>。記帳本現在是 '+pad(dayCutoffHour())+':00 換日,所以半夜跑的單,記帳本和 Uber App 的「每日收入」會算在不同天。想對得起來,可以把營業日分界改成凌晨 04:00(只影響之後記的帳)。</div>'+
     '<div style="display:flex;gap:8px"><button data-act="uber-cut:set" style="'+b+';border-color:var(--accent-strong);background:var(--accent-soft)">改成凌晨 04:00</button><button data-act="uber-cut:keep" style="'+b+'">維持 '+pad(dayCutoffHour())+':00</button></div>'+
     '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px">之後可以在 ⚙️「基本設定」→「我的營業日分界時間」改</div></div>';
+}
+/* 第三層 (B1-02, 11/22): after the first shift ever carried over the boundary has ended, the home page asks once whether
+   the day should change later, so a whole shift lands on one day. Only after 下班打卡, never while a shift is open
+   (nothing pops up while driving). Either answer is remembered (state.cutCrossHint, carried by backups like uberCutHint);
+   state.cutCross holds that first crossing {p, n, out} until then. The suggested hour: the 下班 time rounded up to the
+   hour, plus one, from 04:00 to 09:00 (02:10 → 04:00, 05:30 → 07:00, 08:30 → 09:00). A shift that ended after 09:00, or
+   a day that already changes at 09:00, cannot be put on one day: the card only says so. */
+function cutCrossSuggest(c){
+  var x = (+c.out - new Date(c.n+'T00:00:00').getTime())/3600000;
+  if(!(x>=0) || x>DAY_CUTOFF_MAX || dayCutoffHour()>=DAY_CUTOFF_MAX) return 0;
+  return Math.min(DAY_CUTOFF_MAX, Math.max(UBER_DAY_CUTOFF, Math.ceil(x-1e-9)+1));
+}
+function cutCrossHintHtml(){
+  var c = state.cutCross;
+  if(state.cutCrossHint || !c || typeof c!=='object' || !(+c.out>0) || typeof c.p!=='string' || typeof c.n!=='string' || shiftOpenAny()) return '';
+  var cur = dayCutoffHour(), s = cutCrossSuggest(c);
+  var b = 'flex:1;padding:9px 6px;border-radius:10px;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-weight:700;font-size:13px;cursor:pointer;font-family:inherit';
+  var h = '<div class="card" id="cutCrossHint" style="margin-bottom:12px;padding:12px 14px">';
+  h += '<div style="font-size:13.5px;line-height:1.6;margin-bottom:10px">🌙 你這一班跨過 '+pad(cur)+':00,工時和車資分成了 '+mdOf(c.p)+'、'+mdOf(c.n)+' 兩天。';
+  if(s){
+    h += '要把換日時間改成 <b>'+pad(s)+':00</b>,讓一整班算在同一天嗎?</div>';
+    h += '<div style="display:flex;gap:8px"><button data-act="cut-cross:'+s+'" style="'+b+';border-color:var(--accent-strong);background:var(--accent-soft)">改成 '+pad(s)+':00</button><button data-act="cut-cross:keep" style="'+b+'">維持 '+pad(cur)+':00</button></div>';
+    h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;line-height:1.6">只影響之後記的帳,已經記的不會搬日期。之後可以在 ⚙️「基本設定」改。</div>';
+  } else {
+    h += '換日時間最晚到 09:00,超過的部分會算到隔天。</div>';
+    h += '<div style="display:flex;gap:8px"><button data-act="cut-cross:keep" style="'+b+'">知道了</button></div>';
+  }
+  return h + '</div>';
 }
 function fontAskHtml(){
   if(state.fontAsked) return '';
@@ -9420,19 +9621,26 @@ function settleCampaign(id, take){
 function restHours(){ return state.restHours>0 ? +state.restHours : 2; }
 function restDayHours(){ return state.restDayHours!=null ? +state.restDayHours : 12; }
 function checkRestReminder(){
-  if(!uiShow('restRemind') || document.getElementById('modalBody') || document.visibilityState==='hidden') return;
-  var m = dm(todayStr()), now = Date.now();
+  if(document.visibilityState==='hidden') return;
+  if(rollShiftOver() && typeof renderAll==='function') renderAll();   // the boundary passed while the ledger was open
+  if(!uiShow('restRemind') || document.getElementById('modalBody')) return;
+  var t = todayStr(), m = dm(t), now = Date.now();
   if(!m.activeShiftStart) return;
-  var live = m.workedMs + (m.segmentStart ? now-m.segmentStart : 0), dayH = restDayHours();
+  // a shift carried over the boundary: 上班太久 counts the whole shift, 連續開車 goes on from before it (11/22)
+  var carried = carriedOpen(t, m);
+  var live = m.workedMs + (m.segmentStart ? now-m.segmentStart : 0) + carriedMs(t, m), dayH = restDayHours();
   if(dayH>0 && live >= dayH*3600000 && !m.dayLongWarned){
     m.dayLongWarned = true; saveQuiet();
-    openModal('<div class="modal-title">🌙 今天已經上班 '+fmtNum(live/3600000,1)+' 小時<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>'+
-      '<div style="font-size:13.5px;line-height:1.75;margin-bottom:14px">'+nickCall()+'今天開很久了,注意精神狀況,累了就早點收工休息。</div>'+
-      '<div class="btn-row"><button class="btn btn-primary" data-act="close-modal">知道了</button></div>');
+    openModal('<div class="modal-title">🌙 '+(carried ? '這一班' : '今天')+'已經上班 '+fmtNum(live/3600000,1)+' 小時<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>'+
+      '<div style="font-size:13.5px;line-height:1.75;margin-bottom:14px">'+nickCall()+(carried ? '這一班' : '今天')+'開很久了,注意精神狀況,累了就早點收工休息。</div>'+
+      '<div class="btn-row"><button class="btn btn-primary" data-act="close-modal">知道了</button></div>'+
+      '<div style="text-align:right;margin-top:10px"><a data-act="co-ask" style="font-size:12.5px;color:var(--accent);cursor:pointer;font-weight:700">忘了按下班打卡?按這裡補登 ›</a></div>');
     return;
   }
   if(m.onBreak || !m.segmentStart) return;
-  var cont = now - Math.max(m.segmentStart, m.restResetAt||0);
+  var segFrom = +m.segmentStart;
+  if(carried && +m.contFrom>0 && segFrom===+m.carryAt) segFrom = Math.min(segFrom, +m.contFrom);
+  var cont = now - Math.max(segFrom, m.restResetAt||0);
   if(cont < restHours()*3600000 || now < (m.restSnoozeUntil||0)) return;
   m.restSnoozeUntil = now + 30*60000; saveQuiet();  // at most every 30 minutes, however the box is closed
   var hh = Math.floor(cont/3600000), mm = Math.floor(cont%3600000/60000);
@@ -9476,7 +9684,7 @@ var HELP = [
   ]],
   ['上班與工時', [
     ['上下班打卡、休息', '記帳頁「今日行車」按上班打卡 / 下班打卡,休息按休息開始 / 結束。忘了打下班卡,下次打開會問你。', 'shift'],
-    ['跑過半夜(營業日分界)', '新安裝預設午夜 00:00 換日(照日曆算)。常跑過半夜的,到 ⚙️「基本設定」→「我的營業日分界時間」往後調(最晚到早上 09:00),那個時間以前記的帳都算前一天,凌晨時記帳頁上方會提醒。Uber 一天的車資結算是凌晨 04:00 到隔天 03:59,想跟 Uber App 的每日收入對得起來就選凌晨 04:00。'],
+    ['跑過半夜(營業日分界)', '新安裝預設午夜 00:00 換日(照日曆算)。常跑過半夜的,到 ⚙️「基本設定」→「我的營業日分界時間」往後調(最晚到早上 09:00),那個時間以前記的帳都算前一天,凌晨時記帳頁上方會提醒。上班中跨過換日時間不用重新打卡:下班打卡一直在、休息提醒照常,工時在換日那一刻分成兩天(前一天算到換日時間,之後算新的一天,跟車資分天一樣),打卡卡片和今日跑車報告會寫哪一段算在哪天;上班中不能改換日時間。上班超過一整天沒按下班打卡,會請你補登下班時間(先填這一班最後一筆活動的時間)。Uber 一天的車資結算是凌晨 04:00 到隔天 03:59,想跟 Uber App 的每日收入對得起來就選凌晨 04:00。'],
     ['目前時薪', '今日行車顯示今日實收 ÷ 已跑工時,上班滿 30 分鐘才顯示。', 'liveRate'],
     ['今日跑車報告', '下班打卡後跳出:實收、平均時薪、趟數,跟前 7 天比較,還有「今天時薪走勢」小圖(累積平均時薪怎麼變化),可以順便備份。按「📤 分享今日戰績」可以把趟數、工時、時薪走勢做成一張圖傳 LINE、限動(以前的日子到「歷史」點那一天,按「看這天的報告」或「分享這天戰績」);預設不顯示金額,要露金額自己打開,車牌、地點永遠不會出現在圖上。', 'dayReport'],
     ['休息提醒', '連續開車太久(預設 2 小時)、今天上班太久(預設 12 小時)時提醒你,只是提醒,不會幫你按休息。時間在功能開關下面改。記帳本要打開著才會跳出來。', 'restRemind'],
@@ -9616,6 +9824,7 @@ function tipFromForm(){
   return {tip:Math.round(amt*rate), fx:{cur:c.value, amt:amt, rate:rate}};
 }
 function openShiftFix(){
+  rollShiftOver();
   var t = todayStr(), m = dm(t);
   var h = '<div class="modal-title">⏱️ 補登上班時間<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
   h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">補登 '+t+' 的工時,會加在今天已經有的工時上。前幾天的工時請到「歷史」頁點那一天修改。</div>';
@@ -9633,6 +9842,7 @@ function tsOnBusinessDay(t, hm){
   return d.getTime();
 }
 function saveShiftFix(){
+  rollShiftOver();
   var t = todayStr(), m = dm(t);
   var sv = document.getElementById('f-sf-start').value;
   if(!sv){ alert('請選擇幾點開始上班。'); return; }
@@ -9792,6 +10002,15 @@ function dayTrendHtml(t, rate7){
   h += '</div>';
   return h;
 }
+// a shift carried over into day t (11/22): where its first part went, with the day before's report one tap away
+function dayCarryLineHtml(t){
+  var m = (state.dailyMeta||{})[t];
+  if(!m || !(+m.shiftFrom>0) || !(+m.carryAt>0)) return '';
+  var P = addDays(t, -1), B = +m.carryAt, bd = new Date(B);
+  var bl = hhmm(B), el = (bd.getHours()===0 && bd.getMinutes()===0) ? '24:00' : bl;
+  var link = (recordsInRange(P, P).length || cancelSum(cancelsInRange(P, P)).n) ? ' <a data-act="hist-report:'+P+'" style="color:var(--accent);cursor:pointer;font-weight:700;white-space:nowrap">(看那天的報告 ›)</a>' : '';
+  return '<div style="font-size:12.5px;line-height:1.6;margin-bottom:10px">🌙 這一班跨過 '+bl+','+hhmm(m.shiftFrom)+'–'+el+' 那段算在 '+mdOf(P)+link+'</div>';
+}
 function openDayReport(t){
   var recs = recordsInRange(t, t), cxS = cancelSum(cancelsInRange(t, t));
   if(!recs.length && !cxS.n) return;
@@ -9805,6 +10024,7 @@ function openDayReport(t){
   function tile(lbl, val, cls){ return '<div class="stat-tile"><div class="lbl">'+lbl+'</div><div class="val num'+(cls?' '+cls:'')+'">'+val+'</div></div>'; }
   var h = '<div class="modal-title">🚕 今日跑車報告<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
   h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">'+t+' · '+(nickName() ? esc(nickName())+',' : '')+'辛苦了!</div>';
+  h += dayCarryLineHtml(t);
   h += '<div class="summary-row" style="grid-template-columns:1fr 1fr;margin-bottom:10px">';
   h += tile('今日實收', fmtMoney(net), 'income') + tile('今日結餘(扣今日支出)', fmtMoney(net-exp));
   h += tile('趟數', trips+' 趟') + tile('每趟平均', trips?fmtMoney(tripNet/trips):'—');
@@ -10235,7 +10455,7 @@ function openModeChooser(){
   h += '<button style="'+big+'" data-act="ui-choose:full"><b style="font-size:15px">🔵 完整分析</b><br><span style="font-size:12px;color:var(--text-muted)">記車種、付款方式、上下車時間,分析時薪、熱區、載客率。</span></button>';
   openModal(h);
 }
-var OB_TOTAL = 8;
+var OB_TOTAL = 9;
 function onboardStep(n, title){
   return '<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:2px">第 '+n+' / '+OB_TOTAL+' 步'+(n>4?'(選填)':'')+'</div><div class="modal-title">'+title+'</div>';
 }
@@ -10253,10 +10473,23 @@ function openOnboardName(){
   h += '<div class="form-row" style="margin-bottom:12px"><input id="ob-nickname" type="text" maxlength="'+NICK_MAX+'" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="例如:阿明" value="'+esc(nickName())+'" aria-label="你的稱呼"></div>';
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="ob-name-next">下一步</button></div>';
   h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;line-height:1.6">之後隨時可以在 ⚙️「基本設定」改或清掉。</div>';
+  h += onboardSkipHtml('ob-cut-open', '略過');
+  openModal(h);
+}
+// step 6 (optional, 11/22 B1-02): 你通常幾點收工? sets the hour the ledger changes day at, in the driver's words (the
+// word 營業日分界 is not used). 不一定 and 略過 change nothing (a new ledger stays at 00:00; 第一層 carries a shift over
+// it). 天亮前後 counts as having answered the Uber card too: its 04:00 would cut a night shift in two.
+var OB_CUT = [['午夜 12 點前', 0], ['凌晨 1～3 點', 4], ['天亮前後(夜班)', 9], ['不一定', -1]];
+function openOnboardCut(){
+  var big = 'display:block;width:100%;text-align:left;padding:14px 16px;margin-bottom:10px;border-radius:14px;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-family:inherit;cursor:pointer;line-height:1.6';
+  var h = onboardStep(6, '你通常幾點收工?');
+  if(shiftOpenAny()) h += '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 10px;line-height:1.6">上班中不能改換日時間,下班打卡後到 ⚙️「基本設定」改。</div>';
+  else OB_CUT.forEach(function(x, i){ h += '<button style="'+big+'" data-act="ob-cut:'+i+'"><b style="font-size:15px">'+x[0]+'</b></button>'; });
+  h += '<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:6px;line-height:1.6">記帳本用這個時間換日,一整班的車資和工時會算在同一天。之後可以在 ⚙️「基本設定」改。</div>';
   h += onboardSkipHtml('ob-x:0', '略過');
   openModal(h);
 }
-// steps 6-8: each opens the real settings; when that sheet closes the guide goes on to the next step
+// steps 7-9: each opens the real settings; when that sheet closes the guide goes on to the next step
 var OB_EXTRA = [
   ['fees', '每家平台抽多少?', '記帳時會自動扣手續費,算出實收。已經先填好各車隊常見的費率,跟你的合約不一樣再改。', '💰 設定手續費'],
   ['payout', '車隊什麼時候撥款?', '「撥款」頁會算出每家哪天入帳、入多少,方便對帳。已經先填好各車隊公布的撥款日,收款帳戶可以在這裡選。', '🏦 設定撥款'],
@@ -10266,7 +10499,7 @@ var obResume = null;
 function openOnboardExtra(i){
   if(i>=OB_EXTRA.length){ finishOnboard(); return; }
   var x = OB_EXTRA[i];
-  var h = onboardStep(6+i, x[1]);
+  var h = onboardStep(7+i, x[1]);
   h += '<div style="font-size:13px;line-height:1.7;margin-bottom:14px">'+x[2]+'</div>';
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="ob-x-go:'+i+'">'+x[3]+'</button></div>';
   h += onboardSkipHtml('ob-x:'+(i+1));
@@ -10443,11 +10676,11 @@ function openSettingsModal(){
        '<div><span style="font-size:11px;color:var(--text-muted)">每週</span><input class="num-input" id="f-target-weekly" type="number" min="0" value="'+(state.targets.weekly||'')+'"></div></div>';
   h += '<div><span style="font-size:11px;color:var(--text-muted)">每月</span><input class="num-input" id="f-target-monthly" type="number" min="0" value="'+(state.targets.monthly||'')+'"></div></div>';
 
-  var cutoffNow = dayCutoffHour();
+  var cutoffNow = dayCutoffHour(), cutLocked = shiftOpenAny();
   h += '<div class="form-row" style="margin-top:6px"><label>我的營業日分界時間(日報、分析用;跑過午夜時,這個時間以前都算前一天。新安裝預設午夜 00:00,照日曆算;常跑過半夜的可以往後調。平台撥款另外依各平台結算時間計算,不受影響)</label>'+
-    (uberShown() ? '<div style="font-size:11.5px;color:var(--text-muted);margin:-2px 0 6px;line-height:1.6">🚗 跑 Uber 的提醒:Uber 一天的車資結算是凌晨 04:00 到隔天 03:59。想跟 Uber App 的每日收入對得起來,選「凌晨 04:00」。</div>' : '')+'<select id="f-day-cutoff">'+
+    (uberShown() ? '<div style="font-size:11.5px;color:var(--text-muted);margin:-2px 0 6px;line-height:1.6">🚗 跑 Uber 的提醒:Uber 一天的車資結算是凌晨 04:00 到隔天 03:59。想跟 Uber App 的每日收入對得起來,選「凌晨 04:00」。</div>' : '')+'<select id="f-day-cutoff"'+(cutLocked?' disabled':'')+'>'+
     Array.apply(null, Array(DAY_CUTOFF_MAX+1)).map(function(x, hh){ return '<option value="'+hh+'"'+(hh===cutoffNow?' selected':'')+'>'+cutoffLabel(hh)+'</option>'; }).join('')+
-    '</select></div>';
+    '</select>'+(cutLocked ? '<div id="f-day-cutoff-lock" style="font-size:11.5px;color:var(--text-muted);margin-top:4px">上班中不能改,下班打卡後再改</div>' : '')+'</div>';
   S.basic += h; h = '';
   h += '<div class="form-row" style="margin-top:6px"><label>進階:記錄接單時間</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-track-accept" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.trackAccept?' checked':'')+'>打開後,接到單先按「📲 接到單了」,客人上車再按「上車」。被乘客或自己取消的單也能記下來(含取消費),分析頁會把空檔分成等單和前往接客兩段。<br>不想多按可以關掉:記帳照常;被取消的單改成事後補記,前往接客的時間會算在等單裡。</label></div>';
   if(HOT_URL) h += '<div class="form-row"><label>分享上車熱區(車友熱區)</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-share-hot" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.shareHot===true?' checked':'')+'><span>分享你的上車熱區,就能在分析頁看「車友熱區」。只送約 1 公里一格的區域、日期、時段、趟數,<b>不送精確位置、金額、平台</b>;3 位以上車友都上過車的地方才會顯示。取消勾選會一併刪除你分享過的資料。</span></label></div>';
@@ -10499,12 +10732,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.22.10';
+var APP_VERSION = '2026.11.22.11';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.22.11', '🌙 夜班跨過午夜也不用重新打卡:下班打卡會一直在,休息提醒照常;工時照換日時間分成兩天(換日時間可以改,上班中不能改)', '', {set:'basic'}],
   ['2026.11.22.10', '🚐 YOXI 企業簽單的優惠折數選項改成:原價、95 折、9 折、85 折(原本的 92 折改成 9 折)。以前記成 92 折的帳照舊計算,編輯時會顯示「92折(舊)」'],
   ['2026.11.22.10', '⚡ BOLT 的「車貼獎勵門檻」改成預設關閉(大部分司機沒有貼車貼)。有貼車貼的話,到 ⚙️ 設定 →「平台與手續費」打開;以前記的帳不會被改,想把過去的帳也改過來,存檔後選「套用」並挑日期', '', {set:'platforms'}],
   ['2026.11.22.8', '📅 「歷史」點某一天,摘要下面多兩顆按鈕:「看這天的報告」「分享這天戰績」,下班時報告關掉了、或想分享以前的日子都可以', '', {tab:'history', find:'看這天的報告', day:true}],
@@ -11319,7 +11553,9 @@ function saveSettings(){
   state.feeRules.boltPct = g('f-fee-boltpct');
   state.feeRules.boltThreshold = g('f-fee-boltthreshold');
   state.feeRules.boltThresholdEnabled = document.getElementById('f-fee-boltthresholdenabled').checked;
-  state.dayCutoffHour = +document.getElementById('f-day-cutoff').value;
+  // B1-11: never while a shift is open (the open shift would end up on another day); checked here too, not only on screen
+  var cutV = +document.getElementById('f-day-cutoff').value;
+  if(cutV!==dayCutoffHour() && cutV>=0 && cutV<=DAY_CUTOFF_MAX){ if(shiftOpenAny()) setTimeout(function(){ showToast('上班中不能改營業日分界,下班打卡後再改', 4000); }, 300); else state.dayCutoffHour = cutV; }
   state.trackAccept = document.getElementById('f-track-accept').checked;
   state.statOptOut = !document.getElementById('f-stat-on').checked;
   var shEl = document.getElementById('f-share-hot');
@@ -11501,6 +11737,8 @@ document.addEventListener('click', function(e){
   else if(cmd==='camp-settle'){ var cs = arg.split(':'); settleCampaign(cs[0], cs[1]==='yes'); }
   else if(cmd==='save-shift-fix'){ saveShiftFix(); }
   else if(cmd==='clock-in'){
+    rollShiftOver();
+    if(((state.dailyMeta||{})[todayStr()]||{}).activeShiftStart){ renderAll(); return; }   // carried over meanwhile: already on
     var staleDate1 = findStaleOpenShiftDate();
     if(staleDate1){ openStaleShiftModal(staleDate1); return; }
     var m1 = dm(todayStr()), now1 = Date.now(); m1.activeShiftStart=now1; m1.segmentStart=now1; m1.onBreak=false; punchLog(m1, 'i', now1); save(); renderAll();
@@ -11511,9 +11749,15 @@ document.addEventListener('click', function(e){
     if(!staleVal){ alert('請選擇下班時間。'); return; }
     var staleEndTs = new Date(staleVal).getTime();
     var staleMeta = state.dailyMeta[arg];
+    if(!staleMeta || !staleMeta.activeShiftStart){ openNextMissingKmOrClose(); return; }
     var staleStartRef = (staleMeta.onBreak && staleMeta.breakStart) ? staleMeta.breakStart : staleMeta.segmentStart;
-    if(!staleStartRef || isNaN(staleEndTs) || staleEndTs<=staleStartRef){ alert('下班時間必須晚於上班(或上次恢復工作)的時間,請重新選擇。'); return; }
-    finalizeStaleShift(arg, staleEndTs);
+    // a carried shift may end before its boundary when nothing was done after it (the part from the boundary is given back)
+    var staleLo = staleStartRef;
+    if(carriedOpen(arg, staleMeta) && !staleMeta.onBreak){ var staleLa = shiftLastAct(arg).ts; if(staleLa < staleLo) staleLo = Math.floor(staleLa/60000)*60000; }
+    if(!staleStartRef || isNaN(staleEndTs) || staleEndTs<staleLo){ alert('下班時間必須晚於上班(或上次恢復工作)的時間,請重新選擇。'); return; }
+    if(staleEndTs > Date.now()+60000){ alert('下班時間不能比現在晚,請重新選擇。'); return; }
+    if(staleEndTs < staleStartRef) staleEndTs = Math.max(staleEndTs, shiftLastAct(arg).ts);
+    finalizeStaleShift(arg, Math.min(staleEndTs, Date.now()));
     var nextStale = findStaleOpenShiftDate();
     if(nextStale){ openStaleShiftModal(nextStale); } else { openNextMissingKmOrClose(); }
   }
@@ -11530,21 +11774,41 @@ document.addEventListener('click', function(e){
     openNextMissingKmOrClose();
   }
   else if(cmd==='clock-out'){
+    rollShiftOver();
+    if(!((state.dailyMeta||{})[todayStr()]||{}).activeShiftStart){ var coStale = findStaleOpenShiftDate(); if(coStale) openStaleShiftModal(coStale); else renderAll(); return; }
     var coLeft = [];
     if(state.activeTrip) coLeft.push('・還在「載客中」,沒有按下車');
     var coPend = (state.pendingTrips||[]).length;
     if(coPend) coLeft.push('・'+coPend+' 趟已下車、還沒記車資');
     if(state.pendingAccept) coLeft.push('・按了「接到單了」,但客人還沒上車(被取消的話,先按「✕ 取消這單」記下來)');
     if(coLeft.length && !confirm('下班前提醒:\n'+coLeft.join('\n')+'\n\n按「確定」照樣下班(之後還是可以補記),按「取消」先回去處理。')) return;
-    if(state.pendingAccept) state.pendingAccept = null;
-    var m2 = dm(todayStr());
-    if(m2.onBreak && m2.breakStart){ m2.breakMs += (Date.now()-m2.breakStart); m2.breakStart=null; m2.onBreak=false; }
-    if(m2.segmentStart){ var now2 = Date.now(); m2.workedMs += (now2-m2.segmentStart); m2.segmentStart=null; punchLog(m2, 'o', now2); }
-    m2.activeShiftStart=null;
-    save(); cloudSyncIfBehind(true); renderAll();
-    if(uiShow('dayReport') && openDayReport(todayStr())) rvArm(todayStr());
+    var coAsk = endAskInfo(todayStr(), Date.now());
+    if(coAsk){ openEndAsk(coAsk); return; }
+    doClockOut(Date.now());
+  }
+  else if(cmd==='co-ask'){
+    // the link on the 上班太久 reminder: the same choice as a 下班打卡 that may be a forgotten one
+    rollShiftOver();
+    var caA = endAskInfo(todayStr(), Date.now(), true);
+    if(caA) openEndAsk(caA); else { closeModal(); renderAll(); }
+  }
+  else if(cmd==='co-end'){
+    var ea = endAsk, eNow = Date.now();
+    if(!ea || ea.day!==todayStr() || !((state.dailyMeta||{})[ea.day]||{}).activeShiftStart){ endAsk = null; closeModal(); renderAll(); return; }
+    var eEnd = eNow;
+    if(arg==='last') eEnd = ea.last;
+    else if(arg==='pick'){
+      var eVal = (document.getElementById('f-co-end')||{}).value, eTs = eVal ? new Date(eVal).getTime() : NaN;
+      if(isNaN(eTs)){ alert('請選擇下班時間。'); return; }
+      if(eTs < Math.floor(ea.last/60000)*60000){ alert('下班時間不能早於最後一筆('+hhmm(ea.last)+'),請重新選擇。'); return; }
+      if(eTs > eNow+60000){ alert('下班時間不能比現在晚,請重新選擇。'); return; }
+      eEnd = Math.min(Math.max(eTs, ea.last), eNow);
+    }
+    endAsk = null;
+    doClockOut(eEnd);
   }
   else if(cmd==='break-start'){
+    rollShiftOver();
     var m3 = dm(todayStr());
     if(m3.activeShiftStart && !m3.onBreak && m3.segmentStart){
       var now3 = Date.now(); m3.workedMs += (now3-m3.segmentStart); m3.segmentStart=null; m3.onBreak=true; m3.breakStart=now3; punchLog(m3, 'o', now3);
@@ -11568,6 +11832,7 @@ document.addEventListener('click', function(e){
     showToast('已打開');
   }
   else if(cmd==='break-end'){
+    rollShiftOver();
     var m4 = dm(todayStr());
     if(m4.onBreak && m4.breakStart){
       var now4 = Date.now(); m4.breakMs += (now4-m4.breakStart); m4.breakStart=null; m4.onBreak=false; m4.segmentStart=now4; punchLog(m4, 'i', now4);
@@ -11575,6 +11840,7 @@ document.addEventListener('click', function(e){
     }
   }
   else if(cmd==='toilet'){
+    rollShiftOver();
     var mt = dm(todayStr());
     mt.toilet = Math.max(0, (mt.toilet||0) + (+arg));
     // a toilet stop restarts the 連續開車 count for the rest reminder (not a break: hours and rate stay); -1 (a slip) does not undo it
@@ -11745,9 +12011,17 @@ document.addEventListener('click', function(e){
   else if(cmd==='font-pick'){ setFontScale(arg, true); renderAll(); }
   else if(cmd==='font-ask-off'){ state.fontAsked = true; save(); renderAll(); }
   else if(cmd==='uber-cut'){
+    if(arg==='set' && shiftOpenAny()){ showToast('上班中不能改營業日分界,下班打卡後再改', 4000); renderAll(); return; }
     if(arg==='set') state.dayCutoffHour = UBER_DAY_CUTOFF;
     state.uberCutHint = true; save(); renderAll();
     showToast(arg==='set' ? '已改成凌晨 04:00 換日' : '好,維持 '+pad(dayCutoffHour())+':00 換日');
+  }
+  else if(cmd==='cut-cross'){
+    var ccH = +arg;
+    if(arg!=='keep' && shiftOpenAny()){ showToast('上班中不能改營業日分界,下班打卡後再改', 4000); renderAll(); return; }
+    if(arg!=='keep' && ccH>=0 && ccH<=DAY_CUTOFF_MAX){ state.dayCutoffHour = ccH; state.uberCutHint = true; }
+    state.cutCrossHint = true; delete state.cutCross; save(); renderAll();
+    showToast(arg!=='keep' ? '已改成 '+pad(ccH)+':00 換日,之後記的帳照這個時間分天' : '好,維持 '+pad(dayCutoffHour())+':00 換日');
   }
   else if(cmd==='save-appname'){ saveAppName(); }
   else if(cmd==='open-settings'){ openSettingsModal(); }
@@ -12058,6 +12332,16 @@ document.addEventListener('click', function(e){
     // what is in the box is kept (a guide run again shows the name already there; emptying it clears it); empty = nothing to keep
     var obn = document.getElementById('ob-nickname');
     if(obn){ var obv = cleanNick(obn.value); if(obv!==nickName()){ state.nickname = obv; save(); } }
+    openOnboardCut();
+  }
+  else if(cmd==='ob-cut-open'){ openOnboardCut(); }
+  else if(cmd==='ob-cut'){
+    var obc = OB_CUT[+arg];
+    if(obc && obc[1]>=0 && !shiftOpenAny()){
+      state.dayCutoffHour = obc[1];
+      if(obc[1]===DAY_CUTOFF_MAX) state.uberCutHint = true;
+      save(); renderAll();
+    }
     openOnboardExtra(0);
   }
   else if(cmd==='ob-x-go'){
@@ -12215,6 +12499,8 @@ detectAppEnv().then(function(env){
   setTimeout(statPing, 4000);
   setTimeout(hotSharePush, 6000);
 });
+rollShiftOver();   // before looking for a forgotten 下班打卡: a shift open since yesterday is carried, not forgotten
+document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='visible' && rollShiftOver()) renderAll(); });
 var _staleShiftDate = findStaleOpenShiftDate();
 if(_staleShiftDate){ openStaleShiftModal(_staleShiftDate); }
 else if(staleAccept()){ maybeAskStaleAccept(); }
