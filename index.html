@@ -814,6 +814,18 @@ function catInfo(key){
 
 // version of the saved ledger layout; a backup made by a newer version is refused, never guessed at
 var LEDGER_FMT = 1;
+// 資料等級 (B1-03): how much of what a ledger can hold this version understands. fmt above keeps meaning "this version
+// cannot read the ledger at all" (refused whole). The level is for data an older version can open but would count or
+// show wrongly. Every save writes at least this version's level and never lowers it (packState), so a ledger saved by a
+// newer version tells an older one to open it read-only (ledgerTooNew): shown, but nothing is entered, nothing is
+// written to the phone and nothing is sent to the cloud; a backup at a higher level is refused like a newer fmt.
+// RULE: add 1 whenever a new feature makes an older version count or show existing data wrongly (a new kind of entry,
+// a field whose meaning changes). A new setting an older version simply ignores does not need it.
+//   (none) ledgers saved before 2026.11.22.13, which wrote no level
+//   1      the original layout (up to 2026.11.20)
+//   2      2026.11.21 記帳時填實收 (r.netEntry: an older version takes the 實收 as a fare and charges the fee again) and
+//          取消接客 (cancels and 取消費 entries, shown as 「cancelfee」 by an older version)
+var LEDGER_LEVEL = 2;
 function defaultState(){
   return {
     fmt:LEDGER_FMT,
@@ -868,7 +880,27 @@ function fillMissing(s){
   if(!('dayCutoffHour' in s) || s.dayCutoffHour==null) s.dayCutoffHour = LEGACY_DAY_CUTOFF;
   var d = defaultState();
   for(var k in d){ if(!(k in s)) s[k] = d[k]; }
+  if(fillLegacyHours(s)) legacyHoursFilled = true;
   return s;
+}
+// B1-07: the earliest versions kept a day's work time as hours only. Such a day gets workedMs (and breakMs 0) once, the
+// way dm() fills it when that day is opened, so every reader (the cloud sheet's daily row, 出車天數, 補填里程, the first
+// day with data) sees the same hours. hours itself is kept. Runs wherever a ledger comes in (start-up, another tab's
+// save, a restore); at start-up the result is stored with saveQuiet (it is not a change to the ledger).
+var legacyHoursFilled = false;
+function fillLegacyHours(s){
+  var dmeta = s && s.dailyMeta, n = 0;
+  if(!dmeta || typeof dmeta!=='object' || Array.isArray(dmeta)) return 0;
+  for(var d in dmeta){
+    var m = dmeta[d];
+    if(!m || typeof m!=='object' || m.workedMs!=null || m.hours==null || m.hours==='') continue;
+    var h = +m.hours;
+    if(!isFinite(h) || h<0) continue;
+    m.workedMs = Math.round(h*3600000);
+    if(m.breakMs==null) m.breakMs = 0;
+    n++;
+  }
+  return n;
 }
 var IDB_MIGRATED_FLAG = 'taxi_ledger_idb';
 // After moving to IndexedDB, localStorage keeps a frozen copy from the move; reading it alone would show stale data
@@ -939,7 +971,17 @@ function packState(st){
   });
   var out = {}; for(var k2 in st){ out[k2] = st[k2]; }
   out.records = recs; out.feeTable = table;
+  out.lvl = Math.max(+st.lvl||0, LEDGER_LEVEL);   // see LEDGER_LEVEL: a copy, backup or cloud snapshot says it too
   return JSON.stringify(out);
+}
+// B1-08 (威爾森 11/22): a backup file (存成備份檔, 複製文字) leaves out this phone's own settings (DEVICE_KEYS: the cloud
+// sync address, the stats and hot-spot ids, which backups it sent…). A restore never takes them from the file anyway
+// (replaceLedger keeps the phone's own), so nothing changes there; a file passed to someone else no longer shows them.
+// The phone's own ledger file, the copies kept before a restore and the cloud snapshot keep the whole state.
+function packBackup(st){
+  var c = {};
+  for(var k in st){ if(DEVICE_KEYS.indexOf(k)<0) c[k] = st[k]; }
+  return packState(c);
 }
 function unpackState(s){
   if(s && Array.isArray(s.feeTable) && Array.isArray(s.records)){
@@ -950,6 +992,9 @@ function unpackState(s){
   return s;
 }
 var state = load();
+// a newer version saved this ledger (its level is higher than this version's): it is shown, but this version may count
+// it wrongly, so nothing is entered, written or sent until the app is updated, or an older backup is restored over it
+var ledgerTooNew = (+state.lvl||0) > LEDGER_LEVEL;
 if(corruptRaw){
   try{
     var corruptKey = 'state_corrupt_'+Date.now();
@@ -985,27 +1030,40 @@ var writePending = false, saveWaiters = [];
 // the ledger just loaded. Set up here because start-up itself may save (moving a ledger in, fee snapshots).
 var nativeChain = Promise.resolve(), nativeNext = (__BOOT.nativeSlot===NATIVE_SLOTS[0]) ? 1 : 0;
 var nativeHold = false;  // the newer ledger could not be kept aside: nothing may write over its slot
+// 還原前保留的帳 (see keepUndoCopy): every read, write and delete of the kept copies goes through undoQueue, one at a
+// time. undoFresh: copies written this run that are not on the list yet (undoCheck leaves them alone).
+// undoLegacyMeta: the one-copy note an older version left (undoMeta), as the ledger was opened, so its copy can be
+// told apart (a 還原前 copy or a ledger kept aside at start-up) after this version has written its own note.
+var undoChain = Promise.resolve(), undoFresh = {}, undoChecked = false, undoLastAt = 0;
+var undoLegacyMeta = (state.undoMeta && typeof state.undoMeta==='object') ? JSON.parse(JSON.stringify(state.undoMeta)) : null;
 if(__BOOT.keepAside) nativeChain = keepAsideUndo(__BOOT.keepAside);
-// the newer ledger start-up did not open (its save may never have finished) becomes the undo copy, written
-// before anything reuses its slot, so it can still be brought back. If that copy cannot be written, saving stops
-// (the 「沒有存進手機」 banner offers a backup file) rather than overwrite the only copy of that ledger.
+// the newer ledger start-up did not open (its save may never have finished) is kept in a place of its own (not one
+// of the 還原前 copies, and never pushed out by them), written before anything reuses its slot, so it can still be
+// brought back. It replaces one kept at an earlier start (only after it is fully written). If it cannot be written,
+// saving stops (the 「沒有存進手機」 banner offers a backup file) rather than overwrite the only copy of that ledger.
 function keepAsideUndo(k){
-  var at = Date.now(), label = '開機時沒有採用一份沒確認存好的較新帳本';
-  return NATIVE_FS.writeFile({path:'ledger-undo.json', directory:'DATA', encoding:'utf8', data:JSON.stringify({at:at, label:label, data:k.data})}).then(function(){
-    state.undoMeta = {at:at, label:label, kind:'aside'};
-    try{ localStorage.setItem('taxi_undo_info', JSON.stringify(state.undoMeta)); }catch(e){}
+  var at = undoNextAt(), label = '開機時沒有採用一份沒確認存好的較新帳本', name = undoName(at, true), entry;
+  try{ entry = undoEntry(name, at, label, 'aside', unpackState(JSON.parse(k.data))); }
+  catch(e){ entry = {file:name, at:at, label:label, kind:'aside', recs:0, exps:0, from:'', to:'', last:null}; }
+  undoFresh[name] = true;
+  return undoQueue(function(){ return undoWrite(name, JSON.stringify({at:at, label:label, kind:'aside', data:k.data})); }).then(function(){
+    delete undoFresh[name];
+    var old = undoAsideOf();
+    state.undoAside = entry; undoPublish();
+    if(old && old.file!==name) undoQueue(function(){ return undoDelete(old.file).catch(function(){}); });
     setTimeout(function(){
       alert('記帳本開啟的是前一份確認存好的帳。\n\n另外找到一份較新、但沒有確認存好的帳本(可能是上次存到一半),已經保留起來,沒有刪掉。\n\n需要的話到 ⚙️「雲端與備份」→「匯入還原」→「↩️ 改用那份較新的帳本」。那會整本取代目前的帳,不會合併之後新記的帳;不確定時先存備份檔、聯絡客服。');
     }, 1500);
-  }, function(){ nativeHold = true; });
+  }, function(){ delete undoFresh[name]; nativeHold = true; });
 }
 // a restored ledger whose save failed and was given up (see replaceLedger): writes of it still waiting their turn
 // are dropped, so the phone can never end up holding a ledger the driver was told had not been restored
 var abandonedLedger = null, WRITE_SUPERSEDED = {};
 function writeStore(){
   var waiters = saveWaiters.splice(0);
-  if(storageStale){ settleWaiters(waiters, false); return; }
+  if(storageStale || ledgerTooNew){ settleWaiters(waiters, false); return; }
   var str, src = state;
+  state.lvl = Math.max(+state.lvl||0, LEDGER_LEVEL);   // only ever goes up
   state.rev = ++lastKnownRev;
   try{ str = packState(state); }catch(e){ onSaveFail(); settleWaiters(waiters, false); return; }
   var rev = state.rev;
@@ -1056,6 +1114,7 @@ function reloadFromStore(afterConflict){
       try{ fresh = unpackState(JSON.parse(raw)); }catch(e){ lastKnownRev = Math.max(lastKnownRev, stored); return; }
       fillMissing(fresh);
       state = fresh;
+      ledgerTooNew = (+fresh.lvl||0) > LEDGER_LEVEL;
       lastKnownRev = Math.max(stored, +fresh.rev||0);
       if(typeof renderAll==='function') renderAll();
       if(afterConflict){
@@ -1073,7 +1132,8 @@ if(__BOOT.idb && __BOOT.state==null && !storageStale){ writeStore(); }
 noteHadData();
 if(isNativeApp() && !NATIVE_FS) setTimeout(function(){ alert('⚠️ 這個 App 的帳本儲存元件沒有載入,帳現在只存在暫存區,可能會不見。\n\n請先按右上角 💾 存一份備份檔,並寫信到 support@realway.com.tw。'); }, 500);
 if(stampMissingFeeSnapshots()) writeStore();
-else if(__BOOT.moveInFromCache) writeStore();  // first start of the file-based app: the existing ledger goes into the file
+else if(__BOOT.moveInFromCache) writeStore();
+if(legacyHoursFilled){ legacyHoursFilled = false; saveQuiet(); }  // B1-07: old hours-only days, filled in by fillMissing  // first start of the file-based app: the existing ledger goes into the file
 try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){}
 // onDone(true) once this change is in the phone's storage, onDone(false) if it did not get there
 // Housekeeping the app does by itself (which version's notes were shown, today's exchange rates, a reminder's
@@ -1128,6 +1188,10 @@ window.addEventListener('pagehide', flushWrite);
 document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='hidden') flushWrite(); });
 function dataSizeChars(){ try{ return packState(state).length; }catch(e){ return 0; } }
 function saveFailBannerHtml(){
+  if(ledgerTooNew) return '<div class="card" id="tooNewCard" style="border-color:var(--expense);background:var(--expense-soft);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 這本帳是比較新版的記帳本存的。</b>這個版本可能算錯,所以先只能看、不能記帳。'+
+    (isNativeApp() ? '請到商店把記帳本更新到最新版。' : '請把記帳本完全關掉再重新打開(網頁版會換成最新版)。')+
+    '<div style="margin-top:6px;color:var(--text-muted)">這段期間不會存進手機、也不會同步到雲端,帳本沒有被改。可以先存一份備份檔;不想更新的話,也可以用比較舊的備份「匯入還原」取代(目前的帳會先另外保留一份)。</div>'+
+    '<div class="btn-row" style="margin-top:8px;gap:8px"><button class="btn btn-primary" style="flex:1" data-act="export-file">💾 存成備份檔</button><button class="btn btn-ghost" style="flex:1" data-act="open-import">匯入還原</button>'+(state.syncUrl ? '<button class="btn btn-ghost" style="flex:1" data-act="open-restore">從雲端還原</button>' : '')+'</div></div>';
   if(storageStale) return '<div class="card" style="border-color:var(--expense);background:var(--expense-soft);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 這次沒有讀到最新的資料</b><br>手機的資料庫暫時打不開,畫面上可能是舊資料。<b>請先不要記帳</b>,把記帳本完全關掉(從多工畫面滑掉)再重新打開。這段期間不會同步到雲端,雲端資料是安全的。重開後還是這樣的話,請到 ⚙️ 設定用「從雲端還原」或「匯入還原」拿回資料。</div>';
   if(!saveFailed) return '';
   if(typeof nativeHold!=='undefined' && nativeHold) return '<div class="card" style="border-color:var(--expense);background:var(--expense-soft);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 最新的資料沒有存進手機</b><br>為了保留一份較新、但沒確認存好的帳本,記帳本暫停存檔(那份帳本的副本存不起來)。請先不要清除 App 資料,按下面按鈕把畫面上的帳存成檔案並確認找得到,再把記帳本完全關掉重新打開,讓它再試一次;還是不行請聯絡客服。'+(state.syncUrl?'雲端同步仍會繼續送出。':'')+'<div style="margin-top:8px"><button class="btn btn-primary" data-act="export-file">立即存成備份檔</button></div></div>';
@@ -1880,7 +1944,7 @@ function withTimeout(p, ms){
 }
 // the line under the sync buttons; refreshed after every push so it never contradicts the result shown below it
 function cloudConfirmText(){
-  return (cloudConflict ? cloudConflictText()+' ' : '')+(state.lastCloudConfirmAt?('上次確認雲端存好:'+fmtTs(state.lastCloudConfirmAt)):''+hereName()+'還沒有確認過雲端備份')+((state.lastCloudSendAt||0)>(state.lastCloudConfirmAt||0)?((state.lastCloudBasicAt||0)>(state.lastCloudConfirmAt||0)?' · 最近一次雲端有收到,但沒辦法完整核對':' · 最近一次已送出、尚未確認'):'')+((state.lastChangeAt||0)>(state.lastCloudConfirmAt||0)&&state.lastCloudConfirmAt?' · 之後的變動還沒確認備份':'');
+  return (cloudConflict ? cloudConflictText()+' ' : '')+(state.lastCloudConfirmAt?('上次確認雲端存好:'+fmtTs(state.lastCloudConfirmAt)):''+hereName()+'還沒有確認過雲端備份')+((state.lastCloudSendAt||0)>(state.lastCloudConfirmAt||0)?((state.lastCloudBasicAt||0)>(state.lastCloudConfirmAt||0)?' · 最近一次雲端有收到,但沒辦法完整核對':' · 最近一次已送出、尚未確認'):'')+((state.lastChangeAt||0)>(state.lastCloudConfirmAt||0)&&state.lastCloudConfirmAt&&canSyncLedger()?' · 之後的變動還沒確認備份':'');
 }
 function refreshCloudConfirmLine(){ var el = document.getElementById('cloudConfirmLine'); if(el) el.textContent = cloudConfirmText(); }
 function recordCloudResult(kind, builtAt, gen){
@@ -1959,7 +2023,7 @@ function canSyncLedger(){ return hasMeaningfulData() || state.hadData===true; }
 // onResult(ok, kind): ok only for a full confirmation; kind 'conflict' = held back for another device's newer backup.
 // overrule: the driver confirmed this device's ledger should go up anyway
 function pushCloudSnapshot(onResult, overrule){
-  if(!state.syncUrl || cloudSyncSuspended || storageStale || !canSyncLedger() || replacingLedger) return false;
+  if(!state.syncUrl || cloudSyncSuspended || storageStale || ledgerTooNew || !canSyncLedger() || replacingLedger) return false;
   if(onResult) cloudPushWaiters.push(onResult);
   if(cloudPushBusy){ cloudPushAgain = true; return true; }
   cloudPushBusy = true; cloudPushSeq++;
@@ -2060,6 +2124,7 @@ function cloudSyncTick(){
   cloudSyncTimer = null; cloudSyncDue = 0;
   // held back for another device's newer backup: wait for the driver (the check runs again after a restart)
   if(cloudConflict) return;
+  if(ledgerTooNew) return;   // a newer version's ledger: never sent from here (see LEDGER_LEVEL)
   // a whole ledger is being swapped in: look again in a few seconds, when it is settled
   if(replacingLedger){ setCloudTimer(Date.now()+5000); return; }
   if(state.syncUrl && canSyncLedger() && cloudBehind()) pushCloudSnapshot();
@@ -3240,10 +3305,12 @@ function savePayoutSettings(){
 var pendingIncomeTripId = null;
 function hhmm(ts){ var d=new Date(ts); return pad(d.getHours())+':'+pad(d.getMinutes()); }
 function tripMinutes(t){ return (t.pickup && t.dropoff) ? Math.max(0,(t.dropoff.ts-t.pickup.ts)/60000) : null; }
+// a trip whose times are missing (a backup edited by hand, B1-09) reads 「時間不明」 instead of breaking the page
 function tripLabel(t){
-  var m = tripMinutes(t);
-  return hhmm(t.pickup.ts)+(t.dropoff?(' → '+hhmm(t.dropoff.ts)):' → 載客中')+(m!=null?(' · '+Math.round(m)+' 分鐘'):'');
+  var p = tripTs(t && t.pickup), d = t && t.dropoff ? tripTs(t.dropoff) : null, m = (p && d) ? tripMinutes(t) : null;
+  return (p ? hhmm(p) : '時間不明')+(t && t.dropoff?(' → '+(d ? hhmm(d) : '時間不明')):' → 載客中')+(m!=null?(' · '+Math.round(m)+' 分鐘'):'');
 }
+function paTimeText(pa){ return (pa && +pa.ts>0) ? hhmm(pa.ts) : '時間不明'; }
 function showToast(msg, ms){
   var el = document.getElementById('appToast');
   if(!el){
@@ -3339,15 +3406,53 @@ function tripStart(){
   save(function(ok){ if(ok) showToast('已記錄上車時間,定位中…'+note, note?5000:3500); }); renderAll();
   captureFor(t.id, 'pickup', null, note);
 }
+// B1-04: a ride this long was most likely left open (下車 forgotten, or a backup taken mid-ride restored later). The card
+// says so in red, and 下車 asks first instead of recording a ride of many hours. Long hires (包車) are one tap away.
+var TRIP_LONG_MIN = 180;
+// a trip point's time when it is a real one (a backup edited by hand may lack it), else null
+function tripTs(pt){ return (pt && typeof pt.ts==='number' && isFinite(pt.ts) && pt.ts>0) ? pt.ts : null; }
+function tripTooLong(t){ var p = t && tripTs(t.pickup); return !!p && Date.now()-p > TRIP_LONG_MIN*60000; }
 function tripEnd(){
   var t = state.activeTrip; if(!t) return;
-  t.dropoff = {ts:Date.now()};
+  if(tripTooLong(t)){ openTripLongModal(); return; }
+  tripEndAt(Date.now(), true);
+}
+// at: the drop-off time; here: it is now, so the phone's position is the drop-off's (a time filled in afterwards is not)
+function tripEndAt(at, here){
+  var t = state.activeTrip; if(!t) return;
+  t.dropoff = {ts:at};
   state.activeTrip = null;
   state.pendingTrips = state.pendingTrips || [];
   state.pendingTrips.push(t);
-  save(); renderAll();
-  captureFor(t.id, 'dropoff', t.dropoff.ts);
+  save(); closeModal(); renderAll();
+  if(here) captureFor(t.id, 'dropoff', t.dropoff.ts);
   openTripLinkModal(t.id);
+}
+function openTripLongModal(){
+  var t = state.activeTrip, p = t && tripTs(t.pickup); if(!p) return;
+  var hrs = Math.floor((Date.now()-p)/3600000), now = Date.now();
+  var h = '<div class="modal-title">這趟 '+mdHm(p)+' 上車,已經 '+hrs+' 小時<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div style="font-size:13px;line-height:1.7;margin-bottom:14px">載客超過 '+Math.floor(TRIP_LONG_MIN/60)+' 小時,是不是忘了按下車?長途、包車就選第一個;忘了按的話,補記實際下車的時間,載客時間和空檔才會算對。</div>';
+  h += '<button class="btn btn-primary" style="width:100%;min-height:48px;margin-bottom:14px" data-act="trip-long-now">現在下車(長途單)</button>';
+  h += '<div class="form-row"><label for="f-trip-drop">補記實際下車時間</label><input type="datetime-local" id="f-trip-drop" min="'+dtLocalOf(p)+'" max="'+dtLocalOf(now)+'" value=""></div>';
+  h += '<div id="trip-long-err" role="alert" style="font-size:13px;font-weight:700;color:var(--expense);margin:-4px 0 8px" hidden></div>';
+  h += '<button class="btn btn-ghost" style="width:100%;min-height:48px" data-act="trip-long-at">用這個時間下車</button>';
+  h += '<div style="text-align:center;margin-top:14px"><a data-act="trip-cancel" role="button" tabindex="0" style="font-size:12.5px;color:var(--text-muted);cursor:pointer;text-decoration:underline">按錯了,刪掉這趟</a></div>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:10px;line-height:1.6">先不處理可以按右上角 ✕,這趟會一直是載客中。</div>';
+  openModal(h);
+}
+function tripLongAt(){
+  var t = state.activeTrip, p = t && tripTs(t.pickup); if(!p){ closeModal(); renderAll(); return false; }
+  var err = document.getElementById('trip-long-err');
+  function bad(m){ if(err){ err.textContent = m; err.hidden = false; } return false; }
+  var at = cxTimeIn('f-trip-drop'), now = Date.now();
+  if(at==null || isNaN(at)) return bad('請選實際下車的時間');
+  // the box has whole minutes: a drop-off in the pickup's own minute is not earlier than the pickup
+  if(at < p && p - at < 60000) at = p;
+  if(at < p) return bad('下車時間不能比上車('+mdHm(p)+')早');
+  if(at > now) return bad('下車時間不能比現在晚');
+  tripEndAt(at, false);
+  return true;
 }
 function tripResume(tripId){
   if(state.activeTrip){ alert('現在已經有一趟載客中,要先處理那一趟才能恢復。'); return; }
@@ -3625,7 +3730,9 @@ function tripCardHtml(){
   var big = 'width:100%;border:none;border-radius:16px;padding:18px;font-size:22px;font-weight:900;color:var(--on-fill);cursor:pointer;font-family:inherit;letter-spacing:2px';
   var h = '<div class="section"><div class="card" style="padding:14px">';
   if(a){
-    h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">🚕 載客中 · '+hhmm(a.pickup.ts)+' 上車 · 已 '+Math.round((Date.now()-a.pickup.ts)/60000)+' 分鐘'+(a.pickup.lat!=null?' · 📍已定位':'')+(state.pendingAccept ? ' · <b style="color:var(--text)">📲 已接下一單 '+hhmm(state.pendingAccept.ts)+'</b>' : '')+'</div>';
+    var aP = tripTs(a.pickup), nextAcc = (state.pendingAccept ? ' · <b style="color:var(--text)">📲 已接下一單 '+paTimeText(state.pendingAccept)+'</b>' : '');
+    if(tripTooLong(a)) h += '<div style="font-size:13px;color:var(--expense);font-weight:700;margin-bottom:10px;line-height:1.5">⚠️ 已經載客 '+Math.floor(TRIP_LONG_MIN/60)+' 小時以上,是不是忘了按下車?<br><span style="font-weight:400">'+mdHm(aP)+' 上車;按「下車」可以補記實際下車時間</span>'+nextAcc+'</div>';
+    else h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">🚕 載客中 · '+(aP ? hhmm(aP)+' 上車 · 已 '+Math.round((Date.now()-aP)/60000)+' 分鐘' : '上車時間不明')+(a.pickup && a.pickup.lat!=null?' · 📍已定位':'')+nextAcc+'</div>';
     h += '<button data-act="trip-end" style="'+big+';background:var(--expense-fill)">下車</button>';
     if(state.pendingAccept){
       h += '<button class="btn btn-ghost" data-act="cx-open:live" style="width:100%;min-height:48px;margin-top:10px">✕ 下一單被取消</button>';
@@ -3641,7 +3748,8 @@ function tripCardHtml(){
     if(state.pendingAccept){
       var pa = state.pendingAccept, paFrom = pa.ts, paDrop = pa.seamless ? lastDropoffTs() : 0;
       if(paDrop > paFrom) paFrom = paDrop;  // taken during the last ride: on the way since that drop-off
-      if(staleAccept()) h += '<div style="font-size:13px;color:var(--expense);font-weight:700;margin-bottom:10px;line-height:1.5">⚠️ 上一筆接單還沒結束('+mdHm(pa.ts)+' 接單)<br><span style="font-weight:400">被取消了就按下面「✕ 取消這單」補記時間</span></div>';
+      if(!(+pa.ts>0)) h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">📲 接單時間不明</div>';
+      else if(staleAccept()) h +='<div style="font-size:13px;color:var(--expense);font-weight:700;margin-bottom:10px;line-height:1.5">⚠️ 上一筆接單還沒結束('+mdHm(pa.ts)+' 接單)<br><span style="font-weight:400">被取消了就按下面「✕ 取消這單」補記時間</span></div>';
       else h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">📲 '+hhmm(pa.ts)+(paDrop>pa.ts ? ' 載客中接單 · 下車後前往上車點 ' : ' 接單 · 前往上車點 ')+Math.round((Date.now()-paFrom)/60000)+' 分鐘</div>';
     }
     h += '<button data-act="trip-start" style="'+big+';background:var(--income-fill)">上車</button>';
@@ -3652,7 +3760,9 @@ function tripCardHtml(){
   if(pend.length){
     h += '<div style="font-size:12.5px;font-weight:700;margin:14px 0 4px">已下車、還沒記車資('+pend.length+')</div>';
     h += pend.slice().reverse().map(function(t){
-      return '<div class="list-item" data-act="open-trip-link:'+t.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+tripLabel(t)+'</div><div class="li-sub">'+businessDayOf(t.pickup.ts)+(t.pickup.lat!=null?' · 📍有位置':' · 無位置')+'</div></div><div class="li-amt num" style="color:var(--accent)">記帳</div></div>';
+      if(!t || typeof t!=='object') return '';
+      var tP = tripTs(t.pickup);
+      return '<div class="list-item" data-act="open-trip-link:'+esc(String(t.id))+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+tripLabel(t)+'</div><div class="li-sub">'+(tP ? businessDayOf(tP) : '日期不明')+(t.pickup && t.pickup.lat!=null?' · 📍有位置':' · 無位置')+'</div></div><div class="li-amt num" style="color:var(--accent)">記帳</div></div>';
     }).join('');
   }
   h += acceptTipHtml();
@@ -3669,8 +3779,8 @@ function openTripLinkModal(tripId){
     h += '<button type="button" class="chip-opt" data-act="trip-new-income:'+t.id+':'+p.key+'">'+iconHtml(p.icon)+' '+esc(p.label)+'</button>';
   });
   h += '</div>';
-  var day = businessDayOf(t.pickup.ts);
-  var unlinked = state.records.filter(function(r){ return !r.tripId && r.date===day && !platformDef(r.platform).tipOnly; })
+  var tP = tripTs(t.pickup), day = tP ? businessDayOf(tP) : null;
+  var unlinked = !day ? [] : state.records.filter(function(r){ return !r.tripId && r.date===day && !platformDef(r.platform).tipOnly; })
     .sort(function(a,b){ return (b.ts||0)-(a.ts||0); }).slice(0,6);
   if(unlinked.length){
     h += '<div class="section-title" style="margin-bottom:8px">或連到已經記好的收入</div><div class="card" style="margin-bottom:14px">';
@@ -3689,13 +3799,13 @@ function tripChoiceHtml(existing){
   }
   var opts = [];
   (state.pendingTrips||[]).slice().reverse().slice(0,3).forEach(function(t){ opts.push({id:t.id, label:tripLabel(t)}); });
-  if(state.activeTrip) opts.push({id:state.activeTrip.id, label:hhmm(state.activeTrip.pickup.ts)+' 上車中(存檔時一併下車)'});
+  if(state.activeTrip){ var acP = tripTs(state.activeTrip.pickup); opts.push({id:state.activeTrip.id, label:(acP ? hhmm(acP) : '時間不明')+' 上車中(存檔時一併下車)'}); }
   if(!opts.length) return '';
   var def = 'none';
   if(pendingIncomeTripId) def = pendingIncomeTripId;
   else if(!existing){
     var last = (state.pendingTrips||[]).slice(-1)[0];
-    if(last && Date.now()-last.dropoff.ts < 60*60000) def = last.id;
+    if(last && tripTs(last.dropoff) && Date.now()-last.dropoff.ts < 60*60000) def = last.id;
     else if(state.activeTrip) def = state.activeTrip.id;
   }
   opts.push({id:'none', label:'不連行程'});
@@ -7150,7 +7260,7 @@ function detectAppEnv(){
 function maySendShared(){ return APP_ENV==='prod'; }
 // sends each finished day once (up to 14 days back), only cell + time slot + trip count
 function hotSharePush(){
-  if(!HOT_URL || state.shareHot!==true || !maySendShared()) return;
+  if(!HOT_URL || state.shareHot!==true || !maySendShared() || ledgerTooNew) return;
   var yest = addDays(todayStr(), -1);
   if(!state.shareHourBackfill){ state.shareHourBackfill = true; state.shareSentUntil = null; }
   var from = state.shareSentUntil ? addDays(state.shareSentUntil, 1) : addDays(yest, -13);
@@ -8338,7 +8448,9 @@ function shareOrDownloadFile(filename, text, mime){
 }
 /* ---------- backup reminder for people without cloud sync ---------- */
 var BACKUP_REMIND_DAYS = 7;
-function markExported(){ state.lastExportAt = Date.now(); save(); }
+// B1-06: when the last backup file was made (only the backup reminders read it) is housekeeping, not a ledger change:
+// saveQuiet, so the cloud is not sent an identical copy (E26)
+function markExported(){ state.lastExportAt = Date.now(); saveQuiet(); }
 function backupReminderDue(){
   // the cloud reminder takes over only once the sheet has confirmed a backup
   if((state.syncUrl && state.lastCloudConfirmAt) || !hasMeaningfulData()) return false;
@@ -8359,7 +8471,9 @@ function cloudConflictHtml(){
 }
 function renderConflictCard(){ if(currentTab==='entry' && !document.getElementById('modalBody')) renderAll(); }
 function cloudStaleHtml(){
-  if(!state.syncUrl || !state.lastCloudConfirmAt || cloudAuthStatus==='bad') return '';
+  if(!state.syncUrl || !state.lastCloudConfirmAt || cloudAuthStatus==='bad' || ledgerTooNew) return '';
+  // B1-05: an empty ledger (清除所有資料) is not sent, so there is nothing waiting for the cloud; the cloud keeps the old one
+  if(!canSyncLedger()) return '';
   if((state.lastChangeAt||0) <= state.lastCloudConfirmAt) return '';
   if(state.backupSnoozeUntil && Date.now() < state.backupSnoozeUntil) return '';
   var days = Math.floor((Date.now()-state.lastCloudConfirmAt)/86400000);
@@ -9728,9 +9842,9 @@ var HELP = [
     ['💾 備份', '右上角 💾 → 選 iCloud 或 Google 雲端硬碟 → 存成備份檔。數字 = 幾天沒備份,變紅色就該備份了。不要只傳到 LINE,檔案會過期。'],
     ['實收、今日現金收入、待撥款是什麼', '「實收」= 扣完平台手續費後你賺到的錢(含小費),也包含還沒撥款的非現金單。「今日現金收入」= 今天乘客直接付你的現金,還沒扣掉現金支出(例如停車費、加油)。「待撥款」= 刷卡、App 付款這些非現金單,平台之後才撥給你,到「撥款」頁看預計入帳日、核對實際入帳。Uber 多元輸入的是 App 顯示的實收,車資和抽成是用你設定的 % 反推的估算值。'],
     ['雲端自動同步(進階)', '⚙️「雲端與備份」→「進階:自動同步到自己的 Google 試算表」。要自己建立 Google 試算表和 Apps Script,適合會設定的人;一般司機用右上角 💾 存備份檔就夠了。設定方式請問製作者。'],
-    ['換手機、還原', '新手機 ⚙️「雲端與備份」→「匯入還原」→ 選擇備份檔。還原前會先比對資料;還原或清除錯了,可以按「↩️ 復原」。'],
+    ['換手機、還原', '新手機 ⚙️「雲端與備份」→「匯入還原」→ 選擇備份檔。還原前會先比對資料;還原或清除錯了,「匯入還原」最下面的「還原前保留的帳」留著最近 3 份,按「↩️ 換回這份」。'],
     ['沒有網路', '打開過一次之後,沒網路也能打開、記帳。'],
-    ['清除所有資料', '⚙️ 最下面,要輸入「清除」兩個字才會執行。']
+    ['清除所有資料', '⚙️ 最下面,要輸入「清除」兩個字才會執行。有設定雲端同步的話,雲端的備份不會被清掉,之後記新帳時雲端會開始存新的帳;想把雲端也刪掉,到自己的 Google 雲端硬碟刪掉那份試算表。']
   ]],
   ['設定與外觀', [
     ['簡單記帳 / 完整分析', '⚙️「記帳首頁與功能」一鍵切換,也可以一項一項開關;關掉不會刪資料。'],
@@ -10732,12 +10846,14 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.22.11';
+var APP_VERSION = '2026.11.23.1';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.23.1', '🛡️ 備份更安心:載客太久會提醒是不是忘了按下車,可以補記實際下車時間;備份檔不再帶著雲端同步網址(傳給別人也看不到)', '', {set:'cloud'}],
+  ['2026.11.22.12', '↩️ 匯入還原、雲端還原、清除之前的帳,現在會保留最近 3 份,連續選錯檔案也找得回來(⚙️「雲端與備份」→「匯入還原」最下面)', '', {set:'cloud'}],
   ['2026.11.22.11', '🌙 夜班跨過午夜也不用重新打卡:下班打卡會一直在,休息提醒照常;工時照換日時間分成兩天(換日時間可以改,上班中不能改)', '', {set:'basic'}],
   ['2026.11.22.10', '🚐 YOXI 企業簽單的優惠折數選項改成:原價、95 折、9 折、85 折(原本的 92 折改成 9 折)。以前記成 92 折的帳照舊計算,編輯時會顯示「92折(舊)」'],
   ['2026.11.22.10', '⚡ BOLT 的「車貼獎勵門檻」改成預設關閉(大部分司機沒有貼車貼)。有貼車貼的話,到 ⚙️ 設定 →「平台與手續費」打開;以前記的帳不會被改,想把過去的帳也改過來,存檔後選「套用」並挑日期', '', {set:'platforms'}],
@@ -11033,7 +11149,7 @@ function wirePlatformDrag(){
   });
 }
 function openExportModal(){
-  var json = packState(state);
+  var json = packBackup(state);
   var h = '<div class="modal-title">匯出備份<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
   h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6"><b>建議用「存成備份檔」</b>:會跳出分享選單,存到 iCloud 或 Google 雲端硬碟,換手機也拿得回來。要還原時到「匯入還原」選這個檔案。</div>';
   h += '<div class="btn-row" style="margin-bottom:12px"><button class="btn btn-primary" data-act="export-file">存成備份檔</button></div>'+backupHintHtml()+'';
@@ -11080,10 +11196,25 @@ function openCloudRestoreModal(){
     if(el) el.textContent = '讀取失敗:請確認網路正常,以及 Apps Script 已更新成新版並重新部署。';
   });
 }
+// read-only (ledgerTooNew): replacing is the one way to keep entering without updating; the question says what it costs
+function readOnlyReplaceNote(){
+  return ledgerTooNew ? '⚠️ 目前這本帳是比較新版的記帳本存的(這個版本只能看)。用這份比較舊的備份取代後就能照常記帳,但目前這本帳會被換掉:它會先另外保留一份,把記帳本更新到最新版後,可以到「匯入還原」最下面換回來。建議先更新記帳本,不要用這個方法。\n\n' : '';
+}
+// B1-10 ①: what is going on right now on this phone that a whole-ledger restore replaces with the backup's own state
+// (src: 備份檔 / 雲端備份); '' when nothing is
+function liveStateNote(src){
+  var on = [], what = [];
+  if(Object.keys(state.dailyMeta||{}).some(function(d){ var m = state.dailyMeta[d]; return m && m.activeShiftStart; })){ on.push('正在上班'); what.push('上班時間'); }
+  if(state.activeTrip){ on.push('還在載客中'); what.push('這趟行程'); }
+  if(state.pendingAccept){ on.push('有接到還沒上車的單'); what.push('接到的單'); }
+  if((state.pendingTrips||[]).length){ on.push('有已下車還沒記車資的行程'); what.push('還沒記車資的行程'); }
+  if(!on.length) return '';
+  return '⚠️ '+hereName()+'現在'+on.join('、')+',還原後會變成'+src+'裡的狀態('+what.join('、')+'以'+src+'為準)。\n\n';
+}
 function doCloudRestore(i){
   var v = lastCloudVersions[i]; if(!v) return;
   var newer = lastCloudVersions.some(function(x){ return !x.legacy && +x.time > +v.time; });
-  if(!confirm('確定要用 '+fmtTs(v.time)+' 的雲端備份(收入 '+v.income+' 筆、支出 '+v.expense+' 筆)覆蓋'+hereName()+'目前的所有資料嗎?'+
+  if(!confirm(readOnlyReplaceNote()+liveStateNote('雲端備份')+'確定要用 '+fmtTs(v.time)+' 的雲端備份(收入 '+v.income+' 筆、支出 '+v.expense+' 筆)覆蓋'+hereName()+'目前的所有資料嗎?'+
       (newer ? '\n\n這不是雲端最新的那份。還原後'+hereName()+'下次同步前,如果雲端上有別台送的較新備份,會先問你,不會直接蓋掉。' : '')+
       (cloudBehind() ? '\n\n⚠️ '+hereName()+'上次確認雲端存好之後記的帳還沒上雲端,還原後會被取代(還原前會先在'+hereName()+'另外保留一份,可以用「復原」拿回;建議先按 💾 存成備份檔)。' : ''))) return;
   var el = document.getElementById('restoreList');
@@ -11100,7 +11231,7 @@ function doCloudRestore(i){
     // that older ledger may now be the cloud's newest: then the restored ledger does not count as backed up and
     // is sent like any other change, so the cloud's newest is again what this device holds.
     var sentMeanwhile = lastCloudVersionsSeq!==cloudPushSeq || cloudPushBusy;
-    if(!replaceLedger(parsed, '雲端還原', function(restoredAt){ noteCloudBase(+v.time, true); if(!sentMeanwhile && !cloudPushBusy) state.lastCloudConfirmAt = restoredAt; writeStore(); return '已從雲端還原(收入 '+state.records.length+' 筆、支出 '+state.expenses.length+' 筆)。\n\n如果選錯了,到 ⚙️「雲端與備份」→「匯入還原」按「↩️ 復原到雲端還原前的資料」。'; })){
+    if(!replaceLedger(parsed, '雲端還原', function(restoredAt){ noteCloudBase(+v.time, true); if(!sentMeanwhile && !cloudPushBusy) state.lastCloudConfirmAt = restoredAt; writeStore(); return '已從雲端還原(收入 '+state.records.length+' 筆、支出 '+state.expenses.length+' 筆)。\n\n如果選錯了,到 ⚙️「雲端與備份」→「匯入還原」,最下面「還原前保留的帳」按「↩️ 換回這份」(最近 3 份都留著)。'; })){
       if(el) el.textContent = '這份雲端備份的格式不對,沒有還原。';
     } else if(el) el.textContent = '還原中…';
   }).catch(function(){
@@ -11144,11 +11275,11 @@ function openImportModal(){
   h += '<div id="importFileName" style="font-size:12px;color:var(--text-muted);margin:-4px 0 8px;text-align:center"></div>';
   h += '<textarea id="importText" placeholder="貼上備份文字…" style="width:100%;height:160px;font-size:11px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface-sunken);color:var(--text);box-sizing:border-box"></textarea>';
   h += '<div class="btn-row" style="margin-top:10px"><button class="btn btn-danger" data-act="do-import">還原這份資料</button></div>';
-  var ui0 = undoInfo();
-  if(ui0) h += '<div style="font-size:12px;color:var(--text-muted);margin-top:14px;line-height:1.6;border-top:1px solid var(--border);padding-top:10px">'+(ui0.kind==='aside'
-    ? fmtTs(ui0.at)+' 開機時找到一份較新、但沒有確認存好的帳本,沒有開啟,先保留著:<br><a data-act="undo-restore" style="cursor:pointer;color:var(--accent);font-weight:700">↩️ 改用那份較新的帳本</a>(整本取代,不會合併)'
-    : fmtTs(ui0.at)+' 做過「'+esc(ui0.label)+'」,那之前的資料還留著:<br><a data-act="undo-restore" style="cursor:pointer;color:var(--accent);font-weight:700">↩️ 復原到'+esc(ui0.label)+'前的資料</a>')+'</div>';
+  // the kept copies (還原前保留的帳); the list is put right from the stored copies the first time they are looked at
+  var ub = undoBoxHtml();
+  h += '<div id="undoBox" style="font-size:12px;color:var(--text-muted);margin-top:14px;line-height:1.6;border-top:1px solid var(--border);padding-top:10px"'+(ub?'':' hidden')+'>'+ub+'</div>';
   openModal(h);
+  if(!undoChecked) undoQueue(undoCheck).then(undoBoxRender, function(){});
 }
 function ledgerSummary(st){
   var recs = (st.records||[]).filter(function(r){ return r.platform!=='bonus' && r.platform!=='cancelfee'; });
@@ -11163,36 +11294,227 @@ function ledgerSummary(st){
 }
 function summaryLine(x){ return '收入 '+x.recs+' 筆、支出 '+x.exps+' 筆'+(x.from?(','+x.from+' ~ '+x.to):''); }
 function summaryLast(x){ return x.last ? '最近一筆收入:'+x.last.date+' '+fmtMoney(x.last.amt) : '最近一筆收入:沒有收入紀錄'; }
-// the ledger as it was before a restore or a full clear, so a mistake can be undone.
-// done(true) only once the copy is really stored; the undo link appears only then
-function keepUndoCopy(label, done){
-  var at = Date.now(), copy;
-  function fin(ok){
-    if(ok){ state.undoMeta = {at:at, label:label}; try{ localStorage.setItem('taxi_undo_info', JSON.stringify({at:at, label:label})); }catch(e){} }
-    if(done) done(ok);
-  }
-  try{ copy = JSON.stringify({at:at, label:label, data:packState(state)}); }catch(e){ fin(false); return; }
+// ---------- 還原前保留的帳: the newest UNDO_KEEP ledgers as they were before a whole-ledger swap ----------
+// Before every 匯入還原、雲端還原、復原 and 清除所有資料 the ledger as it is gets stored as a copy, so a mistake can be
+// undone, also a second one made before the first was noticed (B1-01). The newest UNDO_KEEP stay (one in a browser
+// that has only localStorage, about 5 MB in all); the oldest goes when a new one comes. A ledger start-up did not open
+// (keepAsideUndo) has a place of its own and is not pushed out by them.
+// Each copy is a file of its own (the app) or a database entry of its own (the website), named after the moment it
+// was made, compressed like the ledger, and never renamed or written over: a new copy is written in full first, and
+// only once it is on the list is the oldest deleted. Cut off at any moment, every copy is still there (at most one
+// more than needed, cleared up the next time).
+// The list (state.undoList, newest first, and state.undoAside) says what each copy holds, so the 復原 screen reads
+// no files. It belongs to this phone (DEVICE_KEYS) and is saved with the ledger. Should it ever not match what is
+// stored (the app closed between writing a copy and saving the ledger), undoCheck() puts it right from the copies
+// themselves, once per start: a copy not on the list is read and added, one on the list but gone is dropped, a damaged
+// one (cut off while being written) is deleted. undoMeta / taxi_undo_info still name the newest one, for older versions.
+var UNDO_KEEP = 3;
+function undoKeepMax(){ return (NATIVE_FS || __BOOT.idb) ? UNDO_KEEP : 1; }
+function undoQueue(fn){ var job = undoChain.then(fn); undoChain = job.catch(function(){}); return job; }
+function undoName(at, aside){
+  if(NATIVE_FS) return aside ? 'ledger-undo-aside-'+at+'.json' : 'ledger-undo-'+at+'.json';
+  if(__BOOT.idb) return 'state_undo_'+at;
+  return STORAGE_KEY+'_undo';
+}
+// what a stored name is: {at} a 還原前 copy, {aside, at} a ledger kept aside at start-up, {legacy} the one copy an older
+// version kept (what it holds is read from it); null when it is not one of these
+function undoNameInfo(n){
+  var m;
+  if(typeof n!=='string') return null;
   if(NATIVE_FS){
-    NATIVE_FS.writeFile({path:'ledger-undo.json', directory:'DATA', encoding:'utf8', data:copy}).then(function(){ fin(true); }, function(){ fin(false); });
-    return;
+    if(n==='ledger-undo.json') return {legacy:true};
+    if((m = /^ledger-undo-aside-(\d+)\.json$/.exec(n))) return {aside:true, at:+m[1]};
+    if((m = /^ledger-undo-(\d+)\.json$/.exec(n))) return {at:+m[1]};
+    return null;
   }
   if(__BOOT.idb){
-    try{
-      var tx = __BOOT.idb.transaction('kv','readwrite');
-      tx.objectStore('kv').put(copy, 'state_undo');
-      tx.oncomplete = function(){ fin(true); };
-      tx.onerror = tx.onabort = function(){ fin(false); };
-    }catch(e){ fin(false); }
-  } else { try{ localStorage.setItem(STORAGE_KEY+'_undo', copy); fin(true); }catch(e){ fin(false); } }
+    if(n==='state_undo') return {legacy:true};
+    if((m = /^state_undo_(\d+)$/.exec(n))) return {at:+m[1]};
+    return null;
+  }
+  return n===STORAGE_KEY+'_undo' ? {legacy:true} : null;
 }
+function undoNextAt(){
+  var at = Math.max(Date.now(), undoLastAt+1);
+  undoListOf().concat(undoAsideOf() ? [undoAsideOf()] : []).forEach(function(e){ if(+e.at >= at) at = +e.at+1; });
+  undoLastAt = at;
+  return at;
+}
+function idbReq(mode, fn){
+  return new Promise(function(res, rej){
+    try{
+      var tx = __BOOT.idb.transaction('kv', mode), out = fn(tx.objectStore('kv'));
+      tx.oncomplete = function(){ res(out && 'result' in out ? out.result : undefined); };
+      tx.onerror = tx.onabort = function(){ rej(tx.error || new Error('idb')); };
+    }catch(e){ rej(e); }
+  });
+}
+// the names of the kept copies that are stored now
+function undoListNames(){
+  if(NATIVE_FS) return NATIVE_FS.readdir({path:'', directory:'DATA'}).then(function(r){ return (r.files||[]).map(function(f){ return typeof f==='string' ? f : f.name; }).filter(undoNameInfo); });
+  if(__BOOT.idb){
+    var keys = [];
+    return idbReq('readonly', function(kv){
+      if(kv.getAllKeys) return kv.getAllKeys();
+      var c = kv.openCursor(); c.onsuccess = function(){ var cur = c.result; if(cur){ keys.push(cur.key); cur['continue'](); } }; return null;
+    }).then(function(all){ return (all || keys).filter(undoNameInfo); });
+  }
+  try{ return Promise.resolve(localStorage.getItem(STORAGE_KEY+'_undo')!=null ? [STORAGE_KEY+'_undo'] : []); }catch(e){ return Promise.reject(e); }
+}
+// one kept copy -> {at, label, kind, data}. Rejects with {bad:true} when it is there but is not a whole copy (cut off
+// while being written, or damaged); any other rejection is a read that did not work this time
+function undoRead(name){
+  var raw;
+  if(NATIVE_FS) raw = NATIVE_FS.readFile({path:name, directory:'DATA'}).then(function(r){ return {b64:r.data}; });
+  else if(__BOOT.idb) raw = idbReq('readonly', function(kv){ return kv.get(name); }).then(function(v){ if(typeof v!=='string') throw new Error('not there'); return v.charAt(0)==='{' ? {text:v} : {b64:v}; });
+  else raw = new Promise(function(res, rej){ try{ var v = localStorage.getItem(name); if(v==null) throw new Error('not there'); res(v.charAt(0)==='{' ? {text:v} : {b64:v}); }catch(e){ rej(e); } });
+  return raw.then(function(x){
+    var t; try{ t = x.text!=null ? Promise.resolve(x.text) : bytesToText(base64ToBytes(x.b64)); }catch(e){ t = Promise.reject(e); }
+    return t.then(function(text){
+      var o = JSON.parse(text);
+      if(!o || typeof o!=='object' || typeof o.data!=='string' || !isFinite(+o.at)) throw 0;
+      return o;
+    }).catch(function(){ throw {bad:true}; });
+  });
+}
+// stored compressed (gzip, like the ledger) where the web view can; otherwise as plain text, which is read the same way
+function undoWrite(name, text){
+  return gzipBase64(text).then(function(b64){
+    if(NATIVE_FS) return b64 ? NATIVE_FS.writeFile({path:name, directory:'DATA', data:b64}) : NATIVE_FS.writeFile({path:name, directory:'DATA', encoding:'utf8', data:text});
+    if(__BOOT.idb) return idbReq('readwrite', function(kv){ kv.put(b64 || text, name); return null; });
+    localStorage.setItem(name, b64 || text);
+  });
+}
+function undoDelete(name){
+  if(NATIVE_FS) return NATIVE_FS.deleteFile({path:name, directory:'DATA'});
+  if(__BOOT.idb) return idbReq('readwrite', function(kv){ kv['delete'](name); return null; });
+  try{ localStorage.removeItem(name); return Promise.resolve(); }catch(e){ return Promise.reject(e); }
+}
+// what the 復原 screen shows of a copy, worked out when it is made (ledgerSummary) and kept on the list
+function undoEntry(file, at, label, kind, st){
+  var sm = ledgerSummary(st);
+  return {file:file, at:at, label:label, kind:kind, recs:sm.recs, exps:sm.exps, from:sm.from, to:sm.to, last:sm.last ? {date:sm.last.date, amt:sm.last.amt} : null};
+}
+function undoOk(e){ return !!e && typeof e==='object' && typeof e.file==='string' && isFinite(+e.at) && !!undoNameInfo(e.file); }
+function undoListOf(){ return Array.isArray(state.undoList) ? state.undoList.filter(undoOk) : []; }
+function undoAsideOf(){ return undoOk(state.undoAside) ? state.undoAside : null; }
+// the note older versions read (one 復原 link): the newest 還原前 copy, or else the ledger kept aside
+function undoPublish(){
+  var top = undoListOf()[0], a = undoAsideOf();
+  var meta = top ? {at:top.at, label:top.label} : (a ? {at:a.at, label:a.label, kind:'aside'} : null);
+  if(meta) state.undoMeta = meta; else delete state.undoMeta;
+  try{ if(meta) localStorage.setItem('taxi_undo_info', JSON.stringify(meta)); else localStorage.removeItem('taxi_undo_info'); }catch(e){}
+}
+// Puts the list right from the stored copies (see above), once per start. Copies are only ever deleted here when they
+// are damaged, older than the newest UNDO_KEEP, or an older ledger kept aside at start-up; one that cannot be read this
+// time stays as it is. Nothing is checked while the ledger belongs to a newer version (it may keep its copies otherwise).
+function undoCheck(){
+  if(undoChecked || (typeof ledgerTooNew!=='undefined' && ledgerTooNew)) return Promise.resolve();
+  return undoListNames().then(function(names){
+    undoChecked = true;
+    var have = {}; names.forEach(function(n){ have[n] = true; });
+    var before = JSON.stringify([state.undoList, state.undoAside]);
+    var hist = undoListOf().filter(function(e){ return have[e.file]; }), aside = undoAsideOf();
+    if(aside && !have[aside.file]) aside = null;
+    var listed = {}; hist.forEach(function(e){ listed[e.file] = true; }); if(aside) listed[aside.file] = true;
+    var extra = names.filter(function(n){ return !listed[n] && !undoFresh[n]; }), drop = [], asides = aside ? [aside] : [];
+    // the ones an older version left first (what they hold is only known by reading them), then the newest first;
+    // a 還原前 copy older than every one already kept is not read, it is one too many
+    extra.sort(function(a, b){ var x = undoNameInfo(a), y = undoNameInfo(b); return (y.legacy?1:0)-(x.legacy?1:0) || (+y.at||0)-(+x.at||0); });
+    return extra.reduce(function(p, n){
+      return p.then(function(){
+        var ni = undoNameInfo(n);
+        if(!ni.legacy && !ni.aside && hist.length >= undoKeepMax() && hist.every(function(e){ return +e.at > ni.at; })){ drop.push(n); return; }
+        return undoRead(n).then(function(o){
+          var lm = undoLegacyMeta, e;
+          var isAside = ni.aside || o.kind==='aside' || (ni.legacy && ((lm && lm.kind==='aside' && +lm.at===+o.at) || o.label==='開機時沒有採用一份沒確認存好的較新帳本'));
+          try{ e = undoEntry(n, +o.at, typeof o.label==='string' ? o.label : '還原', isAside ? 'aside' : 'undo', unpackState(JSON.parse(o.data))); }
+          catch(x){ drop.push(n); return; }   // whole, but not a ledger
+          if(isAside) asides.push(e); else hist.push(e);
+        }, function(err){ if(err && err.bad) drop.push(n); });
+      });
+    }, Promise.resolve()).then(function(){
+      hist.sort(function(a, b){ return +b.at - +a.at; });
+      asides.sort(function(a, b){ return +b.at - +a.at; });
+      var keep = hist.slice(0, undoKeepMax()), kept = {};
+      keep.forEach(function(e){ kept[e.file] = true; }); if(asides[0]) kept[asides[0].file] = true;
+      hist.slice(undoKeepMax()).concat(asides.slice(1)).forEach(function(e){ if(!kept[e.file]) drop.push(e.file); });
+      state.undoList = keep;
+      if(asides[0]) state.undoAside = asides[0]; else delete state.undoAside;
+      if(JSON.stringify([state.undoList, state.undoAside])!==before) undoPublish();   // saved with the next change to the ledger
+      return drop.reduce(function(p, n){ return p.then(function(){ return undoDelete(n).catch(function(){}); }); }, Promise.resolve());
+    });
+  }, function(){ /* the stored copies could not be listed this time: nothing is changed, the next start looks again */ });
+}
+// The ledger as it is now, stored as a new copy (it is not on the list yet). done(true, entry) only once the copy is
+// really stored; done(false) otherwise (nothing half-written is left behind).
+function keepUndoCopy(label, done){
+  var name = null, entry = null;
+  undoQueue(function(){
+    return undoCheck().then(function(){
+      var at = undoNextAt(), copy = JSON.stringify({at:at, label:label, kind:'undo', data:packState(state)});
+      name = undoName(at); entry = undoEntry(name, at, label, 'undo', state);
+      undoFresh[name] = true;
+      return undoWrite(name, copy);
+    });
+  }).then(function(){ if(done) done(true, entry); }, function(){
+    if(name){ delete undoFresh[name]; if(!undoListOf().some(function(e){ return e.file===name; })) undoQueue(function(){ return undoDelete(name).catch(function(){}); }); }
+    if(done) done(false);
+  });
+}
+// the copy just made goes to the top of the list; the oldest past UNDO_KEEP are deleted (after it, in turn)
+function undoAdd(entry){
+  delete undoFresh[entry.file];
+  var list = [entry].concat(undoListOf().filter(function(e){ return e.file!==entry.file; }));
+  var gone = list.slice(undoKeepMax()), keep = list.slice(0, undoKeepMax()), kept = {};
+  state.undoList = keep; undoPublish();
+  keep.forEach(function(e){ kept[e.file] = true; }); if(undoAsideOf()) kept[undoAsideOf().file] = true;
+  gone.forEach(function(e){ if(!kept[e.file]) undoQueue(function(){ return undoDelete(e.file).catch(function(){}); }); });
+}
+// a copy that was made but is not used (the ledger changed meanwhile and a new one is taken). Where it was written over
+// the only one there is (a browser with just localStorage), the list now says what it holds instead.
+function undoDiscard(entry){
+  delete undoFresh[entry.file];
+  var list = undoListOf(), i = list.map(function(e){ return e.file; }).indexOf(entry.file);
+  if(i>=0){ list[i] = entry; state.undoList = list; undoPublish(); return; }
+  undoQueue(function(){ return undoDelete(entry.file).catch(function(){}); });
+}
+function undoWhen(at){
+  var d = new Date(+at), md = (d.getMonth()+1)+'/'+d.getDate()+' '+pad(d.getHours())+':'+pad(d.getMinutes());
+  return d.getFullYear()===new Date().getFullYear() ? md : d.getFullYear()+'/'+md;
+}
+// 「11/22 21:05 匯入還原前」, or for a copy made by a restore that then did not get saved, what it really is
+function undoWhat(e){
+  return undoWhen(e.at)+' '+(e.fail ? '「'+e.label+'」沒有成功,這份是那之前的帳(跟當時手機上的相同)' : e.label+'前');
+}
+function undoDataLine(e){ return '收入 '+(+e.recs||0)+' 筆、支出 '+(+e.exps||0)+' 筆'+(e.from ? ' · '+e.from+' ~ '+e.to : ''); }
+function undoBoxHtml(){
+  var list = undoListOf(), a = undoAsideOf(), lk = 'cursor:pointer;color:var(--accent);font-weight:700';
+  if(!list.length && !a) return '';
+  var h = '';
+  if(list.length){
+    h += '<div style="font-weight:700;color:var(--text);margin-bottom:2px">↩️ 還原前保留的帳(最近 '+undoKeepMax()+' 份)</div>'+
+      '<div style="margin-bottom:4px">每次整本取代(匯入還原、雲端還原、復原、清除所有資料)之前,都會先把當時的帳另外保留一份;選錯了可以在這裡換回來。</div>';
+    list.forEach(function(e){
+      h += '<div style="padding:6px 0;border-top:1px dashed var(--border)">'+esc(undoWhat(e))+'<br>'+esc(undoDataLine(e))+
+        '<br><a data-act="undo-restore:'+(+e.at)+'" style="'+lk+'">↩️ 換回這份</a></div>';
+    });
+  }
+  if(a) h += '<div style="padding:6px 0;'+(list.length?'border-top:1px dashed var(--border)':'')+'">'+esc(undoWhen(a.at))+' 開機時找到一份較新、但沒有確認存好的帳本,沒有開啟,先保留著:<br>'+esc(undoDataLine(a))+
+    '<br><a data-act="undo-restore:aside" style="'+lk+'">↩️ 改用那份較新的帳本</a>(整本取代,不會合併) · <a data-act="undo-aside-del" style="cursor:pointer;color:var(--text-muted);text-decoration:underline">不需要了,刪掉</a></div>';
+  return h;
+}
+function undoBoxRender(){ var b = document.getElementById('undoBox'); if(b){ var h = undoBoxHtml(); b.innerHTML = h; b.hidden = !h; } }
 // settings that belong to this phone, not to the ledger: a restored backup must not switch sharing or
 // statistics back on, bring back an old sharing id, or claim this phone's cloud backup state
-var DEVICE_KEYS = ['undoMeta','seenVersion','syncUrl','syncEvery','lastCloudBasicAt','cloudBaseTime','cloudSentSids','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale','layoutWidth'];
-var LEDGER_PART_NAMES = {expenses:'支出', dailyMeta:'每日工時與里程', fixedCosts:'固定成本', fixedOverrides:'固定成本覆寫', targets:'目標', feeRules:'手續費設定', platformOverrides:'平台設定', customPlatforms:'自訂平台', platformOrder:'平台排列', netEntryPlats:'記帳時填實收', payoutSettings:'撥款設定', payouts:'撥款核對', pendingTrips:'行程', cancels:'取消接客', tollRefunds:'過路費退款', metroWallet:'大都會錢包', vehicle:'車輛提醒'};
+var DEVICE_KEYS = ['undoMeta','undoList','undoAside','seenVersion','syncUrl','syncEvery','lastCloudBasicAt','cloudBaseTime','cloudSentSids','shareHot','shareId','shareSentUntil','shareHourBackfill','hotDelPending','statOptOut','statId','lastCloudConfirmAt','lastCloudSendAt','fontScale','layoutWidth'];
+var LEDGER_PART_NAMES = {expenses:'支出', dailyMeta:'每日工時與里程', fixedCosts:'固定成本', fixedOverrides:'固定成本覆寫', targets:'目標', feeRules:'手續費設定', platformOverrides:'平台設定', customPlatforms:'自訂平台', platformOrder:'平台排列', netEntryPlats:'記帳時填實收', payoutSettings:'撥款設定', payouts:'撥款核對', pendingTrips:'行程', activeTrip:'載客中的行程', pendingAccept:'接到的單', cancels:'取消接客', tollRefunds:'過路費退款', metroWallet:'大都會錢包', vehicle:'車輛提醒'};
 // '' when the data can be used as a ledger, otherwise what is wrong with it
+// strictDates: an explicit restore (backup file, cloud, a kept copy), checked more strictly than a ledger already on the phone
 function ledgerProblem(p, strictDates){
   if(!p || typeof p!=='object' || Array.isArray(p)) return '這不是記帳本的備份資料';
   if(+p.fmt > LEDGER_FMT) return '這份備份是比較新版的記帳本做的,請先更新記帳本(完全關掉再打開)再還原';
+  if(strictDates && +p.lvl > LEDGER_LEVEL) return '這份備份是比較新版的記帳本做的,請先更新記帳本(完全關掉再打開)再還原';
   if(!Array.isArray(p.records)) return '找不到收入資料';
   var d = defaultState();
   for(var k in d){
@@ -11200,6 +11522,8 @@ function ledgerProblem(p, strictDates){
     if(p[k]===null || typeof p[k]!=='object' || Array.isArray(p[k])!==Array.isArray(d[k])) return '「'+((typeof LEDGER_PART_NAMES!=='undefined' && LEDGER_PART_NAMES[k])||k)+'」這部分的格式不對';
   }
   function isObj(x){ return !!x && typeof x==='object' && !Array.isArray(x); }
+  // a trip point (上車 / 下車): an object with a time that is a positive number
+  function isTs(pt){ return isObj(pt) && typeof pt.ts==='number' && isFinite(pt.ts) && pt.ts>0; }
   function finiteOrEmpty(v){ return v==null || v==='' || isFinite(+v); }
   // Existing on-device ledgers keep the legacy read path; reject impossible dates on explicit restore only.
   function validDate(v){
@@ -11237,7 +11561,10 @@ function ledgerProblem(p, strictDates){
   return badList(p.records, '收入', 'revenue', 'platform') || badList(p.expenses||[], '支出', 'amount', 'category') ||
     objList(p.customPlatforms||[], '自訂平台', function(c){ return typeof c.key==='string' && /^custom_/.test(c.key) && typeof c.label==='string'; }) ||
     objList(p.fixedCosts||[], '固定成本', function(c){ return finiteOrEmpty(c.amount); }) ||
-    objList(p.payouts||[], '撥款核對') || objList(p.pendingTrips||[], '行程') ||
+    objList(p.payouts||[], '撥款核對') ||
+    // B1-09: on an explicit restore a trip must have its times (the trip card reads them); a ledger already on the phone
+    // is not refused over it, the card shows 「時間不明」 instead
+    objList(p.pendingTrips||[], '行程', strictDates ? function(t){ return isTs(t.pickup) && (t.dropoff==null || isTs(t.dropoff)); } : null) ||
     objList(p.cancels||[], '取消接客', function(c){ return typeof c.id==='string' && validDate(c.date) && isFinite(+c.cancelAt) && +c.cancelAt>0 && (c.acceptAt==null || isFinite(+c.acceptAt)); }) ||
     ((p.platformOrder||[]).some(function(k){ return typeof k!=='string'; }) ? '「平台排列」的格式不對' : '') ||
     objValues(p.dailyMeta||{}, '每日工時與里程') || objValues(p.payoutSettings||{}, '撥款設定') ||
@@ -11247,7 +11574,8 @@ function ledgerProblem(p, strictDates){
     ((p.analysisPresets!=null && !Array.isArray(p.analysisPresets)) ? '「分析組合」的格式不對' : objList(p.analysisPresets||[], '分析組合')) ||
     numValues(p.feeRules||{}, '手續費設定') || numValues(p.targets||{}, '目標') ||
     ((p.netEntryPlats!=null && (!isObj(p.netEntryPlats) || Object.keys(p.netEntryPlats).some(function(k){ return typeof p.netEntryPlats[k]!=='boolean'; }))) ? '「記帳時填實收」的格式不對' : '') ||
-    ((p.activeTrip!=null && !isObj(p.activeTrip)) ? '「載客中的行程」格式不對' : '') ||
+    ((p.activeTrip!=null && (!isObj(p.activeTrip) || (strictDates && !isTs(p.activeTrip.pickup)))) ? '「載客中的行程」格式不對' : '') ||
+    ((strictDates && p.pendingAccept!=null && (!isObj(p.pendingAccept) || typeof p.pendingAccept.ts!=='number' || !isFinite(p.pendingAccept.ts))) ? '「接到的單」格式不對' : '') ||
     // checked on an explicit restore only: a ledger already on the phone is never refused over it (nickName() reads anything as '')
     ((strictDates && p.nickname!=null && typeof p.nickname!=='string') ? '「你的稱呼」的格式不對' : '');
 }
@@ -11265,21 +11593,24 @@ function replaceLedger(parsed, undoLabel, okMsg){
   var prob = ledgerProblem(parsed, true);
   if(prob){ alert('這份資料不能還原:'+prob+'。\n\n目前的帳沒有任何改變。'); return false; }
   replacingLedger = true; replacingSince = Date.now();
-  var tries = 0;
+  var tries = 0, keptEntry = null;
   keepCopy();
   return true;
   function keepCopy(){
     // the current ledger's own pending save goes first, so what the phone holds is this ledger in full
     flushWrite();
     var genAtCopy = dataGen;
-    keepUndoCopy(undoLabel, function(kept){
+    keepUndoCopy(undoLabel, function(kept, entry){
       if(!kept){ replacingLedger = false; alert('沒辦法先把目前的帳另外保留一份(手機空間可能不夠),所以這次沒有還原。\n\n目前的帳沒有任何改變。'); return; }
       // something was saved while the copy was being stored (the app's own housekeeping; taps are held off): the copy
-      // must hold the ledger exactly as it is when it is swapped out, so take it again
+      // must hold the ledger exactly as it is when it is swapped out, so take it again (this one is not kept)
       if(dataGen!==genAtCopy){
+        undoDiscard(entry);
         if(++tries < 3){ keepCopy(); return; }
         replacingLedger = false; alert('帳本剛剛還在變動,這次沒有還原。\n\n目前的帳沒有任何改變,請再試一次。'); return;
       }
+      // on the list from now on; the list goes into the new ledger with this phone's other settings (DEVICE_KEYS)
+      undoAdd(entry); keptEntry = entry;
       swapIn();
     });
   }
@@ -11287,8 +11618,8 @@ function replaceLedger(parsed, undoLabel, okMsg){
     fillMissing(parsed);
     DEVICE_KEYS.forEach(function(k){ if(k in state) parsed[k] = state[k]; else delete parsed[k]; });
     parsed.fmt = LEDGER_FMT;
-    var prev = state, prevStale = storageStale, prevFailed = saveFailed, prevAlerted = saveFailAlerted;
-    state = parsed; stampMissingFeeSnapshots(); storageStale = false;
+    var prev = state, prevStale = storageStale, prevFailed = saveFailed, prevAlerted = saveFailAlerted, prevTooNew = ledgerTooNew;
+    state = parsed; stampMissingFeeSnapshots(); storageStale = false; ledgerTooNew = false;   // its level was checked (ledgerProblem)
     saveFailAlerted = true;  // this flow explains a failure itself; the "this entry was not saved" alert would mislead
     save(function(ok){
       replacingLedger = false;
@@ -11299,7 +11630,9 @@ function replaceLedger(parsed, undoLabel, okMsg){
         var dropped = state, changedMeanwhile = dropped.lastChangeAt!==replacedAt;
         abandonedLedger = dropped;
         DEVICE_KEYS.forEach(function(k){ if(k in dropped) prev[k] = dropped[k]; else delete prev[k]; });
-        state = prev; storageStale = prevStale; saveFailed = prevFailed; closeModal();
+        // the copy just made is of the ledger that stays: the list says so, so it is not taken for another one
+        (prev.undoList||[]).forEach(function(e){ if(e && keptEntry && e.file===keptEntry.file) e.fail = true; });
+        state = prev; storageStale = prevStale; saveFailed = prevFailed; ledgerTooNew = prevTooNew; closeModal();
         if(typeof renderAll==='function') renderAll();
         cloudSyncIfBehind();  // sends were held off meanwhile; the ledger kept may still have entries waiting for the cloud
         alert('資料沒有存進手機,這次沒有還原。\n\n目前的帳沒有任何改變;請確認手機空間後再試一次。'+
@@ -11315,26 +11648,40 @@ function replaceLedger(parsed, undoLabel, okMsg){
     changeFloor = Math.max(changeFloor, replacedAt);
   }
 }
-function undoInfo(){ if(state.undoMeta) return state.undoMeta; try{ return JSON.parse(localStorage.getItem('taxi_undo_info')||'null'); }catch(e){ return null; } }
-function undoRestore(){
-  var info = undoInfo(); if(!info) return;
-  var ask = info.kind==='aside'
-    ? '要改用 '+fmtTs(info.at)+' 保留的那份較新帳本嗎?\n\n它沒有確認存好,最後幾筆可能不完整。會整本取代現在的帳,不會合併之後新記的帳(現在的資料會先另外保留一份)。'
-    : '要把資料換回 '+fmtTs(info.at)+'「'+info.label+'」之前的樣子嗎?\n\n現在的資料會被取代(會先另外保留一份)。';
+// arg: a copy's time (undo-restore:<at>), 'aside', or nothing for the newest copy (or else the ledger kept aside)
+function undoFind(arg){
+  var list = undoListOf();
+  if(arg==='aside') return undoAsideOf();
+  if(!arg) return list[0] || undoAsideOf();
+  return list.filter(function(e){ return String(+e.at)===String(arg); })[0] || null;
+}
+// Swaps a kept copy in (through replaceLedger, so the ledger now is kept as a copy first). The question says what
+// the copy holds and what the phone holds now, like a backup file's (B1-10); the copy read must be the one asked about.
+function undoRestore(arg){
+  var e = undoFind(arg);
+  if(!e){ alert('找不到可以復原的資料。'); return; }
+  var now = ledgerSummary(state), older = !!now.to && (e.to||'') < now.to;
+  var ask = (e.kind==='aside'
+      ? '要改用 '+fmtTs(e.at)+' 保留的那份較新帳本嗎?\n\n它沒有確認存好,最後幾筆可能不完整。會整本取代現在的帳,不會合併之後新記的帳。\n\n'
+      : '要把帳換回這份嗎?\n'+undoWhat(e)+'\n\n')+readOnlyReplaceNote()+
+    '📄 這份:'+summaryLine(e)+'\n   '+summaryLast(e)+'\n📱 目前手機:'+summaryLine(now)+'\n   '+summaryLast(now)+'\n\n'+
+    (older ? (e.to ? '⚠️ 這份比目前的資料舊,'+e.to+' 以後記的帳會不見!\n\n' : '⚠️ 這份裡沒有任何收入或支出,目前手機上的帳都會換掉!\n\n') : '')+
+    '目前的資料會先另外保留一份。';
   if(!confirm(ask)) return;
-  function apply(raw){
-    var o, parsed;
-    try{ o = JSON.parse(raw); parsed = unpackState(JSON.parse(o.data)); }catch(e){ alert('找不到可以復原的資料。'); return; }
+  function cannot(){ alert('這份保留的帳讀不到,沒有還原。\n\n目前的帳沒有任何改變。'); }
+  undoQueue(function(){ return undoRead(e.file); }).then(function(o){
+    var parsed;
+    try{ if(+o.at!==+e.at) throw 0; parsed = unpackState(JSON.parse(o.data)); }catch(x){ cannot(); return; }
     replaceLedger(parsed, '復原', function(){ return '已經復原。'; });
-  }
-  if(NATIVE_FS){
-    NATIVE_FS.readFile({path:'ledger-undo.json', directory:'DATA', encoding:'utf8'}).then(function(r){ apply(r.data); }, function(){ alert('找不到可以復原的資料。'); });
-    return;
-  }
-  if(__BOOT.idb){
-    var g = __BOOT.idb.transaction('kv','readonly').objectStore('kv').get('state_undo');
-    g.onsuccess = function(){ if(g.result) apply(g.result); else alert('找不到可以復原的資料。'); };
-  } else { try{ apply(localStorage.getItem(STORAGE_KEY+'_undo')); }catch(e){} }
+  }, cannot);
+}
+// 不需要了,刪掉: the ledger kept aside at start-up, which nothing else ever removes
+function undoAsideDelete(){
+  var a = undoAsideOf(); if(!a) return;
+  if(!confirm('要刪掉 '+fmtTs(a.at)+' 開機時保留的那份較新帳本嗎?\n\n'+undoDataLine(a)+'\n\n刪掉後就找不回來;目前的帳不會改變。')) return;
+  delete state.undoAside; undoPublish(); saveQuiet();
+  undoQueue(function(){ return undoDelete(a.file).catch(function(){}); });
+  undoBoxRender(); showToast('已刪掉那份較新的帳本');
 }
 function doImportData(){
   var ta = document.getElementById('importText');
@@ -11345,10 +11692,10 @@ function doImportData(){
   if(prob){ alert('這份資料不能還原:'+prob+'。\n\n目前的帳沒有任何改變。'); return; }
   var inFile = ledgerSummary(parsed), now = ledgerSummary(state);
   var older = now.to && inFile.to < now.to;
-  if(!confirm('請確認要還原的資料:\n\n📄 備份檔:'+summaryLine(inFile)+'\n   '+summaryLast(inFile)+'\n📱 目前手機:'+summaryLine(now)+'\n\n跟存備份時顯示的不一樣,請按「取消」,回去找正確的檔案。\n\n'+
-    (older ? '⚠️ 備份檔比目前的資料舊,'+inFile.to+' 以後記的帳會不見!\n\n' : '')+
+  if(!confirm(readOnlyReplaceNote()+'請確認要還原的資料:\n\n📄 備份檔:'+summaryLine(inFile)+'\n   '+summaryLast(inFile)+'\n📱 目前手機:'+summaryLine(now)+'\n\n跟存備份時顯示的不一樣,請按「取消」,回去找正確的檔案。\n\n'+
+    (older ? '⚠️ 備份檔比目前的資料舊,'+inFile.to+' 以後記的帳會不見!\n\n' : '')+liveStateNote('備份檔')+
     '確定要用備份檔取代目前的資料嗎?(目前的資料會先另外保留一份,還原錯了可以復原)\n\n熱區分享、統計、雲端同步等這支手機的設定不會被備份檔改掉。')) return;
-  replaceLedger(parsed, '匯入還原', function(){ return '資料已還原。\n\n搬進來的帳:'+summaryLine(inFile)+'\n'+summaryLast(inFile)+'\n請跟存備份時畫面上顯示的對照,一樣表示初步核對通過;不一樣先不要記帳,寫信給我們。\n\n如果選錯檔案,到 ⚙️ →「匯入還原」按「↩️ 復原到匯入還原前的資料」。'; });
+  replaceLedger(parsed, '匯入還原', function(){ return '資料已還原。\n\n搬進來的帳:'+summaryLine(inFile)+'\n'+summaryLast(inFile)+'\n請跟存備份時畫面上顯示的對照,一樣表示初步核對通過;不一樣先不要記帳,寫信給我們。\n\n如果選錯檔案,到 ⚙️ →「匯入還原」,最下面「還原前保留的帳」按「↩️ 換回這份」(最近 3 份都留著)。'; });
 }
 function openNewPlatformModal(){
   var h = '<div class="modal-title">新增平台<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
@@ -11691,6 +12038,20 @@ document.addEventListener('keydown', function(e){
     else if(!e.shiftKey && document.activeElement===last){ e.preventDefault(); first.focus(); }
   }
 });
+// what can still be done on a newer version's ledger (ledgerTooNew): moving around and looking (tabs, reports, history,
+// analysis periods, help, settings screens), closing, backup files and copying, sharing a day's picture, and the restore
+// screens (restoring an older backup is the way out). Everything else is turned away with a short notice.
+var READ_ONLY_ACTS = ['tab','noop','close-modal','discard-settings','jump-expenses','day','month','year','period','select-day','chart-mode','cal-show',
+  'sum-kind','sum-nav','open-summary','open-summary-home','open-report','rpt-kind','rpt-nav','rpt-close','rpt-print','rpt-make','hist-report','year-report','year-report-csv',
+  'open-help','open-settings','set-sec','ver-tap','dismiss-tab-warning','wn-go',
+  'open-import','open-import-pick','do-import','open-restore','do-restore','undo-restore','move-from-web',
+  'export-file','quick-backup','open-export','copy-export','copy-saved','backup-dest','backup-snooze','share-day','share-day-go','share-back','copy-vip-id','rn-copy-id',
+  'open-crowd','crowd-close','crowd-reload','open-roadnews','rn-tab','rn-reload','traffic-show','open-fare-compare','cmp-pay','open-subbreakdown','exp-cat-detail','explain-net',
+  'fc-tab','ds-days','anf-toggle','anf-plat','anf-wd','anf-clear','anp-apply','hot-slot','hot-src','hot-reload',
+  'open-vip','pace-vip','disp-vip','fc-vip','rn-vip','vc-vip','ds-vip','rate-app'];
+// the same for a box that saves itself when changed (里程、工時、休息、上廁所 in 歷史) or a setting that applies at once:
+// only these change nothing in the ledger
+var READ_ONLY_CHANGES = ['rpt-from','rpt-to','fc-src','fc-dst','anf-from','anf-to','dayPicker','customFrom','customTo','importFile','f-cloud-key-show'];
 document.addEventListener('click', function(e){
   var t = e.target.closest('[data-act]');
   if(!t) return;
@@ -11698,6 +12059,7 @@ document.addEventListener('click', function(e){
   var act = t.getAttribute('data-act');
   var parts = act.split(':');
   var cmd = parts[0], arg = parts.slice(1).join(':');
+  if(ledgerTooNew && READ_ONLY_ACTS.indexOf(cmd)<0){ showToast('這個版本只能看,請先更新記帳本'); return; }
 
   if(cmd==='tab'){ currentTab=arg; renderAll(); }
   else if(cmd==='wn-go'){ wnGo(arg); }
@@ -12098,6 +12460,8 @@ document.addEventListener('click', function(e){
   else if(cmd==='cx-stale-drop'){ dropPendingAccept(arg==='start'); }
   else if(cmd==='cx-del'){ deleteCancel(arg); }
   else if(cmd==='trip-end'){ tripEnd(); }
+  else if(cmd==='trip-long-now'){ tripEndAt(Date.now(), true); }
+  else if(cmd==='trip-long-at'){ tripLongAt(); }
   else if(cmd==='trip-resume'){ tripResume(arg); }
   else if(cmd==='traffic-here'){ openTrafficHere(); }
   else if(cmd==='traffic-spots'){ openTrafficSpotsModal(); }
@@ -12159,7 +12523,7 @@ document.addEventListener('click', function(e){
     trafficShow(arg); save();
     if(document.getElementById('f-spot-name')) openTrafficSpotsModal(); else renderAll();
   }
-  else if(cmd==='trip-cancel'){ if(confirm('取消這趟上車紀錄?')){ state.activeTrip=null; save(); renderAll(); } }
+  else if(cmd==='trip-cancel'){ if(confirm('取消這趟上車紀錄?')){ state.activeTrip=null; save(); closeModal(); renderAll(); } }
   else if(cmd==='open-trip-link'){ openTripLinkModal(arg); }
   else if(cmd==='trip-new-income'){
     var tni = arg.split(':');
@@ -12231,7 +12595,7 @@ document.addEventListener('click', function(e){
   else if(cmd==='hist-report'){ openDayReport(arg); }
   else if(cmd==='share-day-go'){ shareDaySend(); }
   else if(cmd==='backup-dest'){ state.backupDest = arg; save(); openQuickBackup(); }
-  else if(cmd==='backup-snooze'){ state.backupSnoozeUntil = Date.now()+86400000; save(); renderAll(); }
+  else if(cmd==='backup-snooze'){ state.backupSnoozeUntil = Date.now()+86400000; saveQuiet(); renderAll(); }   // B1-06: housekeeping (see markExported)
   else if(cmd==='dismiss-tab-warning'){
     try{ sessionStorage.setItem('hideTabWarning','1'); }catch(err){}
     renderAll();
@@ -12243,7 +12607,7 @@ document.addEventListener('click', function(e){
     var nowD = new Date(), stamp = todayStr().replace(/-/g,'')+'_'+String(nowD.getHours()).padStart(2,'0')+String(nowD.getMinutes()).padStart(2,'0');
     // the summary describes exactly what went into this file, even if something is recorded while the share sheet is open
     var backupSum = ledgerSummary(state);
-    shareOrDownloadFile('跑車人生備份_'+stamp+'.json', packState(state), 'application/json').then(function(done){
+    shareOrDownloadFile('跑車人生備份_'+stamp+'.json', packBackup(state), 'application/json').then(function(done){
       if(done){ markExported(); renderAll(); openBackupDoneModal(backupSum); }
     });
   }
@@ -12264,13 +12628,15 @@ document.addEventListener('click', function(e){
     openModal(mh);
   }
   else if(cmd==='do-import'){ doImportData(); }
-  else if(cmd==='undo-restore'){ undoRestore(); }
+  else if(cmd==='undo-restore'){ undoRestore(arg); }
+  else if(cmd==='undo-aside-del'){ undoAsideDelete(); }
   else if(cmd==='reset-all'){
     if(!confirm('⚠️ 清除後,這支手機上的帳會全部不見。\n\n建議先按右上角「💾」存一份備份檔。\n要繼續清除嗎?')) return;
     var typed = prompt('確定要清除,請輸入「清除」兩個字:');
     if(typed===null) return;
     if(typed.trim()!=='清除'){ alert('輸入的不是「清除」,沒有清除任何資料。'); return; }
-    replaceLedger(defaultState(), '清除所有資料', function(){ return '已清除。\n如果是按錯了,到 ⚙️ →「匯入還原」可以復原。'; });
+    // B1-05 (威爾森 11/22): the cloud is not emptied with it; the empty ledger is never sent (canSyncLedger)
+    replaceLedger(defaultState(), '清除所有資料', function(){ return '已清除。\n如果是按錯了,到 ⚙️ →「匯入還原」,最下面「還原前保留的帳」按「↩️ 換回這份」。'+(state.syncUrl ? '\n\n雲端的備份不會被清掉;之後記新帳時,雲端會開始存新的帳。' : ''); });
   }
   else if(cmd==='icon-pick'){ toggleIconPicker(arg); }
   else if(cmd==='icon-set'){
@@ -12405,6 +12771,11 @@ document.addEventListener('change', function(e){
   // the share picture's ticks touch nothing in the ledger, and the preview must follow them
   if(e.target.id==='f-share-money' || e.target.id==='f-share-plat' || e.target.id==='f-share-name'){ shareOpt[e.target.id==='f-share-money' ? 'money' : e.target.id==='f-share-plat' ? 'plat' : 'name'] = e.target.checked; shareOptSave(); shareRender(); return; }
   if(ledgerBusy()){ ledgerBusyNotice(); return; }
+  if(ledgerTooNew && READ_ONLY_CHANGES.indexOf(e.target.id)<0){
+    showToast('這個版本只能看,請先更新記帳本');
+    if(e.target.matches && e.target.matches('[data-km-input],[data-km-input-date],[data-hours-input-date],[data-break-input-date],[data-toilet-input-date]')) renderAll();   // the box shows the ledger again
+    return;
+  }
   if(e.target.id && e.target.id.indexOf('f-rn-')===0 && rnSettingChange(e.target)) return;
   if(e.target.id && e.target.id.indexOf('f-fee-')===0 && e.target.id!=='f-fee-apply-from'){ var fcn = document.getElementById('fee-change-note'); if(fcn) fcn.hidden = false; }
   if(e.target.matches && e.target.matches('[data-mirror]')){ var mt = document.getElementById(e.target.getAttribute('data-mirror')); if(mt) mt.checked = e.target.checked; if(mt && mt.id==='f-ui-traffic' && mt.checked) uiLinkRoadNews(); return; }
@@ -12509,6 +12880,7 @@ else { if(!state.uiMode){ state.uiMode = uiModeOf(state.ui||{}); saveQuiet(); } 
 setTimeout(function(){ notifySync(false); }, 2500);
 initWebBeta(); if(APP_CHANNEL==='beta') renderAll(); setTimeout(detectAppChannel, 300); setTimeout(rvSupported, 400);
 setTimeout(function(){ rnPushListen(); rnSumMaybeLoad(); }, 1500);   // new trips add payout days; km moves the maintenance guess
+setTimeout(function(){ if(!undoChecked) undoQueue(undoCheck); }, 3000);   // the 還原前 copies' list, put right from what is stored
 }
 /* ---------- the installed app's own copy of the ledger ----------
    Inside the app the phone may clear the web view's storage on its own (iOS can), so the ledger is also
