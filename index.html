@@ -9435,7 +9435,7 @@ var HELP = [
     ['上下班打卡、休息', '記帳頁「今日行車」按上班打卡 / 下班打卡,休息按休息開始 / 結束。忘了打下班卡,下次打開會問你。', 'shift'],
     ['跑過半夜(營業日分界)', '新安裝預設午夜 00:00 換日(照日曆算)。常跑過半夜的,到 ⚙️「基本設定」→「我的營業日分界時間」往後調(最晚到早上 09:00),那個時間以前記的帳都算前一天,凌晨時記帳頁上方會提醒。Uber 一天的車資結算是凌晨 04:00 到隔天 03:59,想跟 Uber App 的每日收入對得起來就選凌晨 04:00。'],
     ['目前時薪', '今日行車顯示今日實收 ÷ 已跑工時,上班滿 30 分鐘才顯示。', 'liveRate'],
-    ['今日跑車報告', '下班打卡後跳出:實收、平均時薪、趟數,跟前 7 天比較,可以順便備份。', 'dayReport'],
+    ['今日跑車報告', '下班打卡後跳出:實收、平均時薪、趟數,跟前 7 天比較,還有「今天時薪走勢」小圖(累積平均時薪怎麼變化),可以順便備份。', 'dayReport'],
     ['休息提醒', '連續開車太久(預設 2 小時)、今天上班太久(預設 12 小時)時提醒你,只是提醒,不會幫你按休息。時間在功能開關下面改。記帳本要打開著才會跳出來。', 'restRemind'],
     ['補登上班時間', '忘了打卡、或中途才開始用:今日行車的「⏱️ 補登上班時間」,選幾點上班、幾點下班。前幾天的工時到「歷史」頁改。', 'shiftFix'],
     ['里程', '每天記里程,才能算每公里成本、每公里實收。', 'km'],
@@ -9644,6 +9644,89 @@ function dayLoadedKm(t, recs){
   if(real < kmN) sub.push((real ? '部分用直線距離估算' : '用上下車直線距離估算')+',實際開的路通常比較長');
   return s + (sub.length ? '<div style="font-size:11.5px;color:var(--text-muted)">'+sub.join(';')+'</div>' : '');
 }
+/* 時薪走勢 (待辦 2-11; 2-12 分享戰績圖 reuses it): the business day t's 平均時薪 up to each entry, as the report counts
+   it. 實收 = sumNetIncome of the day's records up to that time (取消費, 小費, 活動獎勵 as everywhere); 工時 = the time
+   inside the day's clock-in periods (punchSegs: 空車、等單 in, 休息 out) up to that time, scaled so the whole day is
+   exactly totalHoursInRange(t, t). An entry is placed at its 下車, else 上車, else when it was written (only when that
+   falls in the same business day), kept inside the work periods; one with no such time counts at the end. Points
+   before WT_MIN_H of work are left out (the report's own 30-minute rule), and the last point is the day's end (下班,
+   or now while still on shift) with the report's own 實收 ÷ 工時, so it always equals 平均時薪. Returns
+   [{ts, hours, net, rate}] in time order, or [] when there is nothing to draw: no usable clock-in log, under
+   WT_MIN_DAY_H of work, or fewer than WT_MIN_PTS points. Worked out on the phone from the ledger, nothing stored. */
+var WT_MIN_H = 0.5, WT_MIN_DAY_H = 1, WT_MIN_PTS = 3;
+function recTimeOnDay(r){
+  var ts = (r.dropoff && r.dropoff.ts) || (r.pickup && r.pickup.ts) || null;
+  if(!ts && r.ts && businessDayOf(r.ts)===r.date) ts = r.ts;
+  return ts ? +ts : null;
+}
+function dayRateTrend(t){
+  var segs = punchSegs(t), hours = totalHoursInRange(t, t);
+  if(!segs || !(hours >= WT_MIN_DAY_H)) return [];
+  var recs = recordsInRange(t, t); if(!recs.length) return [];
+  var tot = ivSum(segs), scale = tot>0 ? hours*3600000/tot : 1, s0 = segs[0][0], end = segs[segs.length-1][1];
+  function workedH(T){ var ms = 0; segs.forEach(function(s){ if(T > s[0]) ms += Math.min(T, s[1]) - s[0]; }); return ms*scale/3600000; }
+  var items = recs.map(function(r){
+    var ts = recTimeOnDay(r), x = ts==null ? end : Math.max(s0, Math.min(end, ts));
+    return {x:x, v:sumNetIncome([r]).total};
+  }).sort(function(a, b){ return a.x - b.x; });
+  var pts = [], net = 0;
+  items.forEach(function(it, i){
+    net += it.v;
+    if(i < items.length-1 && items[i+1].x===it.x) return;
+    var h = workedH(it.x);
+    if(h >= WT_MIN_H) pts.push({ts:it.x, hours:h, net:net, rate:net/h});
+  });
+  var netAll = sumNetIncome(recs).total, last = {ts:end, hours:hours, net:netAll, rate:netAll/hours};
+  if(pts.length && pts[pts.length-1].ts >= end) pts[pts.length-1] = last; else pts.push(last);
+  return pts.length >= WT_MIN_PTS ? pts : [];
+}
+// the small line chart under 平均時薪: one colour, the driver's 前 7 天 as a dashed line, numbers at 起點/最高/終點;
+// no 好/不好 words and no red or green. Drawn narrower under a big font so its numbers grow with the rest of the page.
+function dayTrendHtml(t, rate7){
+  var pts = dayRateTrend(t);
+  if(!pts.length){
+    var hasLog = !!punchSegs(t) && totalHoursInRange(t, t) >= WT_MIN_H;
+    return hasLog ? '<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:8px">📈 時薪走勢要上班滿 1 小時、有 3 筆以上紀錄才會畫出來。</div>' : '';
+  }
+  var z = +state.fontScale||1, W = Math.round(320/z), H = 118, L = 6, R = 6, TOP = 22, BOT = 20;
+  var x0 = pts[0].ts, x1 = pts[pts.length-1].ts, span = Math.max(1, x1-x0);
+  var vals = pts.map(function(p){ return p.rate; }); if(rate7!=null) vals.push(rate7);
+  var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+  if(hi-lo < 40){ var mid = (hi+lo)/2; lo = mid-20; hi = mid+20; }
+  var pad = (hi-lo)*0.08; lo -= pad; hi += pad;
+  function X(ts){ return L + (ts-x0)/span*(W-L-R); }
+  function Y(v){ return TOP + (hi-v)/(hi-lo)*(H-TOP-BOT); }
+  var f1 = function(n){ return (Math.round(n*10)/10).toString(); };
+  var line = pts.map(function(p){ return f1(X(p.ts))+','+f1(Y(p.rate)); }).join(' ');
+  var hiI = 0; pts.forEach(function(p, i){ if(p.rate > pts[hiI].rate) hiI = i; });
+  var last = pts.length-1, midY = (TOP + H-BOT)/2;
+  var txt = 'font-family:var(--num-font);font-size:11px;font-weight:600;fill:var(--text);paint-order:stroke;stroke:var(--surface);stroke-width:3px;stroke-linejoin:round';
+  function label(i, anchor){
+    var p = pts[i], x = X(p.ts), y = Y(p.rate);
+    if(anchor==='middle') x = Math.max(L+22, Math.min(W-R-22, x));
+    var ty = i===hiI ? y-8 : (y < midY ? y+15 : y-8);
+    return '<circle cx="'+f1(X(p.ts))+'" cy="'+f1(y)+'" r="3" style="fill:var(--accent)"/><text x="'+f1(x)+'" y="'+f1(ty)+'" text-anchor="'+anchor+'" style="'+txt+'">'+fmtMoney(p.rate)+'</text>';
+  }
+  var s = '<svg viewBox="0 0 '+W+' '+H+'" width="100%" style="display:block;overflow:visible" aria-hidden="true" focusable="false">';
+  s += '<line x1="'+L+'" y1="'+(H-BOT)+'" x2="'+(W-R)+'" y2="'+(H-BOT)+'" style="stroke:var(--border);stroke-width:1"/>';
+  if(rate7!=null) s += '<line x1="'+L+'" y1="'+f1(Y(rate7))+'" x2="'+(W-R)+'" y2="'+f1(Y(rate7))+'" style="stroke:var(--text-muted);stroke-width:1.3;stroke-dasharray:4 4"/>';
+  s += '<polyline points="'+line+'" style="fill:none;stroke:var(--accent);stroke-width:2.2;stroke-linejoin:round;stroke-linecap:round"/>';
+  s += label(0, 'start') + (hiI!==0 && hiI!==last ? label(hiI, 'middle') : '') + label(last, 'end');
+  var tm = 'font-family:var(--num-font);font-size:9.5px;fill:var(--text-muted)';
+  s += '<text x="'+L+'" y="'+(H-5)+'" text-anchor="start" style="'+tm+'">'+hhmm(x0)+'</text><text x="'+(W-R)+'" y="'+(H-5)+'" text-anchor="end" style="'+tm+'">'+hhmm(x1)+'</text>';
+  s += '</svg>';
+  // read aloud: 元, not a $ sign
+  var yuan = function(v){ return Math.round(v)+' 元'; }, endR = pts[last].rate;
+  var said = '今天時薪走勢:從 '+yuan(pts[0].rate)+'到 '+yuan(endR)+(hiI!==0 && hiI!==last ? ',最高 '+yuan(pts[hiI].rate) : '');
+  if(rate7!=null){ var a = Math.round(endR), b = Math.round(rate7); said += a===b ? ',和前 7 天平均 '+yuan(rate7)+'一樣' : (a>b ? ',高於' : ',低於')+'前 7 天平均 '+yuan(rate7); }
+  var sw = function(st){ return '<span style="display:inline-block;width:16px;border-top:2px '+st+';vertical-align:middle;margin-right:4px"></span>'; };
+  var h = '<div class="day-trend" style="margin:0 0 10px;padding:10px 12px 8px;border:1px solid var(--border);border-radius:12px">';
+  h += '<div style="font-size:12.5px;font-weight:600;margin-bottom:4px">📈 今天時薪走勢</div>';
+  h += '<div role="img" aria-label="'+esc(said)+'">'+s+'</div>';
+  h += '<div aria-hidden="true" style="font-size:11px;color:var(--text-muted);line-height:1.7;margin-top:2px">'+sw('solid var(--accent)')+'到每個時間點為止的平均時薪'+(rate7!=null ? '<span style="white-space:nowrap;margin-left:10px">'+sw('dashed var(--text-muted)')+'前 7 天平均 <span class="num">'+fmtMoney(rate7)+'</span></span>' : '')+'</div>';
+  h += '</div>';
+  return h;
+}
 function openDayReport(t){
   var recs = recordsInRange(t, t), cxS = cancelSum(cancelsInRange(t, t));
   if(!recs.length && !cxS.n) return;
@@ -9664,6 +9747,7 @@ function openDayReport(t){
   var addOn = uiOn('addOn') ? recs.filter(function(r){ return r.addOn>0; }) : [];
   if(addOn.length) h += tile('加價單', addOn.length+' 單') + tile('加價多收', fmtMoney(addOn.reduce(function(a,r){ return a+r.addOn; },0)), 'income');
   h += '</div>';
+  if(rate!=null) h += dayTrendHtml(t, rate7);
   var note = '';
   if(rate==null) note = hours>0 ? '今天打卡的工時不到 30 分鐘,時薪先不算。' : '今天沒有完整的上下班打卡,時薪算不出來。';
   else if(rate7!=null){
@@ -9934,12 +10018,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.22.2';
+var APP_VERSION = '2026.11.22.3';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.22.3', '📈 今日跑車報告多一張「今天時薪走勢」小圖:看從上班到下班,累積的平均時薪怎麼變化(含空車、等單,扣休息),虛線是你前 7 天的平均時薪。上班打卡滿 1 小時、有 3 筆以上紀錄才會畫', '', {report:true}],
   ['2026.11.22.2', '🚀 剛開始用的車友,記帳首頁最上面多一張「開始使用」小卡:上班打卡、記第一筆車資、下班看今日跑車報告,做完一項打一個勾,都做完就自動消失;不想看可以按「之後再說」', '', {set:'features'}],
   ['2026.11.22.1', '🚦 測試版:路況快報每一則前面標地區(例如「桃園·楊梅」「新北·中和」),選好幾個城市也一看就知道在哪;來源沒給準確位置的國道、省道通報標「位置不確定」,不給地圖、也不發通知;寫在別的縣市的事故(例如嘉義的)不會再混進來', 'beta', {tab:'entry', find:'路況快報'}],
   ['2026.11.21.3', '📲 分析頁「空檔拆解」多一段「被取消」:中間有單被取消時,接單到取消那段另外列出,下一次等單從取消那一刻算起,等單時間更準(空檔總長不變)', '', {tab:'analytics', find:'🚕 載客效率'}],
