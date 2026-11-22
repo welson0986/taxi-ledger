@@ -612,7 +612,7 @@ var PLATFORM_DEFS = [
   {key:'tdc', label:'台灣大車隊', icon:'🚕', color:'#1E5FA8', fareTypeOptions:['跳表','預估車資'], paymentOptions:['現金','信用卡','企業簽單','悠遊卡','愛心卡','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true, hasAddOn:true},
   {key:'metro', label:'大都會', icon:'🚗', color:'#FFFFFF', fareTypeOptions:['跳表','預估車資'], discountOptions:['原價','婦派','海派','鑽派','超派'], paymentOptions:['現金','信用卡','企業簽單','悠遊卡','愛心卡','好孕卷'], estimateHasMarkupAmount:true, estimateHasMarkupMultiplier:true, hasAddOn:true},
   {key:'bolt', label:'BOLT', icon:'⚡', color:'#1B5E20', subtypeOptions:['經典博特','舒適博特','揪團博特','寵物博特','尊榮博特'], hasMarkupMultiplier:true},
-  {key:'yoxi', label:'YOXI', icon:'🚐', color:'#90CAF9', fareTypeOptions:['跳表','預估車資','據點叫車'], paymentOptions:['現金','企業簽單','信用卡'], enterpriseDiscountOptions:['原價','95折','92折','85折'], estimateTypeOptions:['一般多元','樂聚多元','減碳多元'], estimateHasMarkupMultiplier:true, hasStationFee:true, hasAddOn:true},
+  {key:'yoxi', label:'YOXI', icon:'🚐', color:'#90CAF9', fareTypeOptions:['跳表','預估車資','據點叫車'], paymentOptions:['現金','企業簽單','信用卡'], enterpriseDiscountOptions:['原價','95折','9折','85折'], estimateTypeOptions:['一般多元','樂聚多元','減碳多元'], estimateHasMarkupMultiplier:true, hasStationFee:true, hasAddOn:true},
   {key:'linego', label:'Line Go', icon:'💬', color:'#06C755', subtypeOptions:['一般','六人座'], markupPercent:true},
   {key:'private', label:'私客', icon:'🙋🏻', color:'#7A5FBF'},
   {key:'hailyellow', label:'呼叫小黃', icon:'🚖', color:'#F5C518'  , fareTypeOptions:['跳表','固定價'], paymentOptions:['現金','信用卡','悠遊卡','愛心卡']},
@@ -824,7 +824,7 @@ function defaultState(){
     fixedCosts:[],
     fixedOverrides:{},
     targets:{daily:0,weekly:0,monthly:0},
-    feeRules:{tdc:null,yoxiCash:null,yoxiOther:null,yoxiCreditExtra:null,linego:null,metroFlat:null,metroCredit:null,metroEnterprise:null,uber:null,uberTaxi:null,hailyellowCredit:null,boltFlat:null,boltPct:null,boltThreshold:null,boltThresholdEnabled:true},
+    feeRules:{tdc:null,yoxiCash:null,yoxiOther:null,yoxiCreditExtra:null,linego:null,metroFlat:null,metroCredit:null,metroEnterprise:null,uber:null,uberTaxi:null,hailyellowCredit:null,boltFlat:null,boltPct:null,boltThreshold:null,boltThresholdEnabled:false},
     platformOverrides:{},
     customPlatforms:[],
     platformOrder:PLATFORM_DEFS.map(function(p){return p.key;}),
@@ -924,7 +924,7 @@ function load(){
     return fillMissing(unpackState(JSON.parse(raw)));
   }catch(e){ if(raw) corruptRaw = raw; return defaultState(); }
 }
-var FEE_DEFAULTS = {tdcFlat:0,metroPct:0,yoxiFlat:0,linegoFlat:0,tdc:15,yoxiCash:10,yoxiCreditExtra:2,linego:19.5,metroFlat:25,metroCredit:3,metroEnterprise:6,uber:25,uberTaxi:15,hailyellowCredit:3,tdcTicket:3,tdcCard:0,linegoTaxiTier:200,linegoTaxiFlat:10,linegoTaxiPct:10,linegoTaxiCard:2.5,linegoTaxiCap:3000,metroTicket:3,hailyellowTicket:3,boltFlat:20,boltPct:10,boltThreshold:15,boltThresholdEnabled:true};
+var FEE_DEFAULTS = {tdcFlat:0,metroPct:0,yoxiFlat:0,linegoFlat:0,tdc:15,yoxiCash:10,yoxiCreditExtra:2,linego:19.5,metroFlat:25,metroCredit:3,metroEnterprise:6,uber:25,uberTaxi:15,hailyellowCredit:3,tdcTicket:3,tdcCard:0,linegoTaxiTier:200,linegoTaxiFlat:10,linegoTaxiPct:10,linegoTaxiCard:2.5,linegoTaxiCap:3000,metroTicket:3,hailyellowTicket:3,boltFlat:20,boltPct:10,boltThreshold:15,boltThresholdEnabled:false};
 // Each record keeps the fee rules in force when it was entered. Identical rule sets are written once
 // in feeTable and records point at them with feesRef; in memory every record still has r.fees.
 function packState(st){
@@ -1456,7 +1456,8 @@ function yoxiNet(r, gross, fees){
     }
     if(r.fareType==='跳表'){
       if(r.payment==='企業簽單'){
-        var discMap = {'原價':1,'95折':0.95,'92折':0.92,'85折':0.85};
+        // 92折 was an option until 2026.11.22.10 (replaced by 9折); records that carry it keep computing the same
+        var discMap = {'原價':1,'95折':0.95,'9折':0.9,'92折':0.92,'85折':0.85};
         var mult = discMap[r.enterpriseDiscount]!=null ? discMap[r.enterpriseDiscount] : 1;
         return gross*mult*(1-yoxiBase/100);
       }
@@ -8539,7 +8540,10 @@ function buildIncomeForm(key, existing){
       '<label id="sec-paper-slip" style="display:flex;gap:8px;align-items:center;margin-top:8px;font-size:13px;cursor:pointer"'+(curPayment==='企業簽單'?'':' hidden')+'><input type="checkbox" id="f-paper-slip" style="width:18px;height:18px"'+(existing&&existing.paperSlip?' checked':'')+'>📄 紙本簽單(要拿回車隊換現金,不算進撥款)</label>' : '';
     h += off('payment', '<div class="form-row" id="sec-meterExtra"'+(meterLike?'':' hidden')+'><label>付款方式</label>'+chipRowHtml('payment', def.paymentOptions, curPayment)+paperRow+'</div>');
     if(def.enterpriseDiscountOptions){
-      h += off(uiOn('payment')?'discount':'payment', '<div class="form-row" id="sec-yoxi-enterprise-discount"'+(curPayment==='企業簽單'?'':' hidden')+'><label>優惠折數</label>'+chipRowHtml('enterpriseDiscount', def.enterpriseDiscountOptions, (existing&&existing.enterpriseDiscount)||def.enterpriseDiscountOptions[0])+'</div>');
+      // a record saved with an option no longer offered (92折 before 2026.11.22.10) shows it as "(舊)" so it stays as it was
+      var edOpts = def.enterpriseDiscountOptions.slice(), edCur = (existing&&existing.enterpriseDiscount)||edOpts[0], edLab = null;
+      if(edOpts.indexOf(edCur)<0){ edOpts.push(edCur); edLab = {}; edLab[edCur] = edCur+'(舊)'; }
+      h += off(uiOn('payment')?'discount':'payment', '<div class="form-row" id="sec-yoxi-enterprise-discount"'+(curPayment==='企業簽單'?'':' hidden')+'><label>優惠折數</label>'+chipRowHtml('enterpriseDiscount', edOpts, edCur, edLab)+'</div>');
     }
   }
   if(def.hasStationFee){
@@ -8914,7 +8918,7 @@ function feeSettingsHtml(fr){
     '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;line-height:1.5">優步小黃輸入跳表金額,系統扣這個 % 算實收。各地合作車隊抽成可能不同,請改成你的。</div></div>');
   var bolt = '<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;line-height:1.5">BOLT 輸入的是還沒扣手續費的原始車資,系統會自動扣。</div>';
   bolt += '<div class="form-grid2">'+inp('f-fee-boltflat','手續費 %','boltFlat',0.1)+'</div>';
-  bolt += '<label style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;color:var(--text-muted);margin-bottom:8px"><input type="checkbox" id="f-fee-boltthresholdenabled" style="width:17px;height:17px" '+(fr.boltThresholdEnabled!==false?'checked':'')+'>開啟車貼獎勵門檻(沒有貼車貼就不用勾,一律用上面的 %)</label>';
+  bolt += '<label style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;color:var(--text-muted);margin-bottom:8px"><input type="checkbox" id="f-fee-boltthresholdenabled" style="width:17px;height:17px" '+(rf.boltThresholdEnabled?'checked':'')+'>開啟車貼獎勵門檻(沒有貼車貼就不用勾,一律用上面的 %)</label>';
   bolt += '<div class="form-grid2">'+inp('f-fee-boltthreshold','車貼獎勵每週趟次門檻','boltThreshold',1)+inp('f-fee-boltpct','趟次門檻達標後 %','boltPct',0.1)+'</div>';
   bolt += '<div style="font-size:11px;color:var(--text-muted);margin-top:-4px;margin-bottom:12px">達標當週,全部趟次都會改用「達標後 %」計算。</div>';
   h += block('bolt', bolt);
@@ -10495,12 +10499,14 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.22.9';
+var APP_VERSION = '2026.11.22.10';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.22.10', '🚐 YOXI 企業簽單的優惠折數選項改成:原價、95 折、9 折、85 折(原本的 92 折改成 9 折)。以前記成 92 折的帳照舊計算,編輯時會顯示「92折(舊)」'],
+  ['2026.11.22.10', '⚡ BOLT 的「車貼獎勵門檻」改成預設關閉(大部分司機沒有貼車貼)。有貼車貼的話,到 ⚙️ 設定 →「平台與手續費」打開;以前記的帳不會被改,想把過去的帳也改過來,存檔後選「套用」並挑日期', '', {set:'platforms'}],
   ['2026.11.22.8', '📅 「歷史」點某一天,摘要下面多兩顆按鈕:「看這天的報告」「分享這天戰績」,下班時報告關掉了、或想分享以前的日子都可以', '', {tab:'history', find:'看這天的報告', day:true}],
   ['2026.11.22.7', '🙋 有填「你的稱呼」的話,休息提醒和上班太久的收工提醒也會叫你的稱呼'],
   ['2026.11.22.6', '🙋 可以設定「你的稱呼」:分享戰績圖、PDF 經營報告封面會用到,上班打卡時也會跟你打聲招呼。不填也完全不影響記帳', '', {set:'basic'}],
