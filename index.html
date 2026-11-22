@@ -1120,6 +1120,13 @@ function punchLog(m, kind, ts){
 }
 // the work periods of day d as [[from, to]], the running one up to now; null when there is no usable log
 function punchSegs(d){
+  var R = punchSegsRaw(d);
+  return (R && Math.abs(R.tot-R.wm) <= 5*60000) ? R.segs : null;
+}
+// the same periods without the check against workedMs: {segs, tot, wm} (ms), null when the log has no period or its
+// running one does not match the shift. Only 時薪走勢 uses a log that does not add up (hours edited in 歷史, a 補登
+// with a break), and then only as an estimate it says it is; everything else keeps to punchSegs.
+function punchSegsRaw(d){
   var m = state.dailyMeta[d]; if(!m || !Array.isArray(m.punch) || !m.punch.length) return null;
   var list = m.punch.filter(function(p){ return Array.isArray(p) && isFinite(+p[0]) && +p[0]>0 && (p[1]==='i' || p[1]==='o'); })
     .map(function(p){ return [+p[0], p[1]]; }).sort(function(a,b){ return a[0]-b[0]; });
@@ -1130,7 +1137,7 @@ function punchSegs(d){
   });
   if(open!=null){ if(!m.segmentStart || m.segmentStart<open) return null; segs.push([open, now]); tot += now-open; }
   var wm = (+m.workedMs||0) + (m.segmentStart ? now-m.segmentStart : 0);
-  return (segs.length && Math.abs(tot-wm) <= 5*60000) ? segs : null;
+  return segs.length ? {segs:segs, tot:tot, wm:wm} : null;
 }
 function dm(dateStr){
   var m = state.dailyMeta[dateStr];
@@ -9646,24 +9653,33 @@ function dayLoadedKm(t, recs){
 }
 /* 時薪走勢 (待辦 2-11; 2-12 分享戰績圖 reuses it): the business day t's 平均時薪 up to each entry, as the report counts
    it. 實收 = sumNetIncome of the day's records up to that time (取消費, 小費, 活動獎勵 as everywhere); 工時 = the time
-   inside the day's clock-in periods (punchSegs: 空車、等單 in, 休息 out) up to that time, scaled so the whole day is
-   exactly totalHoursInRange(t, t). An entry is placed at its 下車, else 上車, else when it was written (only when that
-   falls in the same business day), kept inside the work periods; one with no such time counts at the end. Points
-   before WT_MIN_H of work are left out (the report's own 30-minute rule), and the last point is the day's end (下班,
-   or now while still on shift) with the report's own 實收 ÷ 工時, so it always equals 平均時薪. Returns
-   [{ts, hours, net, rate}] in time order, or [] when there is nothing to draw: no usable clock-in log, under
-   WT_MIN_DAY_H of work, or fewer than WT_MIN_PTS points. Worked out on the phone from the ledger, nothing stored. */
-var WT_MIN_H = 0.5, WT_MIN_DAY_H = 1, WT_MIN_PTS = 3;
+   inside the day's clock-in periods (空車、等單 in, 休息 out) up to that time, scaled so the whole day is exactly
+   totalHoursInRange(t, t). An entry is placed at its 下車, else 上車, else when it was written (only when that falls in
+   the same business day), kept inside the work periods; one with no such time counts at the end. Points before
+   WT_MIN_H of work are left out (the report's own 30-minute rule), and the last point is the day's end (下班, or now
+   while still on shift) with the report's own 實收 ÷ 工時, so it always equals 平均時薪.
+   When the log does not add up to the hours (punchSegs' 5 minutes: hours edited in 歷史, a 補登 with a break, whose
+   time of day is not known) the difference is spread over the day in proportion and every point says est:true; the
+   last point is still exact. Past WT_EST_MIN..WT_EST_MAX of the log that is no longer an estimate, and nothing is drawn.
+   dayRateTrend(t): [{ts, hours, net, rate, est}] in time order, [] when there is nothing to draw.
+   dayRateTrendInfo(t): {pts, est, why} — why says what is missing when pts is empty: 'nolog' (no clock-in times:
+   hours typed in, or days from before the log), 'far' (hours edited too far from the clock-in times), 'short' (under
+   WT_MIN_DAY_H of work or fewer than WT_MIN_PTS points). Worked out on the phone from the ledger, nothing stored. */
+var WT_MIN_H = 0.5, WT_MIN_DAY_H = 1, WT_MIN_PTS = 3, WT_EST_MIN = 0.5, WT_EST_MAX = 1.5;
 function recTimeOnDay(r){
   var ts = (r.dropoff && r.dropoff.ts) || (r.pickup && r.pickup.ts) || null;
   if(!ts && r.ts && businessDayOf(r.ts)===r.date) ts = r.ts;
   return ts ? +ts : null;
 }
-function dayRateTrend(t){
-  var segs = punchSegs(t), hours = totalHoursInRange(t, t);
-  if(!segs || !(hours >= WT_MIN_DAY_H)) return [];
-  var recs = recordsInRange(t, t); if(!recs.length) return [];
-  var tot = ivSum(segs), scale = tot>0 ? hours*3600000/tot : 1, s0 = segs[0][0], end = segs[segs.length-1][1];
+function dayRateTrend(t){ return dayRateTrendInfo(t).pts; }
+function dayRateTrendInfo(t){
+  var R = punchSegsRaw(t), hours = totalHoursInRange(t, t);
+  if(!R) return {pts:[], est:false, why:'nolog'};
+  var segs = R.segs, tot = R.tot, est = Math.abs(tot - R.wm) > 5*60000, scale = tot>0 ? hours*3600000/tot : 0;
+  if(est && !(scale >= WT_EST_MIN && scale <= WT_EST_MAX)) return {pts:[], est:true, why:'far'};
+  var recs = recordsInRange(t, t);
+  if(!(hours >= WT_MIN_DAY_H) || !recs.length) return {pts:[], est:est, why:'short'};
+  var s0 = segs[0][0], end = segs[segs.length-1][1];
   function workedH(T){ var ms = 0; segs.forEach(function(s){ if(T > s[0]) ms += Math.min(T, s[1]) - s[0]; }); return ms*scale/3600000; }
   var items = recs.map(function(r){
     var ts = recTimeOnDay(r), x = ts==null ? end : Math.max(s0, Math.min(end, ts));
@@ -9674,20 +9690,23 @@ function dayRateTrend(t){
     net += it.v;
     if(i < items.length-1 && items[i+1].x===it.x) return;
     var h = workedH(it.x);
-    if(h >= WT_MIN_H) pts.push({ts:it.x, hours:h, net:net, rate:net/h});
+    if(h >= WT_MIN_H) pts.push({ts:it.x, hours:h, net:net, rate:net/h, est:est});
   });
-  var netAll = sumNetIncome(recs).total, last = {ts:end, hours:hours, net:netAll, rate:netAll/hours};
+  var netAll = sumNetIncome(recs).total, last = {ts:end, hours:hours, net:netAll, rate:netAll/hours, est:est};
   if(pts.length && pts[pts.length-1].ts >= end) pts[pts.length-1] = last; else pts.push(last);
-  return pts.length >= WT_MIN_PTS ? pts : [];
+  return pts.length >= WT_MIN_PTS ? {pts:pts, est:est, why:''} : {pts:[], est:est, why:'short'};
 }
 // the small line chart under 平均時薪: one colour, the driver's 前 7 天 as a dashed line, numbers at 起點/最高/終點;
 // no 好/不好 words and no red or green. Drawn narrower under a big font so its numbers grow with the rest of the page.
+// Nothing to draw: one short line on why (so a day without a chart never leaves the driver wondering).
+var WT_WHY = {
+  nolog:'這天沒有上下班打卡的時間(工時是手動填的),畫不出時薪走勢;平均時薪照常是準的。',
+  far:'這天的工時改過,跟打卡時間差太多,畫不出時薪走勢;平均時薪照常是準的。',
+  short:'時薪走勢要上班滿 1 小時、有 3 筆以上紀錄才會畫出來。'
+};
 function dayTrendHtml(t, rate7){
-  var pts = dayRateTrend(t);
-  if(!pts.length){
-    var hasLog = !!punchSegs(t) && totalHoursInRange(t, t) >= WT_MIN_H;
-    return hasLog ? '<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:8px">📈 時薪走勢要上班滿 1 小時、有 3 筆以上紀錄才會畫出來。</div>' : '';
-  }
+  var I = dayRateTrendInfo(t), pts = I.pts;
+  if(!pts.length) return WT_WHY[I.why] ? '<div class="day-trend-why" style="font-size:11.5px;color:var(--text-muted);margin-bottom:8px;line-height:1.6">📈 '+WT_WHY[I.why]+'</div>' : '';
   var z = +state.fontScale||1, W = Math.round(320/z), H = 118, L = 6, R = 6, TOP = 22, BOT = 20;
   var x0 = pts[0].ts, x1 = pts[pts.length-1].ts, span = Math.max(1, x1-x0);
   var vals = pts.map(function(p){ return p.rate; }); if(rate7!=null) vals.push(rate7);
@@ -9724,6 +9743,8 @@ function dayTrendHtml(t, rate7){
   h += '<div style="font-size:12.5px;font-weight:600;margin-bottom:4px">📈 今天時薪走勢</div>';
   h += '<div role="img" aria-label="'+esc(said)+'">'+s+'</div>';
   h += '<div aria-hidden="true" style="font-size:11px;color:var(--text-muted);line-height:1.7;margin-top:2px">'+sw('solid var(--accent)')+'到每個時間點為止的平均時薪'+(rate7!=null ? '<span style="white-space:nowrap;margin-left:10px">'+sw('dashed var(--text-muted)')+'前 7 天平均 <span class="num">'+fmtMoney(rate7)+'</span></span>' : '')+'</div>';
+  // hours edited after the fact: say the line is an estimate (read aloud too, it changes what the numbers mean)
+  if(I.est) h += '<div class="day-trend-est" style="font-size:11px;color:var(--text-muted);line-height:1.6;margin-top:4px">ⓘ 這天的工時改過(或補登時有填休息),中間的點照比例估算,最後一點和平均時薪一樣。</div>';
   h += '</div>';
   return h;
 }
@@ -10018,12 +10039,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.22.3';
+var APP_VERSION = '2026.11.22.4';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.22.4', '🔧 今日跑車報告的「時薪走勢」:工時在歷史裡改過、或補登時有填休息的日子也畫得出來,會註明中間的點是照比例估算;真的畫不出來時(例如沒有打卡時間),會寫一行原因'],
   ['2026.11.22.3', '📈 今日跑車報告多一張「今天時薪走勢」小圖:看從上班到下班,累積的平均時薪怎麼變化(含空車、等單,扣休息),虛線是你前 7 天的平均時薪。上班打卡滿 1 小時、有 3 筆以上紀錄才會畫', '', {report:true}],
   ['2026.11.22.2', '🚀 剛開始用的車友,記帳首頁最上面多一張「開始使用」小卡:上班打卡、記第一筆車資、下班看今日跑車報告,做完一項打一個勾,都做完就自動消失;不想看可以按「之後再說」', '', {set:'features'}],
   ['2026.11.22.1', '🚦 測試版:路況快報每一則前面標地區(例如「桃園·楊梅」「新北·中和」),選好幾個城市也一看就知道在哪;來源沒給準確位置的國道、省道通報標「位置不確定」,不給地圖、也不發通知;寫在別的縣市的事故(例如嘉義的)不會再混進來', 'beta', {tab:'entry', find:'路況快報'}],
