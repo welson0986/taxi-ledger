@@ -3720,7 +3720,7 @@ function renderEntry(){
   var platformTotals = {};
   todayRecs.forEach(function(r){ platformTotals[r.platform]=(platformTotals[r.platform]||0)+computeNetRevenue(r)+(+r.tip||0); });
 
-  var h = moveNoticeHtml() + saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudConflictHtml() + cloudStaleHtml() + metroWalletHomeHtml() + vehHomeHtml() + summaryHomeHtml() + fontAskHtml() + uberCutHintHtml();
+  var h = moveNoticeHtml() + saveFailBannerHtml() + inAppWarningHtml() + (inAppBrowser() ? '' : tabWarningHtml()) + backupReminderHtml() + cloudConflictHtml() + cloudStaleHtml() + startCardHtml() + metroWalletHomeHtml() + vehHomeHtml() + summaryHomeHtml() + fontAskHtml() + uberCutHintHtml();
   if(state.syncUrl && cloudAuthStatus==='bad'){
     h += '<div class="card" style="border-color:var(--expense);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.6"><b style="color:var(--expense)">⚠️ 雲端密碼不對,資料沒有同步到雲端</b><br>手機裡的帳都還在。請到右上角設定確認「雲端密碼」,改好後會自動補送。</div>';
   }
@@ -3868,6 +3868,67 @@ function homeOrder(){
   return saved;
 }
 function homeHidden(k){ return !!(state.homeHide && state.homeHide[k]); }
+/* 2-1 新手清單「開始使用 0／3」: a small fixed card under the backup / cloud notices (not in HOME_BLOCKS, so no new
+   homeOrder key). Each step is read from the ledger every time, nothing is saved for it in state:
+     ① 上班打卡           some day has a clock-in (a punch, worked time, or a shift running now)
+     ② 記第一筆車資       some record that is a trip (小費, 活動獎勵 and 取消費 are tipOnly and do not count)
+     ③ 看今日跑車報告     some day was clocked out with a fare on it (the report pops up on 下班打卡; no 看過 flag)
+   ① only where 上下班打卡 is on, ③ only where the report is on; fewer than 2 steps (簡單記帳): no card at all.
+   「之後再說」 and 「all done」 live in this phone's localStorage only (START_HIDE_KEY: 'later' / 'done'), never in
+   state: nothing to back up, restore or sync, and a restore can not bring the card back. Once all steps are seen done
+   the card is gone for good on this phone ('done'), so an old ledger never shows it. */
+var START_HIDE_KEY = 'taxi_start_hide';
+function startHideVal(){ try{ return localStorage.getItem(START_HIDE_KEY)||''; }catch(e){ return ''; } }
+function startSetHide(v){ try{ if(v) localStorage.setItem(START_HIDE_KEY, v); else localStorage.removeItem(START_HIDE_KEY); }catch(e){} }
+function startFareRec(r){ var d = r && platformDef(r.platform); return !!r && r.platform!=='bonus' && !(d && d.tipOnly); }
+function startSteps(){
+  var fareDays = {}, anyFare = false, clocked = false, reported = false, dmap = state.dailyMeta||{};
+  (state.records||[]).forEach(function(r){ if(startFareRec(r)){ anyFare = true; if(r.date) fareDays[r.date] = true; } });
+  Object.keys(dmap).forEach(function(d){
+    var m = dmap[d]; if(!m) return;
+    var worked = (+m.workedMs>0) || (+m.hours>0);
+    if(m.activeShiftStart || worked || (Array.isArray(m.punch) && m.punch.some(function(p){ return p && p[1]==='i'; }))) clocked = true;
+    if(!m.activeShiftStart && worked && fareDays[d]) reported = true;
+  });
+  var s = [];
+  if(uiShow('shift')) s.push({k:'shift', t:'上班打卡', sub:'開始跑車時按一下,工時和時薪才算得出來', done:clocked});
+  s.push({k:'fare', t:'記第一筆車資', sub:'點平台、打金額、按儲存', done:anyFare});
+  if(uiShow('dayReport')) s.push({k:'report', t:'下班後看今日跑車報告', sub:'跑完按「下班打卡」就會跳出來', done:reported});
+  return s;
+}
+function startCardHtml(){
+  if(startHideVal()) return '';
+  var s = startSteps(); if(s.length<2) return '';
+  var n = s.filter(function(x){ return x.done; }).length;
+  if(n===s.length){ startSetHide('done'); return ''; }
+  var h = '<div class="section" id="startCard"><div class="card" role="group" aria-label="開始使用,已完成 '+n+' 項,共 '+s.length+' 項" style="padding:12px 14px">'+
+    '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px"><b style="font-size:14.5px">🚀 開始使用</b>'+
+    '<span class="num" aria-hidden="true" style="white-space:nowrap;font-weight:800;color:var(--accent);font-size:14.5px">'+n+'／'+s.length+'</span></div>';
+  s.forEach(function(x, i){
+    var lbl = '第 '+(i+1)+' 步,'+x.t+(x.done ? ',已完成' : ',還沒做,點一下帶你去');
+    h += '<div'+(x.done ? '' : ' data-act="start-go:'+x.k+'" role="button" tabindex="0"')+' aria-label="'+lbl+'" style="display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--border);'+(x.done ? 'opacity:.55' : 'cursor:pointer')+'">'+
+      '<span aria-hidden="true" style="flex:none;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;'+
+        (x.done ? 'background:var(--income-fill,var(--income));color:var(--on-fill,#fff)' : 'border:2px solid var(--accent);color:var(--accent)')+'">'+(x.done ? '✓' : (i+1))+'</span>'+
+      '<span style="flex:1;min-width:0;line-height:1.4"><span style="display:block;font-size:13.5px;font-weight:700'+(x.done ? ';text-decoration:line-through' : '')+'">'+x.t+'</span>'+
+        (x.done ? '' : '<span style="display:block;font-size:11.5px;color:var(--text-muted)">'+x.sub+'</span>')+'</span>'+
+      (x.done ? '' : '<span aria-hidden="true" style="flex:none;color:var(--accent);font-weight:700">›</span>')+'</div>';
+  });
+  h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:7px;font-size:11.5px;color:var(--text-muted)">'+
+    '<span>做完會自動消失</span><a data-act="start-later" role="button" tabindex="0" style="color:var(--accent);cursor:pointer;font-weight:700;padding:4px 0">之後再說</a></div>';
+  return h + '</div></div>';
+}
+// ⚙️ under 記帳首頁排列: how the card goes away, and the way back after 之後再說
+function startSettingsHtml(){
+  var v = startHideVal();
+  if(v==='done' || startSteps().length<2) return '';
+  var st = 'font-size:11.5px;color:var(--text-muted);margin:-4px 0 10px;line-height:1.6';
+  if(v==='later') return '<div id="startShowRow" style="'+st+'">🚀 記帳首頁的「開始使用」小卡已收起。 <a data-act="start-show" role="button" tabindex="0" style="color:var(--accent);cursor:pointer;font-weight:700;white-space:nowrap">再顯示 ›</a></div>';
+  return '<div style="'+st+'">🚀 記帳首頁最上面的「開始使用」小卡,幾個步驟都做完會自動消失。</div>';
+}
+function startGo(k){
+  goSection('entry', k==='fare' ? '收入/平台' : '今日行車');
+  if(k==='report') showToast(((state.dailyMeta||{})[todayStr()]||{}).activeShiftStart ? '跑完今天按「下班打卡」,今日跑車報告就會跳出來' : '先按「上班打卡」、記幾筆車資,下班時按「下班打卡」就會跳出今日跑車報告', 5000);
+}
 function homeLayoutHtml(){
   var info = {}; HOME_BLOCKS.forEach(function(b){ info[b[0]] = b; });
   var h = '<div class="form-row" style="margin:4px 0 4px"><label>📱 記帳首頁排列</label></div>';
@@ -3883,6 +3944,7 @@ function homeLayoutHtml(){
       box+'<span style="flex:1">'+esc(b[1])+'</span>'+orderBtnsHtml('homeOrderList', k)+'</div>';
   });
   h += '</div><div style="text-align:right;margin:2px 0 10px"><a data-act="home-reset" style="font-size:12.5px;color:var(--accent);cursor:pointer;font-weight:700">恢復預設排列</a></div>';
+  h += startSettingsHtml();
   return h;
 }
 function saveHomeLayout(){
@@ -9428,6 +9490,7 @@ var HELP = [
     ['自己的車行、車隊', '⚙️ 平台管理「+ 新增平台」,可以設派遣費 % 和 / 或每趟扣 $(R 牌車行常用),也可以選「車行收款後撥給我」,撥款頁就會出現這個平台;之後在平台手續費設定、撥款設定改。'],
     ['外觀、名稱', '⚙️「外觀」選跟著手機 / 淺色 / 深色;點左上角名稱可以改。'],
     ['設定頁分類', '⚙️ 設定分成基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享,點一類才展開;「儲存設定」固定在最下面。'],
+    ['開始使用(新手小卡)', '剛開始用時,記帳首頁最上面會有「開始使用」小卡:上班打卡、記第一筆車資、下班看今日跑車報告,點一步就帶你去,做完自動打勾,全部做完就消失。按「之後再說」收起後,要再看到 ⚙️「記帳首頁與功能」→「記帳首頁排列」下面按「再顯示」。簡單記帳(沒有打卡)不會出現。'],
     ['記帳首頁排列', '⚙️「記帳首頁與功能」→「記帳首頁排列」:用 ▲▼ 調整記帳頁每一塊的順序(例如把平台按鈕放到最上面),取消勾選就不顯示;排亂了按「恢復預設排列」。'],
     ['字體大小', '⚙️「字體大小」選標準 / 大 / 特大 / 超大,字、圖示、按鈕一起放大,點了馬上換。看不清楚、有老花眼的可以調大。'],
     ['隱私', '帳只存在你的手機。不具名使用統計可以在 ⚙️ 取消;完整隱私權政策在「關於跑車人生」。']
@@ -9871,12 +9934,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.22.1';
+var APP_VERSION = '2026.11.22.2';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.22.2', '🚀 剛開始用的車友,記帳首頁最上面多一張「開始使用」小卡:上班打卡、記第一筆車資、下班看今日跑車報告,做完一項打一個勾,都做完就自動消失;不想看可以按「之後再說」', '', {set:'features'}],
   ['2026.11.22.1', '🚦 測試版:路況快報每一則前面標地區(例如「桃園·楊梅」「新北·中和」),選好幾個城市也一看就知道在哪;來源沒給準確位置的國道、省道通報標「位置不確定」,不給地圖、也不發通知;寫在別的縣市的事故(例如嘉義的)不會再混進來', 'beta', {tab:'entry', find:'路況快報'}],
   ['2026.11.21.3', '📲 分析頁「空檔拆解」多一段「被取消」:中間有單被取消時,接單到取消那段另外列出,下一次等單從取消那一刻算起,等單時間更準(空檔總長不變)', '', {tab:'analytics', find:'🚕 載客效率'}],
   ['2026.11.21.3', '🛣️ 今日跑車報告多一行「載客里程」:有填今日里程,也有每趟公里數(或上下車位置)時,看載客佔今天里程多少、空車大約跑了幾公里', '', {report:true}],
@@ -10026,15 +10090,21 @@ function wnGo(i){
   closeModal();
   if(g.report){ openDayReport(wnReportDay()); return; }
   if(g.set){ settingsOpenSec = g.set; openSettingsModal(); var sc = document.querySelector('.set-sec.open'); if(sc){ try{ sc.scrollIntoView({block:'start'}); }catch(e){} } return; }
-  currentTab = g.tab; renderAll();
-  var c = document.getElementById('content'), finds = [].concat(g.find), hit = null;
+  goSection(g.tab, g.find);
+}
+// that tab, scrolled to the first .section whose text has find (a string or a list tried in order), outlined a moment;
+// shared by 「去看看 ›」 and the 開始使用 card (whose own steps are never the target)
+function goSection(tab, find){
+  currentTab = tab; renderAll();
+  var c = document.getElementById('content'), finds = [].concat(find), hit = null;
   var secs = c ? c.querySelectorAll('.section') : [];
   for(var k=0;k<finds.length && !hit;k++){
-    for(var j=0;j<secs.length;j++){ if((secs[j].textContent||'').indexOf(finds[k])>=0){ hit = secs[j]; break; } }
+    for(var j=0;j<secs.length;j++){ if(secs[j].id!=='startCard' && (secs[j].textContent||'').indexOf(finds[k])>=0){ hit = secs[j]; break; } }
   }
-  if(!hit){ window.scrollTo(0, 0); showToast('這個功能現在沒有顯示,可能被關掉了:到 ⚙️「記帳首頁與功能」→ 功能開關打開', 5000); return; }
+  if(!hit){ window.scrollTo(0, 0); showToast('這個功能現在沒有顯示,可能被關掉了:到 ⚙️「記帳首頁與功能」→ 功能開關打開', 5000); return false; }
   try{ hit.scrollIntoView({behavior:'smooth', block:'start'}); }catch(e){ hit.scrollIntoView(); }
   hit.classList.add('wn-flash'); setTimeout(function(){ hit.classList.remove('wn-flash'); }, 2200);
+  return true;
 }
 function maybeShowWhatsNew(){
   if(state.seenVersion===APP_VERSION) return false;
@@ -10813,6 +10883,9 @@ document.addEventListener('click', function(e){
 
   if(cmd==='tab'){ currentTab=arg; renderAll(); }
   else if(cmd==='wn-go'){ wnGo(arg); }
+  else if(cmd==='start-go'){ startGo(arg); }
+  else if(cmd==='start-later'){ startSetHide('later'); renderAll(); showToast('已收起。想再看:⚙️「記帳首頁與功能」→「記帳首頁排列」下面按「再顯示」', 5000); }
+  else if(cmd==='start-show'){ if(startHideVal()==='later') startSetHide(''); renderAll(); var ssr = document.getElementById('startShowRow'); if(ssr) ssr.textContent = '🚀 已恢復,關掉設定就會在記帳首頁看到「開始使用」小卡。'; }
   else if(cmd==='noop'){ /* absorb click inside modal card */ }
   else if(cmd==='close-modal'){ requestCloseModal(); }
   else if(cmd==='discard-settings'){ closeModal(); }
