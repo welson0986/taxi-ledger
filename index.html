@@ -850,6 +850,8 @@ function cleanNick(s){
   return ch.slice(0, NICK_MAX).join('').trim();
 }
 function nickName(){ return cleanNick(state.nickname); }
+// 「阿明,」 in front of a reminder (休息提醒、收工提醒), already escaped for HTML; '' when no 稱呼 is filled in
+function nickCall(){ var n = nickName(); return n ? esc(n)+',' : ''; }
 // one line when the driver clocks in (上班打卡 only: not 補登, 上廁所 or back from a break), by the hour it happens.
 // Late at night it is 辛苦了, not 晚安 (晚安 means going to bed). '' when no 稱呼 is filled in: nothing is shown then.
 function nickGreeting(ts){
@@ -9416,7 +9418,7 @@ function checkRestReminder(){
   if(dayH>0 && live >= dayH*3600000 && !m.dayLongWarned){
     m.dayLongWarned = true; saveQuiet();
     openModal('<div class="modal-title">🌙 今天已經上班 '+fmtNum(live/3600000,1)+' 小時<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>'+
-      '<div style="font-size:13.5px;line-height:1.75;margin-bottom:14px">今天開很久了,注意精神狀況,累了就早點收工休息。</div>'+
+      '<div style="font-size:13.5px;line-height:1.75;margin-bottom:14px">'+nickCall()+'今天開很久了,注意精神狀況,累了就早點收工休息。</div>'+
       '<div class="btn-row"><button class="btn btn-primary" data-act="close-modal">知道了</button></div>');
     return;
   }
@@ -9426,7 +9428,7 @@ function checkRestReminder(){
   m.restSnoozeUntil = now + 30*60000; saveQuiet();  // at most every 30 minutes, however the box is closed
   var hh = Math.floor(cont/3600000), mm = Math.floor(cont%3600000/60000);
   openModal('<div class="modal-title">☕ 該休息一下了<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>'+
-    '<div style="font-size:13.5px;line-height:1.75;margin-bottom:14px">已經連續開 <b>'+hh+' 小時 '+mm+' 分</b>了,找個安全的地方停下來,喝口水、伸展一下。</div>'+
+    '<div style="font-size:13.5px;line-height:1.75;margin-bottom:14px">'+nickCall()+'已經連續開 <b>'+hh+' 小時 '+mm+' 分</b>了,找個安全的地方停下來,喝口水、伸展一下。</div>'+
     '<div class="btn-row"><button class="btn btn-primary" data-act="close-modal">知道了</button></div>'+
     '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.6">真的停下來休息時,再按今日行車的「休息開始」。沒休息的話 30 分鐘後會再提醒;提醒時間可以在 ⚙️ 功能開關下面改。</div>');
 }
@@ -9521,7 +9523,7 @@ var HELP = [
     ['手續費設定', '⚙️「平台手續費設定」:每單扣 $ 和 %,沒有的留空;月費記在固定成本。從某天起換方案可以套用到那天以後的帳。接電單:台灣大照台灣大的設定,大都會照方案(0 月費 12.5%)、綁定支付另扣刷卡 %。'],
     ['自己的車行、車隊', '⚙️ 平台管理「+ 新增平台」,可以設派遣費 % 和 / 或每趟扣 $(R 牌車行常用),也可以選「車行收款後撥給我」,撥款頁就會出現這個平台;之後在平台手續費設定、撥款設定改。'],
     ['外觀、名稱', '⚙️「外觀」選跟著手機 / 淺色 / 深色;點左上角名稱可以改。'],
-    ['🙋 你的稱呼', '⚙️「基本設定」最上面(選填,最多 12 個字):填暱稱或車友群裡的稱呼就好,不建議填全名或車牌。填了以後,上班打卡會跟你打聲招呼、今日跑車報告寫「阿明,辛苦了!」、PDF 經營報告封面多一行「司機:」;分享戰績圖要自己打開「顯示我的稱呼」才會出現。只存在你的帳本裡(跟著備份與雲端同步),不會送給我們。清掉就恢復原樣。'],
+    ['🙋 你的稱呼', '⚙️「基本設定」最上面(選填,最多 12 個字):填暱稱或車友群裡的稱呼就好,不建議填全名或車牌。填了以後,上班打卡會跟你打聲招呼、休息提醒會叫你的稱呼、今日跑車報告寫「阿明,辛苦了!」、PDF 經營報告封面多一行「司機:」;分享戰績圖要自己打開「顯示我的稱呼」才會出現。只存在你的帳本裡(跟著備份與雲端同步),不會送給我們。清掉就恢復原樣。'],
     ['設定頁分類', '⚙️ 設定分成基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享,點一類才展開;「儲存設定」固定在最下面。'],
     ['開始使用(新手小卡)', '剛開始用時,記帳首頁最上面會有「開始使用」小卡:上班打卡、記第一筆車資、下班看今日跑車報告,點一步就帶你去,做完自動打勾,全部做完就消失。按「之後再說」收起後,要再看到 ⚙️「記帳首頁與功能」→「記帳首頁排列」下面按「再顯示」。簡單記帳(沒有打卡)不會出現。'],
     ['記帳首頁排列', '⚙️「記帳首頁與功能」→「記帳首頁排列」:用 ▲▼ 調整記帳頁每一塊的順序(例如把平台按鈕放到最上面),取消勾選就不顯示;排亂了按「恢復預設排列」。'],
@@ -10379,12 +10381,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.22.6';
+var APP_VERSION = '2026.11.22.7';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.22.7', '🙋 有填「你的稱呼」的話,休息提醒和上班太久的收工提醒也會叫你的稱呼'],
   ['2026.11.22.6', '🙋 可以設定「你的稱呼」:分享戰績圖、PDF 經營報告封面會用到,上班打卡時也會跟你打聲招呼。不填也完全不影響記帳', '', {set:'basic'}],
   ['2026.11.22.5', '📤 今日跑車報告多一顆「分享今日戰績」:把今天的趟數、工時、時薪走勢做成一張圖,傳 LINE、限動或車友群。預設不顯示金額,要露金額自己打開;車牌、地點永遠不會出現在圖上', '', {report:true}],
   ['2026.11.22.4', '🔧 今日跑車報告的「時薪走勢」:工時在歷史裡改過、或補登時有填休息的日子也畫得出來,會註明中間的點是照比例估算;真的畫不出來時(例如沒有打卡時間),會寫一行原因'],
