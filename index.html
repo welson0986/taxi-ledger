@@ -9442,7 +9442,7 @@ var HELP = [
     ['上下班打卡、休息', '記帳頁「今日行車」按上班打卡 / 下班打卡,休息按休息開始 / 結束。忘了打下班卡,下次打開會問你。', 'shift'],
     ['跑過半夜(營業日分界)', '新安裝預設午夜 00:00 換日(照日曆算)。常跑過半夜的,到 ⚙️「基本設定」→「我的營業日分界時間」往後調(最晚到早上 09:00),那個時間以前記的帳都算前一天,凌晨時記帳頁上方會提醒。Uber 一天的車資結算是凌晨 04:00 到隔天 03:59,想跟 Uber App 的每日收入對得起來就選凌晨 04:00。'],
     ['目前時薪', '今日行車顯示今日實收 ÷ 已跑工時,上班滿 30 分鐘才顯示。', 'liveRate'],
-    ['今日跑車報告', '下班打卡後跳出:實收、平均時薪、趟數,跟前 7 天比較,還有「今天時薪走勢」小圖(累積平均時薪怎麼變化),可以順便備份。', 'dayReport'],
+    ['今日跑車報告', '下班打卡後跳出:實收、平均時薪、趟數,跟前 7 天比較,還有「今天時薪走勢」小圖(累積平均時薪怎麼變化),可以順便備份。按「📤 分享今日戰績」可以把趟數、工時、時薪走勢做成一張圖傳 LINE、限動;預設不顯示金額,要露金額自己打開,車牌、地點永遠不會出現在圖上。', 'dayReport'],
     ['休息提醒', '連續開車太久(預設 2 小時)、今天上班太久(預設 12 小時)時提醒你,只是提醒,不會幫你按休息。時間在功能開關下面改。記帳本要打開著才會跳出來。', 'restRemind'],
     ['補登上班時間', '忘了打卡、或中途才開始用:今日行車的「⏱️ 補登上班時間」,選幾點上班、幾點下班。前幾天的工時到「歷史」頁改。', 'shiftFix'],
     ['里程', '每天記里程,才能算每公里成本、每公里實收。', 'km'],
@@ -9628,9 +9628,11 @@ function saveShiftFix(){
 }
 // 載客里程 (待辦 2-10): the km of each trip of day t (每趟公里數 when typed, else the straight line from 上車 to 下車, as
 // 🏁 車隊比較 does), against the day's 每日里程. Nothing without a 每日里程 or without one trip that has a distance.
-function dayLoadedKm(t, recs){
+// dayLoadedKmInfo: the numbers ({dayKm, trips, kmN, real, sum}, null when there is nothing to say); the 2-12 share
+// image takes only the percentage from it
+function dayLoadedKmInfo(t, recs){
   var m = state.dailyMeta[t], dayKm = m ? +m.km : NaN;
-  if(!(isFinite(dayKm) && dayKm>0)) return '';
+  if(!(isFinite(dayKm) && dayKm>0)) return null;
   var trips = 0, kmN = 0, real = 0, sum = 0;
   recs.forEach(function(r){
     if(platformDef(r.platform).tipOnly) return;
@@ -9640,7 +9642,12 @@ function dayLoadedKm(t, recs){
     if(km==null || !(km>=0.1)) return;
     kmN++; sum += km; if(isReal) real++;
   });
-  if(!kmN) return '';
+  return kmN ? {dayKm:dayKm, trips:trips, kmN:kmN, real:real, sum:sum} : null;
+}
+function dayLoadedKm(t, recs){
+  var K = dayLoadedKmInfo(t, recs);
+  if(!K) return '';
+  var dayKm = K.dayKm, trips = K.trips, kmN = K.kmN, real = K.real, sum = K.sum;
   // a number and its unit never split over two lines
   var nb = function(v, u){ return '<span class="num" style="white-space:nowrap">'+v+(u==='%' ? '' : '&nbsp;')+u+'</span>'; };
   var s = '載客里程 '+nb(fmtNum(sum, 1), '公里');
@@ -9779,9 +9786,293 @@ function openDayReport(t){
   var lk = dayLoadedKm(t, recs);
   if(lk) h += '<div style="font-size:12.5px;line-height:1.6;margin-bottom:8px">🛣️ '+lk+'</div>';
   if(note) h +='<div style="font-size:12.5px;line-height:1.6;margin-bottom:12px">'+note+'</div>';
+  if(trips) h += '<button class="btn btn-ghost" style="width:100%;margin-bottom:10px" data-act="share-day:'+t+'">📤 分享今日戰績</button>';
   h += '<div class="btn-row"><button class="btn" data-act="close-modal">知道了</button><button class="btn btn-primary" data-act="quick-backup">💾 順便備份</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px">不想每天看到:⚙️ 功能開關關掉「今日跑車報告」</div>';
   openModal(h);
+}
+/* 分享今日戰績 (待辦 2-12, free like the report): the day as one PNG the driver can send to LINE, 限動 or a group.
+   Drawn on a canvas on the phone (nothing uploaded, no new plug-in, a canvas PNG carries no location or EXIF) and
+   sent through the share route the backup file and PDF report already use (Capacitor Share with a file in the app's
+   cache; in a browser navigator.share with a file, else a download).
+   Privacy: shown by default are only 趟數, 工時, 載客里程 %, 平均時薪 比前 7 天 %, and the 時薪走勢 line as a bare shape
+   (no number on its axis or points, see the report's dayTrendHtml, which labels amounts: not reused). 金額 (今日實收,
+   平均時薪 and the line's numbers) and 平台名稱 appear only while the driver ticks them in the preview; the ticks start
+   off, and once ticked are remembered in this phone's localStorage only (SHARE_OPT_KEY: not the ledger, not a backup,
+   not synced), so a driver who chose to show them is not asked again (Welson 11/22). 車牌, places, 上下車位置, 熱區 and the driver's name are never read here at all.
+   The image has fixed colours and pixel sizes (not the app's 深淺色 or 大字), so it reads the same on anyone's phone.
+   shareDayData(t): the numbers; drawShareCard(canvas, D, opt) draws and returns the list of every text it drew. */
+var SC_W = 1080, SC_H = 1350, SC_CHART_PAD = 206;  // the chart card's title, time and legend rows around its drawing height
+var SC_C = {bg:'#FFF8EC', card:'#FFFFFF', line:'#EBDDC6', text:'#2B2620', muted:'#74685C', accent:'#E08A1E', accentText:'#A85A00', dash:'#9C8F82', logo:'#F7B500'};
+var SC_CJK = '"PingFang TC","Noto Sans TC","Noto Sans CJK TC","Source Han Sans TC","Microsoft JhengHei","Heiti TC",sans-serif';
+function scFont(px, w, num){ return (w||400)+' '+px+'px '+(num ? '"Space Grotesk",' : '')+SC_CJK; }
+var shareOpt = {money:false, plat:false}, shareCard = null, shareGen = 0, shareBusy = false;
+var SHARE_OPT_KEY = 'taxi_share_opt';
+function shareOptLoad(){
+  try{ var v = JSON.parse(localStorage.getItem(SHARE_OPT_KEY)||'null'); return {money:!!(v && v.money===true), plat:!!(v && v.plat===true)}; }
+  catch(e){ return {money:false, plat:false}; }
+}
+function shareOptSave(){ try{ localStorage.setItem(SHARE_OPT_KEY, JSON.stringify({money:!!shareOpt.money, plat:!!shareOpt.plat})); }catch(e){} }
+function shareDayData(t){
+  var recs = recordsInRange(t, t), trips = recs.filter(function(r){ return !platformDef(r.platform).tipOnly; });
+  var net = sumNetIncome(recs).total, hours = totalHoursInRange(t, t);
+  var p7from = addDays(t, -7), p7to = addDays(t, -1), h7 = totalHoursInRange(p7from, p7to), n7 = sumNetIncome(recordsInRange(p7from, p7to)).total;
+  var rate = hours>=0.5 ? net/hours : null, rate7 = h7>=0.5 && n7>0 ? n7/h7 : null;
+  var K = dayLoadedKmInfo(t, recs);
+  var I = rate!=null ? dayRateTrendInfo(t) : {pts:[], est:false};
+  var byP = {}, plats = [];
+  trips.forEach(function(r){ byP[r.platform] = (byP[r.platform]||0) + 1; });
+  Object.keys(byP).forEach(function(k){ plats.push({label:platformDef(k).label||k, n:byP[k]}); });
+  plats.sort(function(a, b){ return b.n - a.n; });
+  return {t:t, trips:trips.length, hours:hours, net:net, rate:rate, rate7:rate7,
+    diff:rate!=null && rate7!=null ? Math.round((rate-rate7)/rate7*100) : null,
+    loadPct:K && K.sum<=K.dayKm ? Math.round(K.sum/K.dayKm*100) : null, loadEst:!!(K && K.real<K.kmN),
+    pts:I.pts, est:!!(I.est && I.pts.length), plats:plats};
+}
+// 9 小時 30 分 as [number, unit] pairs
+function scHoursRuns(hours){
+  var h = Math.floor(hours), m = Math.round((hours-h)*60);
+  if(m===60){ h++; m = 0; }
+  var out = [];
+  if(h) out.push([String(h), '小時']);
+  if(m || !h) out.push([String(m), '分']);
+  return out;
+}
+function scRoundRect(c, x, y, w, h, r){
+  c.beginPath(); c.moveTo(x+r, y); c.lineTo(x+w-r, y); c.arcTo(x+w, y, x+w, y+r, r); c.lineTo(x+w, y+h-r); c.arcTo(x+w, y+h, x+w-r, y+h, r);
+  c.lineTo(x+r, y+h); c.arcTo(x, y+h, x, y+h-r, r); c.lineTo(x, y+r); c.arcTo(x, y, x+r, y, r); c.closePath();
+}
+function drawShareCard(cv, D, opt){
+  opt = opt || {};
+  cv.width = SC_W; cv.height = SC_H;
+  var c = cv.getContext('2d'), texts = [], M = 64, CW = SC_W - 2*M;
+  c.textBaseline = 'alphabetic';
+  function T(s, x, y, font, color, align, maxW){
+    c.font = font; c.fillStyle = color; c.textAlign = align||'left';
+    if(maxW && c.measureText(s).width > maxW){
+      // too long (a long platform name): cut with … rather than squeeze the letters
+      while(s.length > 1 && c.measureText(s+'…').width > maxW) s = s.slice(0, -1);
+      s += '…';
+    }
+    c.fillText(s, x, y); texts.push(s);
+    return c.measureText(s).width;
+  }
+  // [text, font, colour] pieces on one baseline (a big number with a small unit)
+  function runs(list, x, y){
+    var cx = x;
+    list.forEach(function(p){ cx += T(p[0], cx, y, p[1], p[2], 'left'); });
+  }
+  function card(x, y, w, h){ scRoundRect(c, x, y, w, h, 28); c.fillStyle = SC_C.card; c.fill(); c.lineWidth = 2; c.strokeStyle = SC_C.line; c.stroke(); }
+  c.fillStyle = SC_C.bg; c.fillRect(0, 0, SC_W, SC_H);
+  // header: the day on the left; in the top-right corner a plain mark and the app's name, nothing about the driver
+  var dd = new Date(D.t+'T12:00:00');
+  T(D.t.replace(/-/g, '/')+' 星期'+'日一二三四五六'.charAt(dd.getDay()), M, M+34, scFont(34, 500), SC_C.muted);
+  T('今日跑車戰績', M, M+34+84, scFont(68, 700), SC_C.text);
+  c.font = scFont(32, 700); var nameW = c.measureText('跑車人生').width, lx = SC_W - M - nameW - 70;
+  scRoundRect(c, lx, M-4, 56, 56, 14); c.fillStyle = SC_C.logo; c.fill();
+  T('跑', lx+28, M+37, scFont(34, 700), SC_C.text, 'center');
+  T('跑車人生', SC_W-M, M+36, scFont(32, 700), SC_C.text, 'right');
+  var top = M + 156, bottom = SC_H - M, GAP = 26;
+  var facts = [];
+  if(D.loadPct!=null) facts.push(['載客里程占比', (D.loadEst ? '約 ' : '')+D.loadPct+'%']);
+  if(D.diff!=null) facts.push(['平均時薪比我前 7 天', D.diff===0 ? '一樣' : (D.diff>0 ? '高 ' : '低 ')+Math.abs(D.diff)+'%']);
+  var platLines = [], platW = CW - 64;
+  if(opt.plat && D.plats.length){
+    // 「Uber 12 趟 · 大都會 8 趟」 over at most two lines
+    c.font = scFont(36, 500); var line = '';
+    D.plats.forEach(function(p){
+      var piece = p.label+' '+p.n+' 趟', next = line ? line+' · '+piece : piece;
+      if(line && c.measureText(next).width > platW){ platLines.push(line); line = piece; } else line = next;
+    });
+    if(line) platLines.push(line);
+    if(platLines.length > 2){ platLines = platLines.slice(0, 2); platLines[1] += ' …'; }
+  }
+  var pts = D.pts || [], tileW = (CW - 24)/2;
+  // the blocks, top to bottom, for a tile height; the chart takes the height that is left (smaller tiles when crowded)
+  function layout(tileH, bigPx, rowH){
+    var B = [];
+    function big(n){ return [n, scFont(bigPx, 700, true), SC_C.text]; }
+    function unit(u){ return [' '+u, scFont(Math.round(bigPx*0.38), 500), SC_C.text]; }
+    function tile(x, y, label, val){ card(x, y, tileW, tileH); T(label, x+32, y+56, scFont(32, 500), SC_C.muted); runs(val, x+32, y+tileH-34); }
+    function hrsRuns(){ var out = []; scHoursRuns(D.hours).forEach(function(p, i){ if(i) out.push([' ', scFont(38, 500), SC_C.text]); out.push(big(p[0]), unit(p[1])); }); return out; }
+    B.push({h:tileH, draw:function(y){ tile(M, y, '趟數', [big(String(D.trips)), unit('趟')]); tile(M+tileW+24, y, '工時(已扣休息)', D.hours>0 ? hrsRuns() : [big('—')]); }});
+    if(opt.money) B.push({h:tileH, draw:function(y){
+      var mf = scFont(Math.round(bigPx*0.84), 700, true);
+      tile(M, y, '今日實收', [[fmtMoney(D.net), mf, SC_C.text]]);
+      tile(M+tileW+24, y, '平均時薪', [[D.rate!=null ? fmtMoney(D.rate) : '—', mf, SC_C.text]]);
+    }});
+    if(facts.length) B.push({h:28 + facts.length*rowH, draw:function(y){
+      card(M, y, CW, 28 + facts.length*rowH);
+      facts.forEach(function(f, i){
+        var by = y + 14 + i*rowH + rowH/2 + 15;
+        c.beginPath(); c.arc(M+40, by-13, 8, 0, Math.PI*2); c.fillStyle = SC_C.accent; c.fill();
+        T(f[0], M+64, by, scFont(36, 500), SC_C.muted);
+        T(f[1], SC_W-M-36, by, scFont(44, 700, true), SC_C.accentText, 'right');
+      });
+    }});
+    if(platLines.length) B.push({h:84 + platLines.length*50, draw:function(y){
+      card(M, y, CW, 84 + platLines.length*50);
+      T('今天跑的平台', M+32, y+52, scFont(30, 500), SC_C.muted);
+      platLines.forEach(function(l, i){ T(l, M+32, y+52+52+i*50, scFont(36, 500), SC_C.text, 'left', platW); });
+    }});
+    var used = B.reduce(function(a, b){ return a+b.h; }, 0) + GAP*B.length;
+    return {B:B, room:bottom - top - used};
+  }
+  // no line to draw: bigger tiles, the whole block centred, so the picture is not half empty
+  var Lo = pts.length ? layout(196, 100, 68) : layout(236, 136, 84);
+  if(pts.length && Lo.room - SC_CHART_PAD < 260) Lo = layout(172, 82, 60);
+  var blocks = Lo.B;
+  if(pts.length){
+    var chartH = Math.max(170, Math.min(420, Lo.room - SC_CHART_PAD));
+    blocks.push({h:chartH+SC_CHART_PAD, draw:function(y){ drawShareTrend(c, T, pts, D.rate7, opt.money, M, y, CW, chartH); }});
+  }
+  var total = blocks.reduce(function(a, b){ return a+b.h; }, 0);
+  var gap = blocks.length>1 ? Math.max(GAP, Math.min(60, (bottom - top - total)/(blocks.length-1))) : 0;
+  var y = pts.length ? top : top + Math.max(0, (bottom - top - total - gap*(blocks.length-1))/2);
+  blocks.forEach(function(b){ b.draw(y); y += b.h + gap; });
+  return texts;
+}
+// the 時薪走勢 line (dayRateTrend points) inside a card: a bare shape against the dashed 前 7 天 line; numbers on it
+// only when money is on (起點, 最高, 終點, as the report)
+function drawShareTrend(c, T, pts, rate7, money, x, y, w, ch){
+  scRoundRect(c, x, y, w, ch+SC_CHART_PAD, 28); c.fillStyle = SC_C.card; c.fill(); c.lineWidth = 2; c.strokeStyle = SC_C.line; c.stroke();
+  T('今天時薪走勢', x+32, y+58, scFont(34, 700), SC_C.text);
+  // with numbers on, room above and below the line so a label never has to sit on it
+  var L = x+48, R = x+w-48, TOP = y+84 + (money ? 44 : 10), AX = y+84+ch, BOT = AX - (money ? 54 : 0);
+  var x0 = pts[0].ts, x1 = pts[pts.length-1].ts, span = Math.max(1, x1-x0);
+  var vals = pts.map(function(p){ return p.rate; }); if(rate7!=null) vals.push(rate7);
+  var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+  // a little looser than the report's: with no numbers on it, a $30 wobble should not look like a cliff to others
+  var minSpan = Math.max(40, hi*0.35);
+  if(hi-lo < minSpan){ var mid = (hi+lo)/2; lo = mid-minSpan/2; hi = mid+minSpan/2; }
+  var pad = (hi-lo)*0.08; lo -= pad; hi += pad;
+  function X(ts){ return L + (ts-x0)/span*(R-L); }
+  function Y(v){ return TOP + (hi-v)/(hi-lo)*(BOT-TOP); }
+  c.lineWidth = 2; c.strokeStyle = SC_C.line; c.beginPath(); c.moveTo(L, AX); c.lineTo(R, AX); c.stroke();
+  if(rate7!=null){
+    c.save(); c.setLineDash([16, 14]); c.lineWidth = 4; c.strokeStyle = SC_C.dash;
+    c.beginPath(); c.moveTo(L, Y(rate7)); c.lineTo(R, Y(rate7)); c.stroke(); c.restore();
+  }
+  c.save(); c.lineWidth = 9; c.lineJoin = 'round'; c.lineCap = 'round'; c.strokeStyle = SC_C.accent; c.beginPath();
+  pts.forEach(function(p, i){ if(i) c.lineTo(X(p.ts), Y(p.rate)); else c.moveTo(X(p.ts), Y(p.rate)); }); c.stroke(); c.restore();
+  var last = pts.length-1, hiI = 0; pts.forEach(function(p, i){ if(p.rate > pts[hiI].rate) hiI = i; });
+  var dots = [0, last]; if(money && hiI!==0 && hiI!==last) dots.push(hiI);
+  dots.forEach(function(i){
+    var px = X(pts[i].ts), py = Y(pts[i].rate);
+    c.beginPath(); c.arc(px, py, 12, 0, Math.PI*2); c.fillStyle = SC_C.accent; c.fill(); c.lineWidth = 4; c.strokeStyle = SC_C.card; c.stroke();
+    if(!money) return;
+    var anchor = i===0 ? 'left' : i===last ? 'right' : 'center', tx = anchor==='center' ? Math.max(L+70, Math.min(R-70, px)) : px;
+    // 起點、終點: on the side away from the line next to it (below when that segment rises), 最高: above
+    var nb = i===0 ? pts[1] : i===last ? pts[last-1] : null, below = i!==hiI && nb && Y(nb.rate) < py;
+    var ty = below ? Math.min(AX-10, py+50) : Math.max(y+84+30, py-24);
+    c.save(); c.lineWidth = 10; c.strokeStyle = SC_C.card; c.lineJoin = 'round'; c.font = scFont(34, 700, true); c.textAlign = anchor; c.strokeText(fmtMoney(pts[i].rate), tx, ty); c.restore();
+    T(fmtMoney(pts[i].rate), tx, ty, scFont(34, 700, true), SC_C.text, anchor);
+  });
+  T(hhmm(x0), L, AX+40, scFont(28, 500, true), SC_C.muted, 'left');
+  T(hhmm(x1), R, AX+40, scFont(28, 500, true), SC_C.muted, 'right');
+  // legend
+  var ly = AX+92;
+  c.lineWidth = 8; c.lineCap = 'round'; c.strokeStyle = SC_C.accent; c.beginPath(); c.moveTo(x+32, ly-11); c.lineTo(x+72, ly-11); c.stroke(); c.lineCap = 'butt';
+  var lw = T('今天累積的平均時薪', x+86, ly, scFont(28, 500), SC_C.muted);
+  if(rate7!=null){
+    var lx = x+86+lw+36;
+    c.save(); c.setLineDash([10, 8]); c.lineWidth = 4; c.strokeStyle = SC_C.dash; c.beginPath(); c.moveTo(lx, ly-11); c.lineTo(lx+44, ly-11); c.stroke(); c.restore();
+    T('前 7 天平均'+(money ? ' '+fmtMoney(rate7) : ''), lx+56, ly, scFont(28, 500), SC_C.muted);
+  }
+}
+function scFontsReady(){
+  try{
+    if(document.fonts && document.fonts.load){
+      return Promise.race([Promise.all([document.fonts.load(scFont(100, 700, true)), document.fonts.load(scFont(34, 500, true))]), new Promise(function(r){ setTimeout(r, 800); })]).then(null, function(){});
+    }
+  }catch(e){}
+  return Promise.resolve();
+}
+// which way this phone or browser can send the picture: 'app' (share sheet), 'web' (share sheet), 'download'
+function shareRoute(){
+  try{ if(NATIVE_FS && window.Capacitor.Plugins && window.Capacitor.Plugins.Share) return 'app'; }catch(e){}
+  try{
+    if(navigator.share && navigator.canShare && typeof File!=='undefined' && navigator.canShare({files:[new File([''], 'a.png', {type:'image/png'})]})) return 'web';
+  }catch(e){}
+  return 'download';
+}
+function openShareDay(t){
+  t = t || todayStr();
+  var D = shareDayData(t);
+  if(!D.trips){ showToast('這天沒有載客紀錄,沒有東西可以分享'); return; }
+  shareOpt = shareOptLoad(); shareCard = null; shareBusy = false;
+  var route = shareRoute(), lbl = 'display:flex;align-items:flex-start;gap:8px;font-size:13.5px;line-height:1.5;padding:8px 0';
+  var cb = 'width:18px;height:18px;flex:none;margin-top:1px';
+  var h = '<div class="modal-title">📤 分享今日戰績<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">下面就是分享出去的圖。</div>';
+  h += '<div id="share-prev" data-day="'+t+'" style="text-align:center;min-height:120px"><div style="padding:40px 0;font-size:13px;color:var(--text-muted)">正在產生圖片…</div></div>';
+  h += '<div style="margin-top:8px">';
+  h += '<label style="'+lbl+'"><input type="checkbox" id="f-share-money" style="'+cb+'"'+(shareOpt.money?' checked':'')+'>顯示金額(今日實收、平均時薪)</label>';
+  h += '<label style="'+lbl+'"><input type="checkbox" id="f-share-plat" style="'+cb+'"'+(shareOpt.plat?' checked':'')+'>顯示平台名稱</label>';
+  h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.5;margin:-2px 0 4px">這兩個開關會記住你上次的選擇(只存在'+hereName()+')。</div>';
+  h += '</div>';
+  if(D.est) h += '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.6;margin:2px 0 6px">ⓘ 這天的工時改過,圖上時薪走勢中間的點是照比例估算的。</div>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.6;margin:4px 0 12px">🔒 車牌、地點、上下車位置、你的名字永遠不會出現在圖上。圖只在'+hereName()+'上產生,不會上傳;要不要分享、分享給誰,由你決定。</div>';
+  h += '<div class="btn-row"><button class="btn" data-act="share-back:'+t+'">‹ 回報告</button><button class="btn btn-primary" id="share-go" data-act="share-day-go" disabled>'+(route==='download' ? '⬇️ 存成圖片' : '📤 分享')+'</button></div>';
+  openModal(h);
+  shareRender();
+}
+// (re)draws the picture for what is ticked; the preview shown is the very PNG that gets sent
+function shareRender(){
+  var box = document.getElementById('share-prev'); if(!box) return Promise.resolve(false);
+  var t = box.getAttribute('data-day'), gen = ++shareGen, go = document.getElementById('share-go');
+  if(go) go.disabled = true;
+  return scFontsReady().then(function(){
+    var bx = document.getElementById('share-prev');
+    if(gen!==shareGen || !bx) return false;
+    var cv = document.createElement('canvas'), texts = drawShareCard(cv, shareDayData(t), shareOpt);
+    var url = cv.toDataURL('image/png');
+    if(!/^data:image\/png;base64,/.test(url)) throw new Error('no png');
+    shareCard = {t:t, url:url, b64:url.split(',')[1], texts:texts, w:cv.width, h:cv.height, money:shareOpt.money, plat:shareOpt.plat};
+    bx.innerHTML = '<img id="share-img" src="'+url+'" alt="'+esc(texts.join(' '))+'" style="display:block;width:100%;max-width:340px;margin:0 auto;border-radius:12px;border:1px solid var(--border)">';
+    var g2 = document.getElementById('share-go'); if(g2) g2.disabled = false;
+    return true;
+  }).then(null, function(){
+    var bx = document.getElementById('share-prev');
+    if(bx && gen===shareGen) bx.innerHTML = '<div style="padding:24px 0;font-size:13px;color:var(--expense);line-height:1.6">圖片產生失敗。可以關掉再試一次,或直接截圖今日跑車報告。</div>';
+    shareCard = null;
+    return false;
+  });
+}
+// resolves to 'shared' / 'cancel' / 'download' / 'fail'; never throws (a failed share only says what to do)
+function shareDaySend(){
+  var S = shareCard;
+  if(!S || shareBusy) return Promise.resolve('fail');
+  var name = 'paoche-'+S.t+'.png', route = shareRoute();
+  var blob = function(){ return new Blob([base64ToBytes(S.b64)], {type:'image/png'}); };
+  shareBusy = true;
+  var done = function(r){ shareBusy = false; return r; };
+  if(route==='app'){
+    var step = 'write';
+    return NATIVE_FS.writeFile({path:name, directory:'CACHE', data:S.b64}).then(function(w){
+      step = 'share';
+      return window.Capacitor.Plugins.Share.share({files:[w.uri], dialogTitle:'分享今日戰績'});
+    }).then(function(){ return done('shared'); }, function(err){
+      var why = String(err && (err.message||err));
+      if(/cancel/i.test(why)) return done('cancel');
+      alert(step==='write' ? (/no space|ENOSPC/i.test(why) ? '手機空間不夠,存不出圖片。' : '沒辦法把圖片存出來。')+'\n\n可以再試一次,或直接截圖這個預覽畫面分享。'
+        : '分享選單打不開。\n\n可以再試一次,或直接截圖這個預覽畫面分享。');
+      return done('fail');
+    });
+  }
+  var file = null;
+  try{ file = new File([blob()], name, {type:'image/png'}); }catch(e){}
+  if(route==='web' && file){
+    var p;
+    try{ p = navigator.share({files:[file]}); }catch(e){ p = Promise.reject(e); }
+    return Promise.resolve(p).then(function(){ return done('shared'); }, function(err){
+      if(err && err.name==='AbortError') return done('cancel');
+      try{ downloadBlob(name, blob()); showToast('分享選單打不開,已改成下載圖片', 4000); return done('download'); }
+      catch(e){ alert('分享選單打不開,也沒辦法下載。\n\n可以直接截圖這個預覽畫面分享。'); return done('fail'); }
+    });
+  }
+  try{ downloadBlob(name, blob()); showToast('圖片已下載,可以從下載的檔案傳出去', 4000); return Promise.resolve(done('download')); }
+  catch(e){ alert('沒辦法下載圖片。\n\n可以直接截圖這個預覽畫面分享。'); return Promise.resolve(done('fail')); }
 }
 function openModeChooser(){
   var big = 'display:block;width:100%;text-align:left;padding:14px 16px;margin-bottom:10px;border-radius:14px;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-family:inherit;cursor:pointer;line-height:1.6';
@@ -10039,12 +10330,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.22.4';
+var APP_VERSION = '2026.11.22.5';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.22.5', '📤 今日跑車報告多一顆「分享今日戰績」:把今天的趟數、工時、時薪走勢做成一張圖,傳 LINE、限動或車友群。預設不顯示金額,要露金額自己打開;車牌、地點永遠不會出現在圖上', '', {report:true}],
   ['2026.11.22.4', '🔧 今日跑車報告的「時薪走勢」:工時在歷史裡改過、或補登時有填休息的日子也畫得出來,會註明中間的點是照比例估算;真的畫不出來時(例如沒有打卡時間),會寫一行原因'],
   ['2026.11.22.3', '📈 今日跑車報告多一張「今天時薪走勢」小圖:看從上班到下班,累積的平均時薪怎麼變化(含空車、等單,扣休息),虛線是你前 7 天的平均時薪。上班打卡滿 1 小時、有 3 筆以上紀錄才會畫', '', {report:true}],
   ['2026.11.22.2', '🚀 剛開始用的車友,記帳首頁最上面多一張「開始使用」小卡:上班打卡、記第一筆車資、下班看今日跑車報告,做完一項打一個勾,都做完就自動消失;不想看可以按「之後再說」', '', {set:'features'}],
@@ -11474,6 +11766,9 @@ document.addEventListener('click', function(e){
   }
   else if(cmd==='do-restore'){ doCloudRestore(+arg); }
   else if(cmd==='quick-backup'){ openQuickBackup(); }
+  else if(cmd==='share-day'){ openShareDay(arg); }
+  else if(cmd==='share-back'){ openDayReport(arg); }
+  else if(cmd==='share-day-go'){ shareDaySend(); }
   else if(cmd==='backup-dest'){ state.backupDest = arg; save(); openQuickBackup(); }
   else if(cmd==='backup-snooze'){ state.backupSnoozeUntil = Date.now()+86400000; save(); renderAll(); }
   else if(cmd==='dismiss-tab-warning'){
@@ -11629,6 +11924,8 @@ document.addEventListener('input', function(e){
   }
 });
 document.addEventListener('change', function(e){
+  // the share picture's ticks touch nothing in the ledger, and the preview must follow them
+  if(e.target.id==='f-share-money' || e.target.id==='f-share-plat'){ shareOpt[e.target.id==='f-share-money' ? 'money' : 'plat'] = e.target.checked; shareOptSave(); shareRender(); return; }
   if(ledgerBusy()){ ledgerBusyNotice(); return; }
   if(e.target.id && e.target.id.indexOf('f-rn-')===0 && rnSettingChange(e.target)) return;
   if(e.target.id && e.target.id.indexOf('f-fee-')===0 && e.target.id!=='f-fee-apply-from'){ var fcn = document.getElementById('fee-change-note'); if(fcn) fcn.hidden = false; }
