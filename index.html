@@ -834,8 +834,31 @@ function defaultState(){
     payouts:[],
     activeTrip:null,
     pendingTrips:[],
-    cancels:[]
+    cancels:[],
+    nickname:''
   };
+}
+// 你的稱呼 (optional, a nickname): shown on the share picture (only when ticked), the PDF report's cover, the clock-in
+// greeting and the day report. It is part of the ledger like the other settings (backup, restore and cloud sync carry it;
+// an old backup without it restores as not filled in), and is never put in anything the app sends anywhere else.
+// Kept at most NICK_MAX characters, without control characters, line breaks or direction marks; '' = not filled in.
+var NICK_MAX = 12;
+function cleanNick(s){
+  if(typeof s!=='string') return '';
+  s = s.replace(/[\u0000-\u001F\u007F-\u009F\u200B\u200E\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069\uFEFF]/g, '').trim();
+  var ch = s.match(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\s\S]/g) || [];
+  return ch.slice(0, NICK_MAX).join('').trim();
+}
+function nickName(){ return cleanNick(state.nickname); }
+// one line when the driver clocks in (上班打卡 only: not 補登, 上廁所 or back from a break), by the hour it happens.
+// Late at night it is 辛苦了, not 晚安 (晚安 means going to bed). '' when no 稱呼 is filled in: nothing is shown then.
+function nickGreeting(ts){
+  var n = nickName(); if(!n) return '';
+  var hr = new Date(ts).getHours();
+  if(hr>=5 && hr<11) return n+'早安,今天也平安順利';
+  if(hr>=11 && hr<17) return n+'午安,今天也平安順利';
+  if(hr>=17 && hr<22) return n+'晚上好,今天也平安順利';
+  return n+'辛苦了,夜裡開車注意安全';
 }
 // a ledger read from storage, a file or the cloud gets the parts it does not have yet. Only a brand-new ledger takes
 // the new default for where a day ends; an existing one keeps the hour its entries were dated with.
@@ -6621,8 +6644,10 @@ function rptCover(R){
     '<div style="text-align:center;margin-top:16mm"><div style="font-size:38pt;font-weight:900;line-height:1.15">'+p.cover+'</div>'+
     '<div style="display:table;margin:5mm auto 0;background:#E08A1E;color:#fff;font-size:16pt;font-weight:900;padding:2mm 12mm;border-radius:2mm;transform:rotate(-2deg)">每一趟辛苦,都算得清楚</div>'+
     '<img src="'+RPT_IMG.trophy+'" style="display:block;height:40mm;margin:4mm auto 0" alt=""></div>'+
-    '<div class="rp-card" style="margin:6mm 6mm 0;display:flex;justify-content:space-around;align-items:center;font-size:13pt;border-radius:12mm">'+
-    '<span>'+rIc('📅')+' '+p.span+':<b>'+esc(R.titleFull)+'</b></span><span style="color:#EBDDC8">｜</span><span>製表:<b>'+todayStr().replace(/-/g,'/')+'</b></span></div>'+
+    '<div class="rp-card" style="margin:6mm 6mm 0;display:flex;justify-content:space-around;align-items:center;font-size:13pt;border-radius:12mm'+(nickName() ? ';flex-wrap:wrap;row-gap:1mm' : '')+'">'+
+    '<span>'+rIc('📅')+' '+p.span+':<b>'+esc(R.titleFull)+'</b></span><span style="color:#EBDDC8">｜</span><span>製表:<b>'+todayStr().replace(/-/g,'/')+'</b></span>'+
+    // 司機: only when 你的稱呼 is filled in (Welson 11/22: the one change to the PDF cover)
+    (nickName() ? '<span style="color:#EBDDC8">｜</span><span>司機:<b>'+esc(nickName())+'</b></span>' : '')+'</div>'+
     '<div style="text-align:center;margin-top:7mm;font-size:15pt;font-weight:800;color:#8a4f10;font-style:italic">'+tg+'</div>'+
     '<img src="'+RPT_IMG.cover+'" style="position:absolute;left:0;right:0;bottom:0;width:100%;display:block" alt=""></div>';
 }
@@ -9496,6 +9521,7 @@ var HELP = [
     ['手續費設定', '⚙️「平台手續費設定」:每單扣 $ 和 %,沒有的留空;月費記在固定成本。從某天起換方案可以套用到那天以後的帳。接電單:台灣大照台灣大的設定,大都會照方案(0 月費 12.5%)、綁定支付另扣刷卡 %。'],
     ['自己的車行、車隊', '⚙️ 平台管理「+ 新增平台」,可以設派遣費 % 和 / 或每趟扣 $(R 牌車行常用),也可以選「車行收款後撥給我」,撥款頁就會出現這個平台;之後在平台手續費設定、撥款設定改。'],
     ['外觀、名稱', '⚙️「外觀」選跟著手機 / 淺色 / 深色;點左上角名稱可以改。'],
+    ['🙋 你的稱呼', '⚙️「基本設定」最上面(選填,最多 12 個字):填暱稱或車友群裡的稱呼就好,不建議填全名或車牌。填了以後,上班打卡會跟你打聲招呼、今日跑車報告寫「阿明,辛苦了!」、PDF 經營報告封面多一行「司機:」;分享戰績圖要自己打開「顯示我的稱呼」才會出現。只存在你的帳本裡(跟著備份與雲端同步),不會送給我們。清掉就恢復原樣。'],
     ['設定頁分類', '⚙️ 設定分成基本設定、記帳首頁與功能、平台與手續費、支出項目、雲端與備份、隱私與分享,點一類才展開;「儲存設定」固定在最下面。'],
     ['開始使用(新手小卡)', '剛開始用時,記帳首頁最上面會有「開始使用」小卡:上班打卡、記第一筆車資、下班看今日跑車報告,點一步就帶你去,做完自動打勾,全部做完就消失。按「之後再說」收起後,要再看到 ⚙️「記帳首頁與功能」→「記帳首頁排列」下面按「再顯示」。簡單記帳(沒有打卡)不會出現。'],
     ['記帳首頁排列', '⚙️「記帳首頁與功能」→「記帳首頁排列」:用 ▲▼ 調整記帳頁每一塊的順序(例如把平台按鈕放到最上面),取消勾選就不顯示;排亂了按「恢復預設排列」。'],
@@ -9767,7 +9793,7 @@ function openDayReport(t){
   var rate = hours>=0.5 ? net/hours : null, rate7 = h7>=0.5 ? n7/h7 : null;
   function tile(lbl, val, cls){ return '<div class="stat-tile"><div class="lbl">'+lbl+'</div><div class="val num'+(cls?' '+cls:'')+'">'+val+'</div></div>'; }
   var h = '<div class="modal-title">🚕 今日跑車報告<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
-  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">'+t+' · 辛苦了!</div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">'+t+' · '+(nickName() ? esc(nickName())+',' : '')+'辛苦了!</div>';
   h += '<div class="summary-row" style="grid-template-columns:1fr 1fr;margin-bottom:10px">';
   h += tile('今日實收', fmtMoney(net), 'income') + tile('今日結餘(扣今日支出)', fmtMoney(net-exp));
   h += tile('趟數', trips+' 趟') + tile('每趟平均', trips?fmtMoney(tripNet/trips):'—');
@@ -9799,20 +9825,22 @@ function openDayReport(t){
    (no number on its axis or points, see the report's dayTrendHtml, which labels amounts: not reused). 金額 (今日實收,
    平均時薪 and the line's numbers) and 平台名稱 appear only while the driver ticks them in the preview; the ticks start
    off, and once ticked are remembered in this phone's localStorage only (SHARE_OPT_KEY: not the ledger, not a backup,
-   not synced), so a driver who chose to show them is not asked again (Welson 11/22). 車牌, places, 上下車位置, 熱區 and the driver's name are never read here at all.
+   not synced), so a driver who chose to show them is not asked again (Welson 11/22). 車牌, places, 上下車位置 and 熱區
+   are never read here at all. The driver's 你的稱呼 is drawn only while 「顯示我的稱呼」 is ticked (offered only when one is
+   filled in; off the first time, remembered like the other two).
    The image has fixed colours and pixel sizes (not the app's 深淺色 or 大字), so it reads the same on anyone's phone.
    shareDayData(t): the numbers; drawShareCard(canvas, D, opt) draws and returns the list of every text it drew. */
 var SC_W = 1080, SC_H = 1350, SC_CHART_PAD = 206;  // the chart card's title, time and legend rows around its drawing height
 var SC_C = {bg:'#FFF8EC', card:'#FFFFFF', line:'#EBDDC6', text:'#2B2620', muted:'#74685C', accent:'#E08A1E', accentText:'#A85A00', dash:'#9C8F82', logo:'#F7B500'};
 var SC_CJK = '"PingFang TC","Noto Sans TC","Noto Sans CJK TC","Source Han Sans TC","Microsoft JhengHei","Heiti TC",sans-serif';
 function scFont(px, w, num){ return (w||400)+' '+px+'px '+(num ? '"Space Grotesk",' : '')+SC_CJK; }
-var shareOpt = {money:false, plat:false}, shareCard = null, shareGen = 0, shareBusy = false;
+var shareOpt = {money:false, plat:false, name:false}, shareCard = null, shareGen = 0, shareBusy = false;
 var SHARE_OPT_KEY = 'taxi_share_opt';
 function shareOptLoad(){
-  try{ var v = JSON.parse(localStorage.getItem(SHARE_OPT_KEY)||'null'); return {money:!!(v && v.money===true), plat:!!(v && v.plat===true)}; }
-  catch(e){ return {money:false, plat:false}; }
+  try{ var v = JSON.parse(localStorage.getItem(SHARE_OPT_KEY)||'null'); return {money:!!(v && v.money===true), plat:!!(v && v.plat===true), name:!!(v && v.name===true)}; }
+  catch(e){ return {money:false, plat:false, name:false}; }
 }
-function shareOptSave(){ try{ localStorage.setItem(SHARE_OPT_KEY, JSON.stringify({money:!!shareOpt.money, plat:!!shareOpt.plat})); }catch(e){} }
+function shareOptSave(){ try{ localStorage.setItem(SHARE_OPT_KEY, JSON.stringify({money:!!shareOpt.money, plat:!!shareOpt.plat, name:!!shareOpt.name})); }catch(e){} }
 function shareDayData(t){
   var recs = recordsInRange(t, t), trips = recs.filter(function(r){ return !platformDef(r.platform).tipOnly; });
   var net = sumNetIncome(recs).total, hours = totalHoursInRange(t, t);
@@ -9827,7 +9855,7 @@ function shareDayData(t){
   return {t:t, trips:trips.length, hours:hours, net:net, rate:rate, rate7:rate7,
     diff:rate!=null && rate7!=null ? Math.round((rate-rate7)/rate7*100) : null,
     loadPct:K && K.sum<=K.dayKm ? Math.round(K.sum/K.dayKm*100) : null, loadEst:!!(K && K.real<K.kmN),
-    pts:I.pts, est:!!(I.est && I.pts.length), plats:plats};
+    pts:I.pts, est:!!(I.est && I.pts.length), plats:plats, name:nickName()};
 }
 // 9 小時 30 分 as [number, unit] pairs
 function scHoursRuns(hours){
@@ -9873,6 +9901,8 @@ function drawShareCard(cv, D, opt){
   T('跑', lx+28, M+37, scFont(34, 700), SC_C.text, 'center');
   T('跑車人生', SC_W-M, M+36, scFont(32, 700), SC_C.text, 'right');
   var top = M + 156, bottom = SC_H - M, GAP = 26;
+  // 「顯示我的稱呼」: one small line under the title; everything below moves down by it (the chart takes what is left)
+  if(opt.name && D.name){ T(D.name, M, M+34+84+54, scFont(38, 500), SC_C.muted, 'left', CW); top += 52; }
   var facts = [];
   if(D.loadPct!=null) facts.push(['載客里程占比', (D.loadEst ? '約 ' : '')+D.loadPct+'%']);
   if(D.diff!=null) facts.push(['平均時薪比我前 7 天', D.diff===0 ? '一樣' : (D.diff>0 ? '高 ' : '低 ')+Math.abs(D.diff)+'%']);
@@ -10009,10 +10039,12 @@ function openShareDay(t){
   h += '<div style="margin-top:8px">';
   h += '<label style="'+lbl+'"><input type="checkbox" id="f-share-money" style="'+cb+'"'+(shareOpt.money?' checked':'')+'>顯示金額(今日實收、平均時薪)</label>';
   h += '<label style="'+lbl+'"><input type="checkbox" id="f-share-plat" style="'+cb+'"'+(shareOpt.plat?' checked':'')+'>顯示平台名稱</label>';
-  h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.5;margin:-2px 0 4px">這兩個開關會記住你上次的選擇(只存在'+hereName()+')。</div>';
+  var nk = nickName();
+  if(nk) h += '<label style="'+lbl+'"><input type="checkbox" id="f-share-name" style="'+cb+'"'+(shareOpt.name?' checked':'')+'>顯示我的稱呼(「'+esc(nk)+'」)</label>';
+  h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.5;margin:-2px 0 4px">'+(nk ? '這些' : '這兩個')+'開關會記住你上次的選擇(只存在'+hereName()+')。</div>';
   h += '</div>';
   if(D.est) h += '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.6;margin:2px 0 6px">ⓘ 這天的工時改過,圖上時薪走勢中間的點是照比例估算的。</div>';
-  h += '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.6;margin:4px 0 12px">🔒 車牌、地點、上下車位置、你的名字永遠不會出現在圖上。圖只在'+hereName()+'上產生,不會上傳;要不要分享、分享給誰,由你決定。</div>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.6;margin:4px 0 12px">🔒 '+(nk ? '車牌、地點、上下車位置永遠不會出現在圖上;你的稱呼只有打開「顯示我的稱呼」才會出現。' : '車牌、地點、上下車位置、你的名字永遠不會出現在圖上。')+'圖只在'+hereName()+'上產生,不會上傳;要不要分享、分享給誰,由你決定。</div>';
   h += '<div class="btn-row"><button class="btn" data-act="share-back:'+t+'">‹ 回報告</button><button class="btn btn-primary" id="share-go" data-act="share-day-go" disabled>'+(route==='download' ? '⬇️ 存成圖片' : '📤 分享')+'</button></div>';
   openModal(h);
   shareRender();
@@ -10028,7 +10060,7 @@ function shareRender(){
     var cv = document.createElement('canvas'), texts = drawShareCard(cv, shareDayData(t), shareOpt);
     var url = cv.toDataURL('image/png');
     if(!/^data:image\/png;base64,/.test(url)) throw new Error('no png');
-    shareCard = {t:t, url:url, b64:url.split(',')[1], texts:texts, w:cv.width, h:cv.height, money:shareOpt.money, plat:shareOpt.plat};
+    shareCard = {t:t, url:url, b64:url.split(',')[1], texts:texts, w:cv.width, h:cv.height, money:shareOpt.money, plat:shareOpt.plat, name:!!(shareOpt.name && nickName())};
     bx.innerHTML = '<img id="share-img" src="'+url+'" alt="'+esc(texts.join(' '))+'" style="display:block;width:100%;max-width:340px;margin:0 auto;border-radius:12px;border:1px solid var(--border)">';
     var g2 = document.getElementById('share-go'); if(g2) g2.disabled = false;
     return true;
@@ -10083,17 +10115,28 @@ function openModeChooser(){
   h += '<button style="'+big+'" data-act="ui-choose:full"><b style="font-size:15px">🔵 完整分析</b><br><span style="font-size:12px;color:var(--text-muted)">記車種、付款方式、上下車時間,分析時薪、熱區、載客率。</span></button>';
   openModal(h);
 }
-var OB_TOTAL = 7;
+var OB_TOTAL = 8;
 function onboardStep(n, title){
   return '<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:2px">第 '+n+' / '+OB_TOTAL+' 步'+(n>4?'(選填)':'')+'</div><div class="modal-title">'+title+'</div>';
 }
 // every step can be skipped, and the whole guide can be left at any step
-function onboardSkipHtml(skipAct){
+function onboardSkipHtml(skipAct, skipLbl){
   return '<div style="display:flex;justify-content:space-between;gap:10px;margin-top:12px;font-size:12.5px">'+
-    (skipAct ? '<button type="button" class="btn btn-ghost" style="flex:1" data-act="'+skipAct+'">跳過這步</button>' : '')+
+    (skipAct ? '<button type="button" class="btn btn-ghost" style="flex:1" data-act="'+skipAct+'">'+(skipLbl||'跳過這步')+'</button>' : '')+
     '<button type="button" class="btn btn-ghost" style="flex:1" data-act="ob-done">後面先不用了,開始記帳</button></div>';
 }
-// steps 5-7: each opens the real settings; when that sheet closes the guide goes on to the next step
+// step 5 (optional): 你的稱呼. One box, 下一步 keeps what is in it, 略過 changes nothing; skipped, the app never asks again
+// (it is in ⚙️ 基本設定). Drivers who were set up before this step never see the guide, so the 更新說明 tells them.
+function openOnboardName(){
+  var h = onboardStep(5, '你希望怎麼稱呼你?');
+  h += '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 10px;line-height:1.6">會用在分享戰績圖、PDF 經營報告封面和問候語。可以填暱稱或車友群裡的稱呼,不建議填全名或車牌。不填也完全不影響記帳。</div>';
+  h += '<div class="form-row" style="margin-bottom:12px"><input id="ob-nickname" type="text" maxlength="'+NICK_MAX+'" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="例如:阿明" value="'+esc(nickName())+'" aria-label="你的稱呼"></div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="ob-name-next">下一步</button></div>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;line-height:1.6">之後隨時可以在 ⚙️「基本設定」改或清掉。</div>';
+  h += onboardSkipHtml('ob-x:0', '略過');
+  openModal(h);
+}
+// steps 6-8: each opens the real settings; when that sheet closes the guide goes on to the next step
 var OB_EXTRA = [
   ['fees', '每家平台抽多少?', '記帳時會自動扣手續費,算出實收。已經先填好各車隊常見的費率,跟你的合約不一樣再改。', '💰 設定手續費'],
   ['payout', '車隊什麼時候撥款?', '「撥款」頁會算出每家哪天入帳、入多少,方便對帳。已經先填好各車隊公布的撥款日,收款帳戶可以在這裡選。', '🏦 設定撥款'],
@@ -10103,7 +10146,7 @@ var obResume = null;
 function openOnboardExtra(i){
   if(i>=OB_EXTRA.length){ finishOnboard(); return; }
   var x = OB_EXTRA[i];
-  var h = onboardStep(5+i, x[1]);
+  var h = onboardStep(6+i, x[1]);
   h += '<div style="font-size:13px;line-height:1.7;margin-bottom:14px">'+x[2]+'</div>';
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="ob-x-go:'+i+'">'+x[3]+'</button></div>';
   h += onboardSkipHtml('ob-x:'+(i+1));
@@ -10172,7 +10215,7 @@ function openOnboardFont(){
   var h = onboardStep(4, '字會不會太小?');
   h += '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 10px;line-height:1.6">點一下馬上換,選看得最清楚的。之後可以在 ⚙️「字體大小」改。</div><div style="display:flex;gap:6px;margin-bottom:14px">';
   FONT_SCALES.forEach(function(x, i){ h += '<button data-act="ob-font:'+x[0]+'" style="'+b+';font-size:'+(13+i*2)+'px'+(x[0]===cur?';border:2px solid var(--accent-strong);background:var(--accent-soft)':'')+'">'+x[0]+'</button>'; });
-  h += '</div><div class="btn-row"><button class="btn btn-primary" data-act="ob-x:0">下一步</button></div>';
+  h += '</div><div class="btn-row"><button class="btn btn-primary" data-act="ob-name">下一步</button></div>';
   h += onboardSkipHtml('');
   openModal(h);
 }
@@ -10204,13 +10247,19 @@ function toggleIconPicker(inputId){
   box.innerHTML = h;
   anchor.parentNode.insertBefore(box, anchor.nextSibling);
 }
+// 🚕 基本設定, first row: 你的稱呼 (optional). Called 稱呼, not 姓名, so a driver knows a nickname is fine.
+function nickSettingsHtml(){
+  return '<div class="form-row" style="margin:4px 0 12px"><label for="f-nickname">🙋 你的稱呼(選填)</label>'+
+    '<input id="f-nickname" type="text" maxlength="'+NICK_MAX+'" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="例如:阿明" value="'+esc(nickName())+'">'+
+    '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.6">會用在分享戰績圖、PDF 經營報告封面和問候語。可以填暱稱或車友群裡的稱呼,不建議填全名或車牌。</div></div>';
+}
 function openSettingsModal(){
   var fr = state.feeRules;
   var h = '<div class="modal-title">設定<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
   h += '<div class="btn-row" style="margin-bottom:12px"><button class="btn" data-act="open-help">📖 功能說明:每個功能在哪裡、怎麼用</button></div>';
   h += '<div class="btn-row" style="margin:-4px 0 12px"><button class="btn btn-ghost" data-act="ob-rerun">🧭 重新跑一次設定引導</button></div>';
   var hdr = h, S = {};
-  S.basic = uiSettingsHtml('basic');
+  S.basic = nickSettingsHtml() + uiSettingsHtml('basic');
   S.features = uiSettingsHtml('features') + (vipGated() ? vipSettingsHtml() : '') + (betaOn() ? vipTestHtml() + vipMockPanelHtml() : '');
   h = feeSettingsHtml(fr);
 
@@ -10330,12 +10379,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.22.5';
+var APP_VERSION = '2026.11.22.6';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.22.6', '🙋 可以設定「你的稱呼」:分享戰績圖、PDF 經營報告封面會用到,上班打卡時也會跟你打聲招呼。不填也完全不影響記帳', '', {set:'basic'}],
   ['2026.11.22.5', '📤 今日跑車報告多一顆「分享今日戰績」:把今天的趟數、工時、時薪走勢做成一張圖,傳 LINE、限動或車友群。預設不顯示金額,要露金額自己打開;車牌、地點永遠不會出現在圖上', '', {report:true}],
   ['2026.11.22.4', '🔧 今日跑車報告的「時薪走勢」:工時在歷史裡改過、或補登時有填休息的日子也畫得出來,會註明中間的點是照比例估算;真的畫不出來時(例如沒有打卡時間),會寫一行原因'],
   ['2026.11.22.3', '📈 今日跑車報告多一張「今天時薪走勢」小圖:看從上班到下班,累積的平均時薪怎麼變化(含空車、等單,扣休息),虛線是你前 7 天的平均時薪。上班打卡滿 1 小時、有 3 筆以上紀錄才會畫', '', {report:true}],
@@ -10528,7 +10578,7 @@ function maybeShowWhatsNew(){
 }
 // 設定頁分類:點開一類才展開,同時只開一類;記住上次開的那一類(新增平台後重開設定也停在原處)
 var SETTINGS_SECS = [
-  ['basic', '🚕 基本設定', '我的車、外觀、字體大小、收入目標、營業日分界'],
+  ['basic', '🚕 基本設定', '你的稱呼、我的車、外觀、字體大小、收入目標、營業日分界'],
   ['features', '📱 記帳首頁與功能', '首頁排列、功能開關、休息提醒時間'],
   ['platforms', '💰 平台與手續費', '手續費設定、平台管理、車種'],
   ['expenses', '🧾 支出項目', '支出項目、支出細項'],
@@ -10834,7 +10884,9 @@ function ledgerProblem(p, strictDates){
     ((p.analysisPresets!=null && !Array.isArray(p.analysisPresets)) ? '「分析組合」的格式不對' : objList(p.analysisPresets||[], '分析組合')) ||
     numValues(p.feeRules||{}, '手續費設定') || numValues(p.targets||{}, '目標') ||
     ((p.netEntryPlats!=null && (!isObj(p.netEntryPlats) || Object.keys(p.netEntryPlats).some(function(k){ return typeof p.netEntryPlats[k]!=='boolean'; }))) ? '「記帳時填實收」的格式不對' : '') ||
-    ((p.activeTrip!=null && !isObj(p.activeTrip)) ? '「載客中的行程」格式不對' : '');
+    ((p.activeTrip!=null && !isObj(p.activeTrip)) ? '「載客中的行程」格式不對' : '') ||
+    // checked on an explicit restore only: a ledger already on the phone is never refused over it (nickName() reads anything as '')
+    ((strictDates && p.nickname!=null && typeof p.nickname!=='string') ? '「你的稱呼」的格式不對' : '');
 }
 // every way of swapping in a whole ledger (backup file, cloud backup, undo, clear) goes through here:
 // check it, keep the current ledger aside, and say it worked only once the phone has really stored it.
@@ -11092,6 +11144,8 @@ function saveNewCat(){
 }
 function saveSettings(){
   var feesBefore = JSON.stringify(resolvedFeeRules());
+  var nkEl = document.getElementById('f-nickname');
+  if(nkEl) state.nickname = cleanNick(nkEl.value);
   saveUiSettings();
   saveHomeLayout();
   savePlatformSettings();
@@ -11321,6 +11375,7 @@ document.addEventListener('click', function(e){
     var staleDate1 = findStaleOpenShiftDate();
     if(staleDate1){ openStaleShiftModal(staleDate1); return; }
     var m1 = dm(todayStr()), now1 = Date.now(); m1.activeShiftStart=now1; m1.segmentStart=now1; m1.onBreak=false; punchLog(m1, 'i', now1); save(); renderAll();
+    var gr1 = nickGreeting(now1); if(gr1) showToast(gr1);
   }
   else if(cmd==='save-stale-shift'){
     var staleVal = document.getElementById('f-stale-endtime').value;
@@ -11866,6 +11921,13 @@ document.addEventListener('click', function(e){
   else if(cmd==='ob-car-skip'){ openOnboardCity(); }
   else if(cmd==='ob-plats-skip'){ save(); renderAll(); openOnboardFont(); }
   else if(cmd==='ob-x'){ openOnboardExtra(+arg); }
+  else if(cmd==='ob-name'){ openOnboardName(); }
+  else if(cmd==='ob-name-next'){
+    // what is in the box is kept (a guide run again shows the name already there; emptying it clears it); empty = nothing to keep
+    var obn = document.getElementById('ob-nickname');
+    if(obn){ var obv = cleanNick(obn.value); if(obv!==nickName()){ state.nickname = obv; save(); } }
+    openOnboardExtra(0);
+  }
   else if(cmd==='ob-x-go'){
     var oi = +arg, ox = OB_EXTRA[oi];
     if(ox[0]==='payout') openPayoutSettingsModal();
@@ -11925,7 +11987,7 @@ document.addEventListener('input', function(e){
 });
 document.addEventListener('change', function(e){
   // the share picture's ticks touch nothing in the ledger, and the preview must follow them
-  if(e.target.id==='f-share-money' || e.target.id==='f-share-plat'){ shareOpt[e.target.id==='f-share-money' ? 'money' : 'plat'] = e.target.checked; shareOptSave(); shareRender(); return; }
+  if(e.target.id==='f-share-money' || e.target.id==='f-share-plat' || e.target.id==='f-share-name'){ shareOpt[e.target.id==='f-share-money' ? 'money' : e.target.id==='f-share-plat' ? 'plat' : 'name'] = e.target.checked; shareOptSave(); shareRender(); return; }
   if(ledgerBusy()){ ledgerBusyNotice(); return; }
   if(e.target.id && e.target.id.indexOf('f-rn-')===0 && rnSettingChange(e.target)) return;
   if(e.target.id && e.target.id.indexOf('f-fee-')===0 && e.target.id!=='f-fee-apply-from'){ var fcn = document.getElementById('fee-change-note'); if(fcn) fcn.hidden = false; }
