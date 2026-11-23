@@ -6,8 +6,8 @@
 <meta content="width=device-width, initial-scale=1" name="viewport"/>
 <meta content="#080e19" name="theme-color"/>
 <meta content="跑車人生記帳本" name="author"/>
-<meta content="跑車人生 VIP｜雙北人潮情報 2026/11/16～11/22，演出、市集、宗教活動、官方交通管制與農民曆嫁娶日參考。活動與道路資訊依現場公告為準。" name="description"/>
-<title>人潮情報｜雙北 11/16～11/22｜跑車人生 VIP</title>
+<meta content="跑車人生 VIP｜雙北人潮情報 2026/11/23～11/29，演出、市集、宗教活動、官方交通管制與農民曆嫁娶日參考。活動與道路資訊依現場公告為準。" name="description"/>
+<title>人潮情報｜雙北 11/23～11/29｜跑車人生 VIP</title>
 <meta content="人潮情報" name="apple-mobile-web-app-title"/><meta content="人潮情報" name="application-name"/>
 <meta content="yes" name="apple-mobile-web-app-capable"/>
 <meta content="black-translucent" name="apple-mobile-web-app-status-bar-style"/>
@@ -1890,6 +1890,138 @@ var footerFine=document.querySelector('.footer-fine');if(footerFine)footerFine.t
     var foot=document.querySelector('.footer-fine');if(foot)foot.textContent='資訊更新：2026/11/22 夜間（台灣時間）｜新增活動、選舉疏運及施工資訊以官方最新公告為準；推估不得視為正式散場或交管。© 2026 跑車人生記帳本 · VIP 專屬';
   }
   mergeNov22LateFollowup();
+
+
+  // 2026/11/23 增量補查：以既有 11/23～29 週表為準，不重新建立已收錄的場次。
+  // 只加入有正式活動／場館／交通公告依據的差異，不把推估散場或場館容量當作事實。
+  function mergeNov23VerifiedDifferences() {
+    var official={
+      jewelry:'https://www.taiwanjewelleryfair.com/zh-hant/event-information/',
+      playground:'https://www.mjcsg.org.tw/?act=menuinfo&cmd=detail&mi_id=20261120001&ml_id=20250804008',
+      trafficWeeks:'https://www.cna.com.tw/news/aloc/202611230179.aspx',
+      maokong:'https://dot.gov.taipei/News_Content.aspx?n=D739A9F6B5C0AB95&s=48613522284F0C3F&sms=72544237BBE4C5F6',
+      ximen:'https://dot.gov.taipei/News_Content.aspx?n=D739A9F6B5C0AB95&s=8B38B22B56A1D01D&sms=72544237BBE4C5F6',
+      flowers:'https://www.expopark.taipei/News_Content.aspx?n=91&s=4626',
+      flowersMain:'https://www.cip.gov.tw/zh-tw/news/data-list/C78C8EAE23CC8989/8AD040E473172F31F3FEC93C82EFFD46-info.html',
+      opera:'https://event.culture.tw/mocweb/reg/XCT/Detail.init.ctr?actId=60151',
+      surge:'https://www.opentix.life/event/2109591937308196865',
+      chevon:'https://www.chevon.biz/live/2026/nomadism.html'
+    };
+    var added=0,updated=0,roads=0;
+    function sameCard(day,token) {
+      return Array.prototype.find.call(document.querySelectorAll('#day-panel-'+day+' .event-card'),function(card){
+        var name=card.querySelector('.event-name');return !!(name&&name.textContent.indexOf(token)>=0);
+      });
+    }
+    // day, time, name, location, region, venue, source, note, unique key
+    var rows=[];
+    function add(day,time,name,place,region,venue,url,note,key,grade) {
+      rows.push([day,time,name,place,region,venue,url,note,key||name,grade||"A"]);
+    }
+    add(23,'11:00～17:00（閉展）','2026 臺灣珠寶首飾展覽會・最後一天','臺北世貿一館（信義區・信義路五段5號）',0,'世貿一館',official.jewelry,'主辦公布11/20～23舉辦，11/23最後一日開放11:00～17:00；展場分散進出，非同時散場。','臺灣珠寶首飾展覽會');
+    [23,24,25,26,27,28,29].forEach(function(d){
+      add(d,'16:00～21:00（樂園參考時段）','艋舺青山宮171週年・爐主壇遊樂園','萬華車站旁爐主壇周邊（萬華區）',5,'萬華車站',official.playground,'青山宮公告活動至11/30，爐主壇樂園位於萬華車站及格萊天漾飯店旁；童玩和躦轎分項時段可能不同。此為定點活動，不能當作11/28～30暗訪遶境的封街時間。','爐主壇遊樂園');
+    });
+    [27,28,29].forEach(function(d){
+      add(d,'10:00～17:00','2026 臺灣花卉推介會','花博圓山園區・爭艷館及爭艷廣場（中山區）',4,'花博圓山園區',official.flowersMain,'農業部及花博活動公告確認11/27～29，每日10:00～17:00；自由入場、分散離場。','臺灣花卉推介會');
+    });
+    [28,29].forEach(function(d){
+      add(d,'10:00～18:00','臺北花博農民市集','花博圓山園區・長廊廣場（中山區）',4,'花博圓山園區',official.flowers,'花博公告11/28～29每日10:00～18:00；市集非集中散場。','臺北花博農民市集');
+    });
+    add(29,'12:00～21:00（公告活動時段）','Being on our groove vol.11','花博圓山園區・流行館（中山區）',4,'花博圓山園區',official.flowers,'花博官方公布12:00～21:00，售票入場；21:00為公告活動時段終點，非保證同時離場。','Being on our groove');
+    [[27,'19:30～22:20（主辦表定）','第一場'],[28,'14:30～17:20（主辦表定）','第二場'],[29,'14:30～17:20（主辦表定）','第三場']].forEach(function(item){
+      add(item[0],item[1],'唐美雲歌仔戲團《南都幽靈夜譚》・'+item[2],'臺灣戲曲中心大表演廳（士林區・文林路751號）',4,'',official.opera,'傳藝中心公布各場表定開始與結束時刻；實際觀眾離場依現場安排。未提供指定場館座標，不產生路況鈕。','南都幽靈夜譚');
+    });
+    [[27,'19:30 開演・散場未公布','第一場'],[28,'19:30 開演・散場未公布','第二場'],[29,'14:30 開演・演後座談','第三場']].forEach(function(item){
+      add(item[0],item[1],'白蹈場《濤 SURGE》・'+item[2],'C-LAB圖書館展演空間2樓（大安區・建國南路一段177號）',2,'C-LAB',official.surge,'OPENTIX正式票券頁列明11/27、28、29三場；11/29有演後座談。未公布觀眾實際離場時刻。','濤 SURGE');
+    });
+    add(29,'17:00入場／18:00開演・散場未公布','Chevon pre.Yoshinani ～Nomadic Edition～ in Taipei','Legacy Taipei・華山1914中5A館（中正區）',5,'華山1914',official.chevon,'藝人官方公布11/29 Legacy Taipei場；開演18:00。散場時間未公布，不以其他場次的時間推算。','Chevon');
+    // 市議會前選前之夜與市府前開票為兩場不同活動，不當作同場加總。
+    add(27,'晚間舉行・開場與散場未核實','沈伯洋市府周邊選前之夜','仁愛路四段・臺北市議會旁（信義區）',0,'',official.trafficWeeks,'警方因11/27活動及翌日開票，自11/25 09:30起分四階段交管；確切舞台演出開始與散場請以主辦現場公告。','沈伯洋市府周邊選前之夜','B');
+    add(28,'選後開票時段・開始及散場未公布','蔣萬安市府前開票之夜','臺北市政府前市府路（信義區）',0,'',official.trafficWeeks,'與11/27凱達格蘭大道的選前之夜不同；市府路11/28午後納入第四階段交管，不代表核准封路至04:00即活動散場。','市府前開票之夜','B');
+    rows.forEach(function(e,index){
+      var day=e[0],stack=document.querySelector('#day-panel-'+day+' .event-stack');if(!stack||sameCard(day,e[8]))return;
+      var card=document.createElement('article');card.id='ev-NEW-1123-'+day+'-'+index;
+      card.className='event-card event-'+e[9].toLowerCase();card.setAttribute('data-grade',e[9]);card.setAttribute('data-source','NOV23_VERIFIED_OFFICIAL');
+      if(e[5]&&Object.prototype.hasOwnProperty.call(VENUE_COORDS,e[5]))card.setAttribute('data-venue',e[5]);
+      var top=document.createElement('div');top.className='event-top';
+      var tim=document.createElement('span');tim.className='time-text';tim.textContent=e[1];top.appendChild(tim);
+      var grade=document.createElement('span');grade.className='badge badge-'+e[9].toLowerCase();grade.textContent=e[9]==='A'?'A 官方來源':'B 新聞／警方說明';top.appendChild(grade);
+      var title=document.createElement('div');title.className='event-name';title.textContent=e[2];
+      var place=document.createElement('div');place.className='event-place';
+      var dot=document.createElement('span');dot.className='place-dot';dot.setAttribute('aria-hidden','true');place.appendChild(dot);place.appendChild(document.createTextNode(e[3]));
+      var note=document.createElement('p');note.className='event-note';note.textContent=e[7];
+      var footer=document.createElement('div');footer.className='event-footer';
+      var source=document.createElement('a');source.className='source-link';source.href=e[6];source.textContent='官方公告／售票 ↗';source.target='_blank';source.rel='noopener noreferrer';footer.appendChild(source);
+      var nav=document.createElement('a');nav.className='nav-link';nav.textContent='📍 導航';nav.href='https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(e[3])+'&travelmode=driving';nav.target='_blank';nav.rel='noopener noreferrer';footer.appendChild(nav);
+      card.appendChild(top);card.appendChild(title);card.appendChild(place);card.appendChild(note);card.appendChild(footer);stack.appendChild(card);
+      var region=document.getElementById('region-panel-'+e[4]);
+      if(region)region.setAttribute('data-event-refs',((region.getAttribute('data-event-refs')||'')+' '+card.id).trim());
+      added++;
+    });
+    function traffic(id,title,status,time,body,url,until) {
+      var list=document.querySelector('#traffic .traffic-list');if(!list||document.getElementById(id))return;
+      var card=document.createElement('article');card.id=id;card.className='traffic-card';
+      card.setAttribute('data-source','NOV23_VERIFIED_OFFICIAL');card.setAttribute('data-visible-until',until);
+      var head=document.createElement('div');head.className='traffic-head';
+      var mark=document.createElement('span');mark.className='traffic-icon';mark.textContent='!';mark.setAttribute('aria-hidden','true');
+      var h=document.createElement('h3');h.textContent=title;head.appendChild(mark);head.appendChild(h);
+      var st=document.createElement('p');st.className='traffic-status';st.textContent=status;
+      var tm=document.createElement('p');tm.className='traffic-time';tm.textContent=time;
+      var desc=document.createElement('p');desc.className='traffic-body';desc.textContent=body;
+      var f=document.createElement('div');f.className='event-footer';
+      var a=document.createElement('a');a.className='source-link';a.href=url;a.textContent='交通公告 ↗';a.target='_blank';a.rel='noopener noreferrer';f.appendChild(a);
+      card.appendChild(head);card.appendChild(st);card.appendChild(tm);card.appendChild(desc);card.appendChild(f);
+      list.prepend(card);roads++;
+    }
+    traffic('traffic-20261123-xinyi-4phase','11/25～11/29 信義區市府／市議會周邊四階段交管',
+      'B 警方11/23公布（中央社轉述）｜可分段調整',
+      '①11/25 09:30～11/27 19:00　②11/27 19:00～22:00　③11/27 22:00～11/28 14:00　④11/28 14:00～11/29 04:00；新仁愛路例假日管制可至11/29 24:00',
+      '第一階段管制仁愛路（逸仙～光復）公車道、快車道與北側慢車道（南側慢車道僅住戶通行）、逸仙路（松高～仁愛）及新仁愛路部分方向；後三階段依警方發布範圍逐步調整，涵蓋市府路及一號道路等。管制區內計程車招呼站、營業用共用臨停區及部分停車格暫停使用。各階段不同範圍，並非上述所有道路全程封閉；請依現場警力。',
+      official.trafficWeeks,'2026-11-30T00:00');
+    traffic('traffic-20261123-maokong-works','11/23～12/3 貓空地區平日路面更新・五線公車改道',
+      'A 臺北市公共運輸處11/23公告',
+      '11/23（一）～12/3（四）平日施工；逐日確切鐘點請看官方改道表',
+      '文山區指南路三段53號至195號、指南樟山產業道路及泉南產業道路（老泉街45巷）更新施工，5條公車路線受影響。是施工路段交通管理，不等於所有貓空道路全日封閉；出車依交管與公運處改道附表。',
+      official.maokong,'2026-12-04T00:00');
+    traffic('traffic-20261123-ximen-qingshan','11/29 西門町青山王祭藝文展演｜成都路、漢中街交通提醒',
+      'A 臺北市交通局11/23公告',
+      '11/29（日）18:00～22:00（官方列受活動影響時段；不是保證散場時刻）',
+      '活動受影響路段：成都路（中華路至西寧南路）、漢中街（中華路一段114巷至成都路）。請留意現場管制、臨停限制及合法上下客點；官方並未表示兩條路全線全時封閉。此項與當日青山王北萬華暗訪是可能重疊的人流，不應重複計算。',
+      official.ximen,'2026-11-29T22:30');
+    // 原週表已有西門展演與KPOP PLANET，僅補正來源及避免把表演預估誤認散場。
+    var ximen= sameCard(29,'青山王祭市府藝文展演');
+    if(ximen){
+      var note=ximen.querySelector('.event-note');if(note){note.textContent='11/29西門站6號出口真善美廣場展演；交通局公告18:00～22:00成都路（中華路至西寧南路）、漢中街（中華路一段114巷至成都路）受活動影響，並不等於全線全程封閉或確定散場時刻。另有北萬華暗訪路線，依現場交通指揮。';updated++;}
+      var a=ximen.querySelector('.source-link');if(a){a.href=official.ximen;a.textContent='臺北市交通局公告 ↗';}
+    }
+    var kpop=sameCard(28,'KPOP PLANET');
+    if(kpop){
+      var kn=kpop.querySelector('.event-note');if(kn){kn.textContent='寬宏售票確認18:00開演，節目製作預估約120分鐘，但不含換場、觀眾互動、安可等，不能推算固定20:00散場。實際離場與交通請依現場安排。';updated++;}
+    }
+    // 已刊登的板橋第二運動場晚會補充有來源的開始時間，不預設全場固定散場。
+    var banqiao=sameCard(27,'蘇巧慧選前之夜');
+    if(banqiao){var time=banqiao.querySelector('.time-text');if(time){time.textContent='18:00（媒體所列開場）・散場未公布';updated++;}}
+    // 依現有版型更新資料筆數，區域檢視下次開啟會自動複製新增卡片。
+    [23,24,25,26,27,28,29].forEach(function(d){
+      var stack=document.querySelector('#day-panel-'+d+' .event-stack');
+      var label=document.querySelector('#day-panel-'+d+' .panel-intro span');
+      if(label&&stack)label.textContent='共 '+stack.querySelectorAll('.event-card').length+' 筆日期資訊';
+    });
+    document.querySelectorAll('#areas .region-panels .tab-panel').forEach(function(panel){
+      var stack=panel.querySelector('.event-stack');if(stack)stack.replaceChildren();panel.removeAttribute('data-rendered');
+    });
+    var st=document.querySelector('.update-stamp time');if(st){st.setAttribute('datetime','2026-11-23');st.textContent='最後更新 11/23｜新增活動及重要交通管制';}
+    var foot=document.querySelector('.footer-fine');
+    if(foot)foot.textContent='資訊更新：2026/11/23（臺灣時間）｜活動、演出與道路管制以主辦／政府公告及現場指揮為準。未公布散場不等於保證無人潮。© 2026 跑車人生記帳本 · VIP 專屬';
+    var urgentLinks=document.querySelector('#urgent-traffic .urgent-links');
+    if(urgentLinks&&!document.getElementById('urgent-1123-xinyi')){
+      var urgent=document.createElement('a');urgent.id='urgent-1123-xinyi';urgent.className='urgent-link';urgent.href=official.trafficWeeks;urgent.target='_blank';urgent.rel='noopener noreferrer';urgent.setAttribute('data-visible-until','2026-11-30T00:00');
+      var strong=document.createElement('strong');strong.textContent='11/25 09:30起：市府周邊分四階段交管';
+      var small=document.createElement('small');small.textContent='仁愛路、逸仙路、新仁愛路與市府路依不同階段管制；計程車招呼站暫停使用';urgent.appendChild(strong);urgent.appendChild(small);urgentLinks.prepend(urgent);
+    }
+  }
+  mergeNov23VerifiedDifferences();
 
   // 交通管制項目只在標題能確定單一場館時對應；跨區遊行不任意選擇其中一個座標。
   function venueForTrafficCard(card) {
