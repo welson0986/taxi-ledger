@@ -5690,8 +5690,14 @@ function tripInsightsHtml(range, f){
   // the last trip of the business day before each one, for an order taken during the ride before it
   var wide = timedTripsByDay(addDays(range.from, -1), range.to), wk = Object.keys(wide).sort(), lastBefore = {};
   wk.forEach(function(k, j){ if(j>0){ var pl = wide[wk[j-1]]; lastBefore[k] = pl[pl.length-1]; } });
+  // 空檔扣休息 (B2-05, 2026.11.23.5): on a day with a usable clock-in log (punchSegs) the gap, the wait and the approach
+  // count only their minutes inside the work periods (休息 and the time after 下班 left out, as 🏁 fcTimeline and 📍
+  // dsWait do), with no EMPTY_GAP_CAP_MIN: two and a half hours at work without a fare is real waiting. A day without
+  // a usable log keeps the cap. inSeg: the minutes of a..b inside segs.
+  function inSeg(segs, a, b){ if(!(b > a)) return 0; var iv = [[a, b]]; return ivSum(ivMinus(iv, ivMinus(iv, segs)))/60000; }
+  function atSeg(segs, t){ return segs.some(function(sg){ return sg[0]<=t && t<=sg[1]; }); }
   dayKeys.forEach(function(d){
-    var list = days[d], dayOcc = 0;
+    var list = days[d], dayOcc = 0, segs = punchSegs(d);
     list.forEach(function(o,i){
       if(f && !anTripOk(f, o, d)) return;
       var m = tripMin(o.pickup,o.dropoff); if(m<0) return;
@@ -5705,7 +5711,12 @@ function tripInsightsHtml(range, f){
         var sd = seamlessPrevDrop(o, prevO);
         var ap = (o.pickup.ts - (sd!=null ? sd : o.accept.ts))/60000;
         var wt = sd!=null ? 0 : (i>0 ? (o.accept.ts - list[i-1].dropoff.ts)/60000 : null);
-        if(ap<=EMPTY_GAP_CAP_MIN && (wt==null || (wt>=0 && wt<=EMPTY_GAP_CAP_MIN))){
+        var okA = segs ? (wt==null || wt>=0) : (ap<=EMPTY_GAP_CAP_MIN && (wt==null || (wt>=0 && wt<=EMPTY_GAP_CAP_MIN)));
+        if(segs){
+          ap = inSeg(segs, sd!=null ? sd : o.accept.ts, o.pickup.ts);
+          if(wt!=null && wt>0) wt = inSeg(segs, list[i-1].dropoff.ts, o.accept.ts);
+        }
+        if(okA){
           if(wt!=null && wt>0){ var cxm = Math.min(wt, cxIn(list[i-1].dropoff.ts, o.accept.ts)); wt -= cxm; cxSum += cxm; }
           accN++; approachSum += ap; if(sd!=null) seamN++;
           var akm = straightKm(sd!=null ? prevO.dropoff : o.accept, o.pickup); if(akm!=null){ apKmSum += akm; apKmN++; }
@@ -5715,8 +5726,9 @@ function tripInsightsHtml(range, f){
         }
       }
       if(i>0){
-        var g = (o.pickup.ts - list[i-1].dropoff.ts)/60000;
-        if(g>=0 && g<=EMPTY_GAP_CAP_MIN){
+        var g = (o.pickup.ts - list[i-1].dropoff.ts)/60000, okG = g>=0 && g<=EMPTY_GAP_CAP_MIN;
+        if(segs && g>=0){ g = inSeg(segs, list[i-1].dropoff.ts, o.pickup.ts); okG = g>0 || atSeg(segs, o.pickup.ts); }
+        if(okG){
           gaps.push(g);
           if(o.rec){
             var k = o.rec.platform;
@@ -5765,7 +5777,7 @@ function tripInsightsHtml(range, f){
     var apl2 = Object.keys(accPlat).map(function(k){ return accPlat[k]; }).sort(function(a,b){ return a.ap/a.apN-b.ap/b.apN; });
     h += apl2.map(function(p){ return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(p.label)+'</div><div class="li-sub">'+p.apN+' 趟</div></div><div class="li-amt num" style="font-size:13px">等單 '+(p.wtN?fmtNum(p.wt/p.wtN,1):'—')+' · 接駁 '+fmtNum(p.ap/p.apN,1)+' 分</div></div>'; }).join('');
   }
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">載客率=載客時間÷工時,只算整天每趟都有按上下車的日子('+fullDays+' 天)。空檔時間=上一趟下車到下一趟上車(包含等單、開去上車點、等客人'+(cxN?'、被取消的單':'')+'),超過 '+EMPTY_GAP_CAP_MIN+' 分鐘的視為休息不列入,每天第一趟也不算。距離是上下車兩點的直線距離,上下車都有抓到位置的趟次才算。</div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">載客率=載客時間÷工時,只算整天每趟都有按上下車的日子('+fullDays+' 天)。空檔時間=上一趟下車到下一趟上車(包含等單、開去上車點、等客人'+(cxN?'、被取消的單':'')+')。有打卡的日子,按了休息的時間不算;沒打卡的日子,超過 '+EMPTY_GAP_CAP_MIN+' 分鐘的視為休息不列入。每天第一趟也不算。距離是上下車兩點的直線距離,上下車都有抓到位置的趟次才算。</div>';
   if(f && !anDayOnly(f)) h += '<div style="font-size:11px;color:var(--text-muted);margin-top:6px;line-height:1.5">🔎 篩選平台或時段時不算載客率(打卡工時分不出來);其他數字只算符合條件的趟次。</div>';
   h += '</div></div>';
   var hotDays = days, hotKeys = dayKeys;
@@ -11056,12 +11068,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.23.4';
+var APP_VERSION = '2026.11.23.5';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.23.5', '🚕 載客效率:有打卡的日子,按了休息的時間不再算成等單和空檔,平均空檔更接近真正空等的時間', '', {tab:'analytics', find:'🚕 載客效率'}],
   ['2026.11.23.4', '📅 預約單會照各車隊的手續費算了(以前記的也一起重算,所以預約單的實收會比以前少一點);大都會多了「個人錢包」付款;0 月費方案的電子企業簽單不再多扣 6%;🏁 車隊比較把預約單算進那家車隊', '', {tab:'entry', find:'預約單'}],
   ['2026.11.23.3', '🔢 數字更準、更一致:同一天的平均時薪在報告、歷史、分析頁都一樣(上班滿 30 分鐘才算);沒打卡那天的錢不再把時薪拉高;前 7 天改成比前 7 個營業日;月底預測早上看也準;月中的每公里成本、平台手續費率修正', '', {tab:'analytics', find:'效率指標'}],
   ['2026.11.23.1', '🛡️ 備份更安心:載客太久會提醒是不是忘了按下車,可以補記實際下車時間;備份檔不再帶著雲端同步網址(傳給別人也看不到)', '', {set:'cloud'}],
