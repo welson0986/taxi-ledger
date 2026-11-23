@@ -87,7 +87,7 @@ function inBox(k, la, lo) { const b = CITIES[k].box; return la != null && lo != 
 // 同一個座標（小數 4 位）被這麼多筆不同通報共用 → 當成「位置不確定」：座標不給（App 不顯示「看路況」），也不推播。
 const DEFAULT_PT_MIN = 8;
 // 交通部 TDX 會轉載警廣的通報（機關代碼 A15030000H，來源寫「警廣」）：內容跟我們直接讀的警廣一樣，
-// 但沒有區名、熱心聽眾變成像官方、更新時間被刷新、座標也是預設的 → 不收（2026-11-22 威爾森同意）
+// 但沒有區名、熱心聽眾變成像官方、更新時間被刷新、座標也是預設的 → 不收（2026-11-22 Welson 同意）
 const PBS_AGENCY = 'A15030000H';
 function isPbsCopy(x) { return String((x && x.EventID) || '').indexOf(PBS_AGENCY) === 0 || String((x && x.Source) || '').trim() === '警廣'; }
 /* TOWN_NAMES_START（tools/make_town_data.mjs 產生，不要手改）*/
