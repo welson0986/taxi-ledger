@@ -4,14 +4,14 @@
 // 跑車人生 官方路況快報 中繼（Cloudflare Pages Functions）
 // 網址：https://app.realway.com.tw/api/roads?city=tpe,ntpc
 //
-// 做的事：
-//   1. 台北（tpe）、新北（ntpc）：讀排程 Worker 每 3 分鐘存進 KV 的快照，自己不去抓。
-//      快照超過 12 分鐘沒更新（Worker 停了）或還沒設定 KV 時，改回自己抓，App 不會斷。
-//   2. 其他縣市：跟以前一樣，有人來問、手上的資料過期時才去取：
-//      警廣與 TDX 主要城市 3 分鐘、TDX 只有施工／災害的城市 1 小時，放在 Cloudflare 快取。
+// 做的事（2026-11-24 起全縣市都一樣）：
+//   1. 讀排程 Worker 每 3 分鐘存進 KV 的分區資料（北中南東，只讀選的縣市所在的那幾區），自己不去抓。
+//   2. 分區資料超過 12 分鐘沒更新（Worker 停了）、或裡面的警廣太久沒成功時：只自己抓警廣（公開資料、不用點數，
+//      同一台機器 3 分鐘內只抓一次）。**這裡完全不呼叫 TDX**——TDX 點數只由排程 Worker 用，用量固定、可預算，
+//      不會因為使用者變多被燒光。
 //   3. 整理成精簡的 JSON，只回 App 要的城市。App 只送城市代號，不送位置、不送帳本。
-// 金鑰只放在 Cloudflare 的 Secrets（TDX_CLIENT_ID、TDX_CLIENT_SECRET），程式裡沒有。
-// 免費額度：Pages Functions 跟 Workers 共用每天 100,000 次請求；App 每打開一次快報算 1 次。
+// 這裡沒有任何金鑰；也不讀、不寫 TDX Token。
+// 用量：Pages Functions 跟 Workers 同一個付費方案（每月 1,000 萬次請求）；App 每打開一次快報算 1 次、讀 KV 1～2 次。
 
 // ===== 路況共用程式（relay/lib/roads_core.js）=====
 // Pages 中繼（/api/roads、/api/roads-stats）和排程 Worker 都用這一份。
@@ -25,10 +25,19 @@ const FAST = 180, SLOW = 3600, FAIL = 60, TOKEN_TTL = 23 * 3600;
 const DAY = 86400000, MIN = 60000, HOUR = 3600000;
 const TIMEOUT_MS = 12000;
 
-// 雙北由排程 Worker 每 3 分鐘抓好存進 KV；這個 key 是那份快照
+// 2026-11-24 起：排程 Worker 每 3 分鐘抓全國，依縣市分桶，分「北中南東」四區存進 KV（方案丙，Cloudflare 付費方案）。
+//   roads:state:v2      Worker 與統計頁用：各來源健康與全國資料、模擬推播、推播、KV 寫入次數、TDX 點數。網站中繼不讀。
+//   roads:reg:{N,C,S,E}:v2  網站中繼用：那一區縣市的資料（每個來源一段，含最後成功時間）。
+// 舊的 roads:snap:v1（只有雙北）在切換觀察期間照寫，給還沒換新版的網站中繼用；觀察 24 小時後再決定要不要停寫、刪掉。
 const SNAP_KEY = 'roads:snap:v1';
+const STATE_KEY = 'roads:state:v2';
+const REG_KEY = r => 'roads:reg:' + r + ':v2';
 const TOKEN_KEY = 'roads:tdx-token';
+// 模擬推播與真推播只有雙北（本案不擴大推播範圍）
 const SNAP_CITIES = ['tpe', 'ntpc'];
+const REGIONS = { N: ['tpe', 'ntpc', 'tyc', 'kel', 'ila', 'hsz', 'mlc'], C: ['txg', 'chw', 'nto', 'yun'], S: ['cyi', 'tnn', 'khh', 'pif'], E: ['hun', 'ttt'] };
+const REGION_OF = {};
+for (const r in REGIONS) REGIONS[r].forEach(k => { REGION_OF[k] = r; });
 
 // 城市：跟 App「我主要跑」同一套代號。names＝地區欄開頭；box＝[南, 北, 西, 東]（約略範圍，給國道、省道用）；
 // tdx＝要問的 TDX 縣市即時事件與多久問一次
@@ -43,13 +52,13 @@ const CITIES = {
   txg:  { names: ['臺中市', '台中市'], box: [23.99, 24.45, 120.46, 121.45], tdx: [['City/Taichung', FAST]] },
   chw:  { names: ['彰化縣'], box: [23.78, 24.21, 120.23, 120.70], tdx: [] },
   nto:  { names: ['南投縣'], box: [23.44, 24.25, 120.60, 121.35], tdx: [] },
-  yun:  { names: ['雲林縣'], box: [23.50, 23.85, 120.13, 120.75], tdx: [] },
+  yun:  { names: ['雲林縣'], box: [23.44, 23.87, 120.00, 120.75], tdx: [] },   // 11/24 照鄉鎮界線放大（原本 10% 面積在框外）
   cyi:  { names: ['嘉義市', '嘉義縣'], box: [23.20, 23.65, 120.10, 120.90], tdx: [['City/ChiayiCounty', SLOW], ['City/Chiayi', SLOW]] },
   tnn:  { names: ['臺南市', '台南市'], box: [22.88, 23.42, 120.03, 120.66], tdx: [['City/Tainan', FAST]] },
   khh:  { names: ['高雄市'], box: [22.47, 23.47, 120.17, 121.05], tdx: [['City/Kaohsiung', FAST]] },
   pif:  { names: ['屏東縣'], box: [21.89, 22.89, 120.40, 120.92], tdx: [['City/PingtungCounty', FAST]] },
-  hun:  { names: ['花蓮縣'], box: [23.10, 24.38, 121.28, 121.75], tdx: [] },
-  ttt:  { names: ['臺東縣', '台東縣'], box: [22.25, 23.45, 120.75, 121.55], tdx: [] }
+  hun:  { names: ['花蓮縣'], box: [23.10, 24.38, 121.00, 121.78], tdx: [] },   // 11/24 放大（原本 25%：秀林、卓溪、萬榮西邊山區在框外）
+  ttt:  { names: ['臺東縣', '台東縣'], box: [22.00, 23.45, 120.74, 121.60], tdx: [] }   // 11/24 放大（原本 3%：蘭嶼、南端）
 };
 const TDX_ROADS = [['Freeway', FAST], ['Highway', FAST]];
 const TDX_TYPE = { 1: '事故', 2: '道路施工', 3: '阻塞', 4: '交通管制', 5: '其他', 6: '災害', 7: '交通管制', 8: '交通障礙' };
@@ -127,11 +136,24 @@ const PLACE_WORDS = {
   ntpc: ['安坑', '碧潭', '三鶯', '大漢', '環快'],
   tyc: ['南崁', '機場系統', '內壢', '幼獅', '高原', '大湳', '埔心', '航廈', '航站', '桃園機場']
 };
+// 2026-11-24 中南東交流道、地標別名：只放全台確定唯一的，跟區名一樣「收也拿來排除」（寫「高科」的國1 通報不會出現在基隆、新北）
+const ALIAS_WORDS = {
+  khh: ['高科', '鼎金', '五甲', '路科'], tnn: ['大灣', '烏山頭'], chw: ['快官', '漢寶'], nto: ['霧社', '日月潭', '清境'],
+  pif: ['墾丁', '楓港', '大鵬灣'], ttt: ['知本'], hun: ['太魯閣', '七星潭']
+};
+// 這幾個區名（去掉「區鄉鎮」的寫法）別處也常用（新北石門 vs 花蓮台11線石門、台東成功 vs 彰化「成功至快官」、高雄橋頭 vs 一般「橋頭」、
+// 嘉義新港 vs 苗栗台72線「新港路段」）→ 跟 PLACE_WORDS 一樣只用來收、不拿來排除
+const WEAK_STEMS = ['石門', '成功', '橋頭', '新港'];
+// 地名出現在這些字裡面不算（11/24 中南部驗證找到的誤認）：國3「中寮隧道」在高雄、台20「梅山口」在高雄、台61「大安平面」、科技執法、太魯閣號列車
+const NOT_PLACE_IN = ['中寮隧道', '梅山口', '大安平面', '高科技', '太魯閣號'];
+// 地名前一個字是這些就不算：「台28線西向」不是彰化線西
+const NOT_AFTER = { '線西': /[0-9０-９甲乙丙]/ };
 // 區名後面接這些字就是路名、學校、地名，不算（中和路、復興北路、光復橋、觀音山、石門水庫、三民國中）
-const NOT_PLACE = /^[東西南北中一二三四五六七八九十]{0,2}(?:路|街|巷|弄|大道|橋|里|村|國|高|山|水)/;
+// 「路段」不是路名（「北上路竹路段」是路竹那一段，11/24 修正）
+const NOT_PLACE = /^[東西南北中一二三四五六七八九十]{0,2}(?:路(?!段)|街|巷|弄|大道|橋|里|村|國|高|山|水)/;
 let townIdx = null;
 // 每個縣市的區名：全台唯一才算（中山區、信義區、東區好幾個縣市都有，不算）；不帶「區鄉鎮市」的寫法（楊梅、中壢）也算，但後面接路名的不算
-// → { 縣市代號: [{ w: 字, np: 要檢查後面是不是路名 }] }
+// → { 縣市代號: [{ w: 字, np: 要檢查後面是不是路名, weak: 只收不排除 }] }
 function towns() {
   if (townIdx) return townIdx;
   const all = {}, stems = {};
@@ -142,29 +164,53 @@ function towns() {
   });
   townIdx = {};
   for (const t in all) if (all[t].size === 1) { const k = [...all[t]][0]; (townIdx[k] = townIdx[k] || []).push({ w: t }); }
-  for (const s in stems) if (stems[s].size === 1 && s.length >= 2 && !all[s]) { const k = [...stems[s]][0]; (townIdx[k] = townIdx[k] || []).push({ w: s, np: 1 }); }
+  for (const s in stems) if (stems[s].size === 1 && s.length >= 2 && !all[s]) { const k = [...stems[s]][0]; (townIdx[k] = townIdx[k] || []).push(WEAK_STEMS.indexOf(s) >= 0 ? { w: s, np: 1, weak: 1 } : { w: s, np: 1 }); }
   return townIdx;
 }
 // 「往台北」「台北方向」是方向，不是事件在台北（掃描時判斷：「往」後面 4 個字內、或地名後面 4 個字內有「方向」的不算）
 const STOP = /[\s.,，。、:：()（）+＋*~～\-]/;
+// 一個字的所有「不算」例外：[整串, 地名在整串裡的位置]
+function notIn(w) {
+  const out = [];
+  NOT_PLACE_IN.forEach(s => { const o = s.indexOf(w); if (o >= 0) out.push([s, o]); });
+  return out.length ? out : null;
+}
+// 查表用的一筆：w 字、k 縣市、np 後面接路名不算、nx 前一個字是「新」不算（「新北」不是「北市」）、weak 只收不排除、ex 例外、pa 前一個字
+function wordEntry(w, k, np, nx, weak) { return { w, k, np, nx, weak, ex: notIn(w), pa: NOT_AFTER[w] || null }; }
+// 「t 的第 i 個字開始是 p.w」而且算數（scanPlace 與 scanAll 共用，規則只寫一次）
+function wordAt(t, i, p, dir) {
+  if (p.w.length > 2 && !t.startsWith(p.w, i)) return false;
+  if (p.nx && t[i - 1] === '新') return false;
+  if (p.pa && i > 0 && p.pa.test(t[i - 1])) return false;
+  if (p.ex) for (const [s, o] of p.ex) if (i >= o && t.startsWith(s, i - o)) return false;
+  if (p.np && NOT_PLACE.test(t.substr(i + p.w.length, 4))) return false;
+  if (i <= dir || t.substr(i + p.w.length, 4).indexOf('方向') >= 0) return false;
+  return true;
+}
+// 每個縣市要認的字（weak＝只收不排除，其他＝收也排除）
+function wordsOf(k) {
+  const T = towns(), out = [];
+  COUNTY_WORDS[k].forEach(w => out.push(wordEntry(w, k, 0, k === 'tpe' ? 1 : 0, 0)));
+  (T[k] || []).forEach(t => out.push(wordEntry(t.w, k, t.np || 0, 0, t.weak || 0)));
+  (ALIAS_WORDS[k] || []).forEach(w => out.push(wordEntry(w, k, 0, 0, 0)));
+  (PLACE_WORDS[k] || []).forEach(w => out.push(wordEntry(w, k, 0, 0, 1)));
+  return out;
+}
+function addWord(m, p, extra) { const h = p.w.charCodeAt(0) * 65536 + p.w.charCodeAt(1); m.first[p.w.charCodeAt(0)] = 1; if (!m.has(h)) m.set(h, []); m.get(h).push(Object.assign({}, p, extra)); }
 const placeCache = new Map();
-// sel 選的城市 → 用「前兩個字」查的表：{ 兩個字的字碼: [{ w, own, np, nx }] }（一個大 regex 每筆要 7 µs，Worker CPU 不夠）
-// own＝選的城市代號（別的縣市是 null）；np＝後面接路名不算；nx＝前一個字是「新」不算（「新北」不是「北市」）。
+// sel 選的城市 → 用「前兩個字」查的表：{ 兩個字的字碼: [{ w, own, … }] }（一個大 regex 每筆要 7 µs，Worker CPU 不夠）
+// own＝選的城市代號（別的縣市是 null）。只收不排除的字（weak）只有選的城市才放。
 // first：第一個字有沒有可能是地名開頭（大部分的字不是，直接跳過）；memo：同一筆算過就記在這個 Symbol 欄位（不會寫進快照 JSON）
 // Worker 同一台機器會重複用
 function placeMap(sel) {
   const key = sel.slice().sort().join(',');
   let m = placeCache.get(key);
   if (m) return m;
-  const T = towns();
   m = new Map();
   m.first = new Uint8Array(65536); m.memo = Symbol(key);
-  const add = (w, own, np, nx, k) => { const h = w.charCodeAt(0) * 65536 + w.charCodeAt(1); m.first[w.charCodeAt(0)] = 1; if (!m.has(h)) m.set(h, []); m.get(h).push({ w, own: own ? k : null, np, nx }); };
   for (const k in COUNTY_WORDS) {
     const own = sel.indexOf(k) >= 0;
-    COUNTY_WORDS[k].forEach(w => add(w, own, 0, k === 'tpe' ? 1 : 0, k));
-    (T[k] || []).forEach(t => add(t.w, own, t.np, 0, k));
-    if (own && PLACE_WORDS[k]) PLACE_WORDS[k].forEach(w => add(w, true, 0, 0, k));
+    wordsOf(k).forEach(p => { if (own || !p.weak) addWord(m, p, { own: own ? k : null }); });
   }
   placeCache.set(key, m);
   return m;
@@ -191,17 +237,19 @@ function scanPlace(t, m) {
     const list = m.get(t.charCodeAt(i) * 65536 + t.charCodeAt(i + 1));
     if (!list) continue;
     for (const p of list) {
-      if (p.w.length > 2 && !t.startsWith(p.w, i)) continue;
-      if (p.nx && t[i - 1] === '新') continue;
-      if (p.np && NOT_PLACE.test(t.substr(i + p.w.length, 4))) continue;
-      if (i <= dir || t.substr(i + p.w.length, 4).indexOf('方向') >= 0) continue;
+      if (!wordAt(t, i, p, dir)) continue;
       if (p.own) return p.own;   // 選的城市代號
       other = true;
     }
   }
   return other ? 'other' : null;
 }
-function boxHit(sel, e) { const la = e.uc ? e.qa : e.la, lo = e.uc ? e.qo : e.lo; return sel.some(k => inBox(k, la, lo)); }
+// 警廣的預設座標如果整點落在別的縣市框裡，用這張表指定它其實是哪個縣市（11/24：台中市區通報的預設點在彰化框裡）
+// 用原始座標字串（y1,x1）比
+const DEFAULT_PT_CITY = { '24.2,120.52': 'txg' };
+// 篩選用的座標：位置不確定的用預設座標（qa／qo），預設點有指定縣市（qc）的只算那個縣市
+function boxOf(k, e) { return e.uc ? (e.qc ? e.qc === k : inBox(k, e.qa, e.qo)) : inBox(k, e.la, e.lo); }
+function boxHit(sel, e) { return sel.some(k => boxOf(k, e)); }
 // 這一筆屬不屬於選的城市：
 //   地區欄有縣市（「桃園市-楊梅區」）→ 看縣市。
 //   沒有（國道、省道、路名）→ 說明寫了選的城市就收、只寫了別的縣市就不收；都沒寫 → 看座標落在城市範圍內
@@ -215,6 +263,47 @@ function cityHit(e, sel, m) {
 // 先用便宜的條件篩（警廣每輪 1000 筆，整理文字前先丟掉明顯不要的）：有縣市看縣市；位置不確定的都要看文字；其他要落在範圍內
 function prePick(sel) { return e => e.c ? sel.indexOf(e.c) >= 0 : (e.uc || boxHit(sel, e)); }
 function picker(sel) { const pre = prePick(sel), m = placeMap(sel), f = e => pre(e) && cityHit(e, sel, m); f.pre = pre; return f; }
+
+// ---------- 全國一次分桶（2026-11-24）----------
+// 結果跟「每個縣市各跑一次 picker([k])」完全一樣（測試逐筆比對），但說明文字只掃一次：
+// 掃的時候記下寫到哪些縣市（會排除的、只收的分開記），再對 17 個縣市一次判斷。
+const CITY_KEYS = Object.keys(CITIES);
+const CBIT = {}; Object.keys(COUNTY_WORDS).forEach((k, i) => { CBIT[k] = 1 << i; });   // 17 縣市＋澎金馬（別的縣市也要認）
+let allWords = null;
+function allPlaceMap() {
+  if (allWords) return allWords;
+  const m = new Map(); m.first = new Uint8Array(65536);
+  for (const k in COUNTY_WORDS) wordsOf(k).forEach(p => addWord(m, p, { b: CBIT[k] }));
+  return (allWords = m);
+}
+function scanAll(t) {
+  const m = allPlaceMap(), first = m.first;
+  let dir = -1, strong = 0, weak = 0;
+  for (let i = 0; i < t.length - 1; i++) {
+    if (t[i] === '往') { dir = i + 4; continue; }
+    if (i <= dir && STOP.test(t[i])) dir = -1;
+    if (!first[t.charCodeAt(i)]) continue;
+    const list = m.get(t.charCodeAt(i) * 65536 + t.charCodeAt(i + 1));
+    if (!list) continue;
+    for (const p of list) if (wordAt(t, i, p, dir)) { if (p.weak) weak |= p.b; else strong |= p.b; }
+  }
+  return [strong, weak];
+}
+// 這一筆屬於哪些縣市（代號清單，可能 0 個、1 個或好幾個）
+function cityList(e) {
+  if (e.c) return CITIES[e.c] ? [e.c] : [];
+  let boxes = 0;
+  for (const k of CITY_KEYS) if (boxOf(k, e)) boxes |= CBIT[k];
+  if (!boxes && !e.uc) return [];
+  const sw = scanAll(placeText(e)), strong = sw[0], weak = sw[1], out = [];
+  for (const k of CITY_KEYS) {
+    const b = CBIT[k];
+    if (!e.uc && !(boxes & b)) continue;              // 跟 prePick 一樣：不是位置不確定的，要先落在範圍內
+    if ((strong | weak) & b) out.push(k);              // 寫到這個縣市
+    else if (!strong && (boxes & b)) out.push(k);      // 沒寫到任何會排除的縣市 → 看座標
+  }
+  return out;
+}
 function num(v) { const n = parseFloat(v); return isFinite(n) ? n : null; }
 // TDX 的點位字串格式沒有公開範例：找第一組「經度 118～123、緯度 21～27」的數字，順序不拘
 function lonLat(s) {
@@ -258,8 +347,9 @@ function defaultPoints(result) {
   for (const k in n) if (n[k] >= DEFAULT_PT_MIN) out[k] = n[k];
   return out;
 }
+// pick＝'all'：全國都整理，每筆加上 cs（屬於哪些縣市），一個縣市都不屬於的不留（排程 Worker 用）
 function parsePbs(text, now, pick) {
-  const d = JSON.parse(text), list = [], res = (d && d.result) || [], dflt = defaultPoints(res);
+  const d = JSON.parse(text), list = [], res = (d && d.result) || [], dflt = defaultPoints(res), all = pick === 'all';
   res.forEach(x => {
     const m = twTime(x.modDttm) || twTime((x.happendate || '') + ' ' + (x.happentime || ''));
     if (!m || !x.UID) return;
@@ -267,7 +357,17 @@ function parsePbs(text, now, pick) {
     if (!freshItem({ ty, m }, now)) return;
     const it = { id: 'p' + x.UID, s: 'pbs', ty, la: r5(num(x.y1)), lo: r5(num(x.x1)), m: m, c: cityOfName(x.areaNm) };
     // 位置不確定：座標不給 App（qa／qo 只給篩選看範圍，回給 App 前拿掉）
-    if (dflt[ptKey(x.y1, x.x1)]) { it.uc = 1; it.qa = it.la; it.qo = it.lo; it.la = it.lo = null; }
+    if (dflt[ptKey(x.y1, x.x1)]) { it.uc = 1; it.qa = it.la; it.qo = it.lo; it.la = it.lo = null; const qc = DEFAULT_PT_CITY[ptKey(x.y1, x.x1)]; if (qc) it.qc = qc; }
+    if (all) {
+      // 全國：沒有縣市的先用原始文字分桶，一個縣市都不屬於就不用整理；整理後再分一次，兩次都有的才算（跟以前「Worker 用原始文字、網站用整理過的文字」各篩一次一樣）
+      let cs0 = null;
+      if (!it.c) { it.tx = String(x.comment || ''); it.so = String(x.srcdetail || ''); cs0 = cityList(it); if (!cs0.length) return; }
+      it.ar = cleanText(x.areaNm).slice(0, 60); it.tx = cleanText(x.comment); it.so = cleanText(x.srcdetail).slice(0, 40); it.di = cleanText(x.direction).slice(0, 10);
+      if (isTestItem(it.ar, it.tx)) return;
+      it.cs = cs0 ? cityList(it).filter(k => cs0.indexOf(k) >= 0) : cityList(it);
+      if (it.cs.length) list.push(it);
+      return;
+    }
     if (pick && pick.pre && !pick.pre(it)) return;
     // 沒有縣市的先用原始文字判斷要不要（認地名不需要整理過的文字），不要的就不用整理
     if (pick && !it.c) { it.tx = String(x.comment || ''); it.so = String(x.srcdetail || ''); if (!pick(it)) return; }
@@ -308,13 +408,16 @@ async function fetchTdxToken(env) {
   if (!j.access_token) throw new Error('token none');
   return j.access_token;
 }
-// 回 { status, json }；400 時改取全部欄位（欄位名稱不被接受時）
+// 回 { status, json, calls, bytes }；400 時改取全部欄位（欄位名稱不被接受時）
+// calls／bytes 給 TDX 點數估算用（bytes 是解壓後的大小，比 TDX 實際計的只多不少）
 async function fetchTdxRaw(ep, tk) {
   const head = { 'Authorization': 'Bearer ' + tk, 'Accept': 'application/json', 'Accept-Encoding': 'gzip' };
+  let calls = 1;
   let res = await get(TDX_BASE + ep + '?%24select=' + encodeURIComponent(TDX_SELECT) + '&%24format=JSON', { headers: head });
-  if (res.status === 400) res = await get(TDX_BASE + ep + '?%24format=JSON', { headers: head });
-  if (!res.ok) return { status: res.status, json: null };
-  return { status: res.status, json: await res.json() };
+  if (res.status === 400) { calls++; res = await get(TDX_BASE + ep + '?%24format=JSON', { headers: head }); }
+  if (!res.ok) return { status: res.status, json: null, calls, bytes: 0 };
+  const buf = await res.arrayBuffer();
+  return { status: res.status, json: JSON.parse(new TextDecoder().decode(buf)), calls, bytes: buf.byteLength };
 }
 function tdxArea(L) {
   L = L || {};
@@ -356,6 +459,8 @@ function parseTdx(d, cityKey, now, pick) {
   });
   return keepNewest(list);
 }
+// 每筆加上 cs（屬於哪些縣市），一個縣市都不屬於的不留（TDX 全國分桶用）
+function withCities(list) { return list.filter(it => (it.cs = cityList(it)).length > 0); }
 // 要問哪些 TDX 網址：{ 'City/Taipei': [多久一次, 城市代號或 null], ... }
 function tdxWant(sel) {
   const want = {};
@@ -364,6 +469,19 @@ function tdxWant(sel) {
   return want;
 }
 
+// ---------- TDX 點數（銅級每月 200 點；預算預設 120 點；Worker 與統計頁共用）----------
+// 點數＝呼叫次數 ÷ 1,500 ＋ 資料量(MB) ÷ 150（11/23 對過會員中心的數字）
+const TDX_BUDGET_DEFAULT = 120;
+function tdxPoints(u) { return u ? u.calls / 1500 + u.bytes / 1e6 / 150 : 0; }
+function tdxBudget(env) { const b = parseFloat(env && env.TDX_BUDGET); return b > 0 ? b : TDX_BUDGET_DEFAULT; }
+// 'off'＝手動停用（Cloudflare 變數 TDX_OFF=1）；'pause'＝本月已用 95%，暫停 TDX 只抓警廣；'slow'＝已用 85%，每 3 分鐘的改成每小時
+function tdxMode(env, u) {
+  if (String((env && env.TDX_OFF) || '').trim() === '1') return 'off';
+  const pts = tdxPoints(u), b = tdxBudget(env);
+  if (pts >= 0.95 * b) return 'pause';
+  if (pts >= 0.85 * b) return 'slow';
+  return 'normal';
+}
 // ---------- 警廣＋TDX 合併（跟 App 的 rnMerge 同一套）----------
 // 300 公尺內、更新時間差 30 分鐘內、同一類、不同來源 → 同一件
 const GROUP = { '事故': 'acc', '阻塞': 'jam', '道路施工': 'work', '交通管制': 'ctl' };
@@ -432,217 +550,12 @@ function twDay(ms) { return new Date(ms + 8 * HOUR).toISOString().slice(0, 10); 
 function twHour(ms) { return new Date(ms + 8 * HOUR).getUTCHours(); }
 function twHm(ms) { return ms ? new Date(ms + 8 * HOUR).toISOString().slice(11, 16) : '—'; }
 
-// ===== 「只記錄不推播」模擬（relay/lib/alert_sim.js）=====
-// 每輪照定案規格第三節的規則算「如果現在推，會推什麼」，只記在統計裡，不推給任何人。
-// 模擬一位「雙北司機」：台北＋新北都勾、一直在上班、沒設不打擾時段（每小時的數字可以自己對照上班時段看）。
-
-const FRESH_MS = 15 * MIN;          // 新鮮：來源更新時間在 15 分鐘內
-const GAP_MS = 10 * MIN;            // 每位司機 10 分鐘最多 1 批
-const DAY_CAP = 5;                  // 每天最多 5 批
-const BASELINE_GAP = 15 * MIN;      // 隔這麼久沒跑（剛上線、服務恢復）→ 先把現有的記為已看過，不推
-const KEEP_DAYS = 8;
-const STAGE = { major: 2, acc: 1, gen: 0, work: 0, done: 0 };
-
-const WHY_NAMES = {
-  baseline: '啟動基準（剛開始或服務恢復，現有的先記為已看過）',
-  stale: '不新鮮（來源更新超過 15 分鐘）',
-  listener: '只有熱心聽眾（列「待確認」，不推）',
-  uc: '位置不確定（警廣預設座標，不推）',
-  neg: '有「解除、未、預計、明日、今晚、預告」等字眼',
-  aux: '只有火災、翻覆、多車等字，沒有寫到影響行車',
-  workClose: '施工封路（列重大候選，不推）',
-  tenMin: '10 分鐘內已推過一批（只更新摘要）',
-  dayCap: '今天已滿 5 批（只更新摘要）'
-};
-
-function newDay() {
-  return { runs: 0, fails: { pbs: 0, tdx: 0 }, batches: 0, events: 0, hours: new Array(24).fill(0), cand: [], peak: { n: 0, at: 0 },
-    why: { baseline: 0, stale: 0, listener: 0, uc: 0, neg: 0, aux: 0, workClose: 0, tenMin: 0, dayCap: 0 }, dups: 0, cleared: 0, cleared60: 0, samples: [], negs: [] };
-}
-function short(e) { return ((e.ar ? e.ar + '｜' : '') + (e.tx || e.tx2 || '')).slice(0, 60); }
-
-// state：上一輪留下的 { lastRun, seen, drv, days }；events：這一輪「有新抓到」的來源合併後的事件
-// base：這一輪剛恢復的來源（{pbs:true} 之類），只來自這些來源的事件當成啟動基準
-function simulate(state, events, now, base) {
-  state = state || {};
-  const seen = state.seen || (state.seen = {});
-  const days = state.days || (state.days = {});
-  const today = twDay(now);
-  const day = days[today] || (days[today] = newDay());
-  const startup = !state.lastRun || now - state.lastRun > BASELINE_GAP;
-  base = base || {};
-  day.runs++;
-
-  const once = (ids, why, e) => {
-    if (ids.some(id => seen[id] && seen[id].w && seen[id].w.indexOf(why) >= 0)) return;
-    day.why[why] = (day.why[why] || 0) + 1;   // 新加的原因（例如 uc）在升級當天的舊統計裡還沒有這一格
-    ids.forEach(id => { if (seen[id]) (seen[id].w = seen[id].w || []).push(why); });
-    if (why === 'neg') { day.negs.push({ at: now, tx: short(e) }); if (day.negs.length > 10) day.negs.shift(); }
-  };
-
-  const cands = [];
-  events.forEach(e => {
-    const ids = e.ids || [e.id];
-    let prev = -1;
-    ids.forEach(id => { if (seen[id] && seen[id].st > prev) prev = seen[id].st; });
-    const c = classify(e), stage = STAGE[c.lv];
-    if (prev < 0 && e.srcs.length > 1) day.dups++;
-    ids.forEach(id => {
-      const s = seen[id] || (seen[id] = { st: -1, f: now });
-      s.st = Math.max(s.st, stage, prev); s.l = now;
-    });
-    if (c.lv === 'done') {
-      // 推過之後被標成已排除：算「已排除仍被選中」
-      const p = ids.map(id => seen[id]).find(s => s.p && !s.cl);
-      if (p) { day.cleared++; if (now - p.p <= 60 * MIN) day.cleared60++; ids.forEach(id => { seen[id].cl = 1; }); }
-      return;
-    }
-    if (c.why) once(ids, c.why, e);
-    if (c.lv !== 'major' || prev >= 2) return;
-    // 位置不確定（警廣預設座標、說明裡也沒寫在哪個縣市以外）：清單照列，推播只推位置可信的
-    if (e.uc && !e.c) return once(ids, 'uc', e);
-    if (startup || e.srcs.every(s => base[s])) return once(ids, 'baseline', e);
-    if (now - e.m > FRESH_MS) return once(ids, 'stale', e);
-    cands.push({ e, ids });
-  });
-
-  if (cands.length) {
-    cands.sort((a, b) => b.e.m - a.e.m);
-    cands.forEach(() => day.cand.push(now));
-    // 最密集的 10 分鐘（推播限制之前的候選數）
-    for (let i = 0, j = 0; i < day.cand.length; i++) {
-      while (day.cand[i] - day.cand[j] >= GAP_MS) j++;
-      if (i - j + 1 > day.peak.n) day.peak = { n: i - j + 1, at: day.cand[j] };
-    }
-    const drv = state.drv || (state.drv = { day: today, n: 0, last: 0 });
-    if (drv.day !== today) { drv.day = today; drv.n = 0; }
-    if (drv.last && now - drv.last < GAP_MS) cands.forEach(c => once(c.ids, 'tenMin', c.e));
-    else if (drv.n >= DAY_CAP) cands.forEach(c => once(c.ids, 'dayCap', c.e));
-    else {
-      drv.last = now; drv.n++;
-      day.batches++; day.events += cands.length; day.hours[twHour(now)]++;
-      cands.forEach(c => c.ids.forEach(id => { seen[id].p = now; }));
-      day.samples.push({ at: now, main: short(cands[0].e), more: cands.length - 1 });
-      if (day.samples.length > 30) day.samples.shift();
-    }
-  }
-
-  // 整理：2 天沒再出現的事件忘掉；統計留 8 天
-  for (const id in seen) if (now - (seen[id].l || 0) > 2 * DAY) delete seen[id];
-  Object.keys(days).sort().slice(0, -KEEP_DAYS).forEach(k => { delete days[k]; });
-  state.lastRun = now;
-  // push：這一輪「新變成重大、而且新鮮」的事件（還沒套虛擬司機的 10 分鐘、每天 5 批）；真推播（push.js）對每位司機各自再套一次
-  return { state, day, cands: cands.length, push: cands.map(c => c.e) };
-}
-
-// ===== 抓一輪雙北＋寫快照＋只記錄不推播（relay/lib/refresh.js）=====
-// 兩個地方會跑這一輪：
-//   1. 排程（每 3 分鐘）：paoche-roads-cron 叫 paoche-roads-worker（指定在台灣機房跑）去抓。
-//   2. 備援：有司機打開 App、快照裡的警廣超過 5 分鐘沒更新時，網站中繼順便跑一輪（網站一定在司機附近的機房）。
-// KV 寫入：每輪只寫 1 次快照＋TDX Token 約每天 1 次；同一天寫到 900 次就停寫（免費上限 1,000）。
-
-const WRITE_CAP = 900;
-const SLACK = 30 * 1000;          // 排程時間會有幾秒誤差，提早 30 秒也算到期
-const TOKEN_RETRY = 30 * MIN;     // 要 Token 失敗後 30 分鐘內不再向 TDX 要（被擋 429 時越要越擋）；這段時間每輪仍會看 KV 有沒有網站分享的
-const APP_REFRESH_AFTER = 5 * MIN;   // 快照裡警廣超過這麼久沒成功 → 有人打開 App 時網站補抓
-const APP_REFRESH_GAP = 3 * MIN;     // 網站補抓之間至少隔這麼久
-
-async function snapTdxToken(env, now, force, cnt, snap) {
-  if (!force) { const tk = await readToken(env.ROADS_KV, now); if (tk && tk !== snap.badTk) return tk; }
-  if (snap.tkFail && now - snap.tkFail.at < TOKEN_RETRY) throw new Error(snap.tkFail.err + ' wait');
-  let tk;
-  try { tk = await fetchTdxToken(env); } catch (e) { snap.tkFail = { at: now, err: errText(e) }; throw e; }
-  snap.tkFail = null;
-  if (cnt.ok()) await saveToken(env.ROADS_KV, tk, now);
-  return tk;
-}
-
-// opts：by＝'cron' 或 'app'；colo＝在哪個機房跑（只是記下來看）；pbsWait＝警廣等幾毫秒；
-//       load＝{ pbs(), tdx(ep, cityKey) } 換掉預設的抓法（網站用它已經抓好、快取著的資料，不重抓）
-async function runOnce(env, now, opts) {
-  opts = opts || {};
-  const kv = env.ROADS_KV;
-  if (!kv) throw new Error('no ROADS_KV');
-  let snap = null;
-  try { snap = await kv.get(SNAP_KEY, 'json'); } catch (e) {}
-  if (!snap || snap.v !== 1) snap = { v: 1, at: 0, runs: 0, src: {}, sim: {}, w: { day: '', n: 0 } };
-  const today = twDay(now);
-  if (snap.w.day !== today) snap.w = { day: today, n: 0 };
-  const cnt = { ok: () => snap.w.n < WRITE_CAP && ++snap.w.n > 0 };
-  const pick = picker(SNAP_CITIES);
-
-  // 這輪要抓哪些
-  const tdxOn = !!(env.TDX_CLIENT_ID && env.TDX_CLIENT_SECRET);
-  const want = { pbs: [FAST, null] };
-  if (tdxOn) Object.assign(want, tdxWant(SNAP_CITIES));
-  for (const k in snap.src) if (!want[k]) delete snap.src[k];   // 拿掉金鑰後，舊的 TDX 資料不再留
-  const due = Object.keys(want).filter(k => { const s = snap.src[k]; return !s || !s.ok || !s.okAt || now - s.okAt >= want[k][0] * 1000 - SLACK; });
-
-  // 恢復判斷要看抓之前的狀態
-  const downLong = {};
-  due.forEach(k => { const s = snap.src[k]; downLong[k] = !!(s && s.okAt && now - s.okAt > 15 * MIN && !s.ok); });
-
-  // 幾個網址同時要 Token：只取一次；過期（401）時也只重取一次
-  let tkP = null, forced = null;
-  const token = force => force ? (forced || (forced = tkP = snapTdxToken(env, now, true, cnt, snap))) : (tkP || (tkP = snapTdxToken(env, now, false, cnt, snap)));
-  const load = opts.load || {
-    pbs: async () => parsePbs(await fetchPbs(opts.pbsWait), now, pick),
-    tdx: async (k, cityKey) => {
-      const tk0 = await token(false);
-      let r = await fetchTdxRaw(k, tk0);
-      if (r.status === 401) { snap.badTk = tk0; r = await fetchTdxRaw(k, await token(true)); }   // Token 過期：重取一次
-      if (!r.json) throw new Error('tdx ' + r.status);
-      return parseTdx(r.json, cityKey, now, pick);
-    }
-  };
-  const results = await Promise.all(due.map(async k => {
-    try {
-      const items = k === 'pbs' ? await load.pbs() : await load.tdx(k, want[k][1]);
-      return { k, items: items.filter(pick) };
-    } catch (e) { return { k, err: errText(e) }; }
-  }));
-
-  const fresh = {}, base = {};
-  results.forEach(r => {
-    const old = snap.src[r.k] || {};
-    if (r.err) { snap.src[r.k] = { ok: false, at: now, okAt: old.okAt || null, err: r.err, fails: (old.fails || 0) + 1, items: old.items || [], by: opts.by || null }; return; }
-    snap.src[r.k] = { ok: true, at: now, okAt: now, err: null, fails: 0, items: r.items, by: opts.by || null };
-    fresh[r.k] = true;
-    if (!old.okAt || downLong[r.k]) base[r.k === 'pbs' ? 'pbs' : 'tdx'] = true;
-  });
-
-  // 只記錄不推播：只用「這輪抓到的」和「還在有效期內」的來源，不從失敗來源的舊資料產生新提醒
-  let items = [];
-  for (const k in snap.src) {
-    const s = snap.src[k];
-    if (s.ok && (fresh[k] || now - s.okAt < want[k][0] * 1000 + 10 * MIN)) items = items.concat(s.items);
-  }
-  const r = simulate(snap.sim, mergeSources(items), now, { pbs: !!base.pbs, tdx: !!base.tdx });
-  snap.sim = r.state;
-  // 真推播（乙批）：只有綁了 D1 的那支（paoche-roads-worker）會推；網站的備援輪沒有 push.js，也沒綁 D1，不推。
-  // 推播出錯絕不影響快照
-  if (env.PUSH_DB && typeof pushRound === 'function') {
-    try { snap.push = await pushRound(env, r.push, now, snap.push); } catch (e) { snap.push = snap.push || null; if (snap.push && snap.push.days && snap.push.days[today]) snap.push.days[today].err = errText(e); }
-  }
-  results.forEach(x => { if (x.err) r.day.fails[x.k === 'pbs' ? 'pbs' : 'tdx']++; });
-  const by = opts.by === 'app' ? 'app' : 'cron';
-  r.day.by = r.day.by || { cron: 0, app: 0 };
-  r.day.by[by]++;
-
-  snap.at = now; snap.runs++; snap.tdxOn = tdxOn;
-  snap.last = { by, colo: opts.colo ? String(opts.colo).replace(/[^A-Za-z0-9]/g, '').slice(0, 8) : null, at: now };
-  if (by === 'app') snap.pg = now;
-  if (!cnt.ok()) return { wrote: false, due, snap };
-  await kv.put(SNAP_KEY, JSON.stringify(snap));
-  return { wrote: true, due, snap };
-}
-
 // ===== 主程式 =====
 // 只接受這些來源的網頁讀取：網站、舊網址、App（Android／iOS 的內建網頁）
 const ORIGINS = ['https://app.realway.com.tw', 'https://welson0986.github.io', 'https://localhost', 'capacitor://localhost', 'http://localhost'];
-const SNAP_MAX_AGE = 12 * MIN;
+const REG_MAX_AGE = 12 * MIN;
 
-// ---------- 快取：這台伺服器的記憶體＋Cloudflare 快取 ----------
+// ---------- 快取：這台伺服器的記憶體＋Cloudflare 快取（只給備援的警廣用）----------
 const mem = new Map(), inflight = new Map();
 async function cached(key, ttl, load) {
   const now = Date.now(), m = mem.get(key);
@@ -659,7 +572,7 @@ async function cached(key, ttl, load) {
       }
     } catch (e) {}
   }
-  if (inflight.has(key)) return inflight.get(key);
+  if (inflight.has(key)) return inflight.get(key);   // 同一台機器同時只抓一次
   const p = (async () => {
     let val, life;
     try { val = await load(); life = ttl; } catch (e) { val = { ok: false, at: Date.now(), err: String(e && e.message || e).slice(0, 80) }; life = FAIL; }
@@ -673,97 +586,19 @@ async function cached(key, ttl, load) {
   inflight.set(key, p);
   try { return await p; } finally { inflight.delete(key); }
 }
-function forget(key) {
-  mem.delete(key);
-  if (typeof caches !== 'undefined' && caches.default) { try { return caches.default.delete(new Request('https://roads-relay.cache/' + encodeURIComponent(key))); } catch (e) {} }
-}
+// 備援：全國警廣（跟 Worker 同一套分桶，每筆帶 cs）
+async function loadPbs() { return { ok: true, at: Date.now(), items: parsePbs(await fetchPbs(), Date.now(), 'all') }; }
 
-// ---------- 自己抓（其他縣市；快照不能用時雙北也走這裡）----------
-async function loadPbs() { return { ok: true, at: Date.now(), items: parsePbs(await fetchPbs(), Date.now()) }; }
-// Token 先看 KV 裡有沒有（排程 Worker 或別台中繼拿過的），沒有才向 TDX 要，要到也放進 KV 給大家用
-let badTk = null, shared = false;
-async function tdxToken(env) {
-  const v = await cached('tdx-token', TOKEN_TTL, async () => {
-    const now = Date.now(), kvTk = await readToken(env.ROADS_KV, now);
-    if (kvTk && kvTk !== badTk) return { ok: true, at: now, tk: kvTk };
-    const tk = await fetchTdxToken(env);
-    await saveToken(env.ROADS_KV, tk, now);
-    return { ok: true, at: now, tk };
-  });
-  if (!(v && v.ok)) throw new Error((v && v.err) || 'token');   // 把真正原因（例如 token 401）往上傳
-  // 手上這張是快取裡的（KV 還沒有）→ 分享進 KV 給排程用（2026-11-20：排程一直要 Token 被 TDX 擋 429）
-  if (!shared && env.ROADS_KV && v.tk !== badTk && Date.now() - v.at < TOKEN_TTL * 1000) {
-    shared = true;
-    if (!(await readToken(env.ROADS_KV, Date.now()))) await saveToken(env.ROADS_KV, v.tk, v.at);
-  }
-  return v.tk;
-}
-async function loadTdx(ep, env, cityKey) {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const tk = await tdxToken(env), r = await fetchTdxRaw(ep, tk);
-    if (r.status === 401 && attempt === 0) { badTk = tk; await forget('tdx-token'); continue; }
-    if (!r.json) throw new Error('tdx ' + r.status);
-    return { ok: true, at: Date.now(), items: parseTdx(r.json, cityKey, Date.now()) };
-  }
-  throw new Error('tdx 401');
-}
-async function live(sel, env) {
-  const tdxOn = !!(env.TDX_CLIENT_ID && env.TDX_CLIENT_SECRET);
-  const jobs = [cached('pbs', FAST, loadPbs)];
-  if (tdxOn) {
-    const want = tdxWant(sel);
-    for (const ep in want) jobs.push(cached('tdx:' + ep, want[ep][0], () => loadTdx(ep, env, want[ep][1])));
-  }
-  const got = await Promise.all(jobs), pbs = got[0], tdx = got.slice(1), pick = picker(sel);
-  let items = [];
-  got.forEach(g => { if (g && g.ok) items = items.concat(g.items.filter(pick)); });
-  return {
-    items,
-    pbs: { ok: !!(pbs && pbs.ok), at: pbs && pbs.ok ? pbs.at : null },
-    tdx: tdx.map(g => ({ ok: !!(g && g.ok), at: g && g.ok ? g.at : null, err: g && !g.ok ? errText(g.err) : null })),
-    tdxOn
-  };
-}
-
-// ---------- 讀快照（台北、新北）----------
-async function readSnapRaw(env) {
+// ---------- 讀分區 ----------
+async function readReg(env, r) {
   if (!env.ROADS_KV) return null;
-  try { const s = await env.ROADS_KV.get(SNAP_KEY, { type: 'json', cacheTtl: 60 }); return s && s.v === 1 ? s : null; } catch (e) { return null; }
+  try { const s = await env.ROADS_KV.get(REG_KEY(r), { type: 'json', cacheTtl: 60 }); return s && s.v === 2 ? s : null; } catch (e) { return null; }
 }
-function usableSnap(s, now) { return s && s.at && now - s.at <= SNAP_MAX_AGE ? s : null; }   // Worker 停了 → 自己抓
-
-// ---------- 備援：有人打開 App、快照裡的警廣太久沒更新 → 順便跑一輪寫快照（用剛剛抓好、快取著的資料，不重抓）----------
-let refreshing = false;
-function needRefresh(raw, now) {
-  if (!raw) return true;
-  const pbsAt = (raw.src && raw.src.pbs && raw.src.pbs.okAt) || 0;
-  return now - pbsAt > APP_REFRESH_AFTER && now - (raw.pg || 0) > APP_REFRESH_GAP;
-}
-function pagesLoad(env) {
-  const want = tdxWant(SNAP_CITIES);
-  const use = g => { if (!(g && g.ok)) throw new Error((g && g.err) || 'fail'); return g.items; };
-  return {
-    pbs: async () => use(await cached('pbs', FAST, loadPbs)),
-    tdx: async (ep, cityKey) => use(await cached('tdx:' + ep, want[ep][0], () => loadTdx(ep, env, cityKey)))
-  };
-}
-// 一個來源在快照裡的狀態：上一輪失敗但還有上次成功的資料 → 照樣給，標 stale（App 會寫「先顯示 hh:mm 的」）
-function snapSrc(s, period, now) {
+// 一個來源在分區裡的狀態：上一輪失敗但還有上次成功的資料 → 照樣給，標 stale（App 會寫「先顯示 hh:mm 的」）
+function snapSrc(s, now) {
   if (!s || !s.okAt) return { ok: false, at: null, stale: false, use: false, err: s && s.err };
-  const use = now - s.okAt <= period * 1000 + HOUR;
+  const use = now - s.okAt <= (s.p || FAST) * 1000 + HOUR;
   return { ok: use, at: s.okAt, stale: use && !s.ok, use, err: s.ok ? null : s.err };
-}
-function fromSnap(snap, sel, now) {
-  const pick = picker(sel), want = tdxWant(SNAP_CITIES);
-  const p = snapSrc(snap.src.pbs, FAST, now);
-  let items = p.use ? snap.src.pbs.items.filter(pick) : [];
-  const tdx = [];
-  if (snap.tdxOn) for (const ep in want) {
-    const t = snapSrc(snap.src[ep], want[ep][0], now);
-    if (t.use) items = items.concat(snap.src[ep].items.filter(pick));
-    tdx.push({ ok: t.ok, at: t.at, stale: t.stale, err: t.err || null });
-  }
-  return { items, pbs: { ok: p.ok, at: p.at, stale: p.stale }, tdx, tdxOn: !!snap.tdxOn };
 }
 
 // ---------- 回應 ----------
@@ -784,43 +619,63 @@ export async function onRequest(context) {
   if (!sel.length) return reply(req, 400, { ok: false, err: 'city' });
 
   const now = Date.now();
-  const inSnap = sel.filter(k => SNAP_CITIES.indexOf(k) >= 0), others = sel.filter(k => SNAP_CITIES.indexOf(k) < 0);
-  const raw = inSnap.length ? await readSnapRaw(env) : null;
-  let snap = usableSnap(raw, now), fs = null;
-  // 快照裡警廣沒有可用的資料、或 TDX 開著卻一個都沒有 → 這次雙北也自己抓（App 不會因為 Worker 抓不到而空白）
-  if (snap) { fs = fromSnap(snap, inSnap, now); if (!fs.pbs.ok || (fs.tdxOn && !fs.tdx.some(g => g.ok))) { snap = null; fs = null; } }
-  const parts = [];
-  if (fs) parts.push(fs);
-  const liveSel = snap ? others : sel;
-  if (liveSel.length) parts.push(await live(liveSel, env));
-  if (inSnap.length && env.ROADS_KV && !refreshing && needRefresh(raw, now) && context.waitUntil) {
-    refreshing = true;
-    const job = runOnce(env, now, { by: 'app', colo: req.cf && req.cf.colo, load: pagesLoad(env) }).catch(() => {}).then(() => { refreshing = false; });
-    context.waitUntil(job);
+  const regs = [...new Set(sel.map(k => REGION_OF[k]))];
+  const raws = await Promise.all(regs.map(r => readReg(env, r)));
+  const got = {};
+  regs.forEach((r, i) => { const x = raws[i]; got[r] = x && now - x.at <= REG_MAX_AGE ? x : null; });   // Worker 停了 → 不用
+  const inSel = it => it.cs && it.cs.some(k => sel.indexOf(k) >= 0);
+  let items = [];
+
+  // 警廣：每一區都能用就讀分區；有一區不能用 → 只自己抓警廣
+  let pbs = { ok: false, at: null, stale: false };
+  const ps = regs.map(r => got[r] && snapSrc(got[r].src.pbs, now));
+  if (ps.every(p => p && p.use)) {
+    regs.forEach(r => { items = items.concat(got[r].src.pbs.items.filter(inSel)); });
+    pbs = { ok: true, at: Math.min(...ps.map(p => p.at)), stale: ps.some(p => p.stale) };
+  } else {
+    const g = await cached('pbs', FAST, loadPbs);
+    if (g && g.ok) { items = items.concat(g.items.filter(inSel)); pbs = { ok: true, at: g.at, stale: false }; }
   }
 
-  // 合併：同一筆（例如國道在台北和桃園的範圍都有）只留一筆
+  // TDX：只讀分區（縣市端點在它那一區；國道、省道每區各放自己縣市的那部分，所以選了幾區就讀幾區）
+  const want = tdxWant(sel), tdx = [];
+  let tdxOn = false;
+  for (const ep in want) {
+    const cityKey = want[ep][1], from = cityKey ? [REGION_OF[cityKey]] : regs;
+    let st = null;
+    from.forEach(r => {
+      const x = got[r];
+      if (!x) { if (env.ROADS_KV) { st = st || { ok: false, at: null, stale: false, err: 'worker' }; tdxOn = true; } return; }   // Worker 停了：標 TDX 讀不到（不自己抓）；沒綁 KV＝沒有 TDX
+      if (!x.tdxOn) return;   // 沒金鑰、暫停或停用：不列 TDX
+      tdxOn = true;
+      const t = snapSrc(x.src[ep], now);
+      if (t.use) items = items.concat(x.src[ep].items.filter(inSel));
+      if (!st || (!st.ok && t.ok)) st = { ok: t.ok, at: t.at, stale: t.stale, err: t.err || (x.src[ep] ? null : 'none') };
+    });
+    if (st) tdx.push(st);
+  }
+
+  // 合併：同一筆（例如國道在台北和桃園都有、或同時在兩區）只留一筆
   const byId = {};
-  parts.forEach(p => p.items.forEach(it => { if (!byId[it.id] || byId[it.id].m < it.m) byId[it.id] = it; }));
-  // c（縣市代號）留給 App 標地區；qa／qo 是預設座標，只給篩選用，不給 App（App 只看 uc＝位置不確定）
+  items.forEach(it => { if (!byId[it.id] || byId[it.id].m < it.m) byId[it.id] = it; });
+  // c（縣市代號）留給 App 標地區；qa／qo／qc 是預設座標、cs 是分桶結果，只給篩選用，不給 App（App 只看 uc＝位置不確定）
   // pc：沒有縣市名的，說明或通報單位寫到的是選的哪個城市（App 標「台北·位置不確定」、不會被它用座標當成別的縣市藏掉）
-  const items = Object.keys(byId).map(k => {
+  const out = Object.keys(byId).map(k => {
     const o = Object.assign({}, byId[k]);
-    delete o.qa; delete o.qo;
+    delete o.qa; delete o.qo; delete o.qc; delete o.cs;
     if (!o.c) { delete o.c; const pc = placeCity(o, sel); if (pc) o.pc = pc; }
     return o;
   });
-  const pbsOk = parts.every(p => p.pbs.ok), tdxOn = parts.some(p => p.tdxOn);
-  const tdx = [].concat(...parts.map(p => p.tdx));
   const tdxOk = tdxOn && tdx.length > 0 && tdx.every(g => g.ok);
   const bad = tdx.find(g => !g.ok || g.err);
-  const at = list => list.filter(g => g.ok && g.at).reduce((a, g) => Math.max(a, g.at), 0) || null;
+  const ats = tdx.filter(g => g.ok && g.at).map(g => g.at);
+  const live = regs.every(r => got[r]);
   return reply(req, 200, {
-    ok: parts.some(p => p.pbs.ok) || tdx.some(g => g.ok), v: 1, t: now, cities: sel, snap: snap ? snap.at : null,
+    ok: pbs.ok || tdx.some(g => g.ok), v: 1, t: now, cities: sel, snap: live ? Math.min(...regs.map(r => got[r].at)) : null,
     src: {
-      pbs: { ok: pbsOk, at: parts.filter(p => p.pbs.ok).reduce((a, p) => a == null ? p.pbs.at : Math.min(a, p.pbs.at), null), stale: parts.some(p => p.pbs.stale) },
-      tdx: { on: tdxOn, ok: tdxOk, part: tdxOn && !tdxOk && tdx.some(g => g.ok), at: at(tdx), err: bad ? errText(bad.err || 'fail') : null, stale: tdx.some(g => g.stale) }
+      pbs,
+      tdx: { on: tdxOn, ok: tdxOk, part: tdxOn && !tdxOk && tdx.some(g => g.ok), at: ats.length ? Math.max(...ats) : null, err: bad ? errText(bad.err || 'fail') : null, stale: tdx.some(g => g.stale) }
     },
-    items
+    items: out
   });
 }
