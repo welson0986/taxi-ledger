@@ -4297,7 +4297,7 @@ function renderEntry(){
 
   // on a phone the expense buttons sit far below the platforms; a shortcut on the title takes the driver there
   var expJump = !isTwoColUi() && !homeHidden('expenses') && homeOrder().indexOf('expenses') > homeOrder().indexOf('platforms');
-  var cmpBtn = (betaOn() && TRIP_JUDGE_VISIBLE ? '<button class="jump-exp" data-act="open-trip-judge">🤔 接不接</button>' : '') + (betaOn() ? crowdBtnHtml() : '') + (uiShow('fareCompare') ? '<button class="jump-exp" data-act="open-fare-compare">🧮 各車隊比較</button>' : '');
+  var cmpBtn = (betaOn() && TRIP_JUDGE_VISIBLE ? '<button class="jump-exp" data-act="open-trip-judge">🤔 接不接</button>' : '') + (vipLaunched() ? crowdBtnHtml() : '') + (uiShow('fareCompare') ? '<button class="jump-exp" data-act="open-fare-compare">🧮 各車隊比較</button>' : '');
   // the buttons wrap onto a second row (right-aligned) on a narrow phone or with big fonts instead of squeezing
   var hp = '<div class="section"><div class="section-title" style="gap:8px;align-items:flex-start"><span style="padding-top:8px;flex:none">收入/平台</span><span class="title-btns">'+cmpBtn+(expJump ? '<button class="jump-exp" data-act="jump-expenses">＋ 記支出</button>' : '')+'</span></div><div class="platform-grid">';
   visiblePlatforms().forEach(function(p){
@@ -4816,7 +4816,7 @@ function platformEfficiencyHtml(recs){
    distance the app has per trip; the short / medium / long bounds are the driver's own (state.fleetCmp, a ledger
    setting, so it travels with backups and the cloud copy), applied when shown and never stored on a trip.
    Worked out on the phone, nothing is sent. */
-function fcAvailable(){ return betaOn(); }
+function fcAvailable(){ return vipLaunched(); }
 var FC_SHORT_DEF = 5, FC_LONG_DEF = 15, FC_KM_MAX = 200, FC_MIN_SLOT = 5;
 // a broken or missing setting is read as the defaults, never as a number
 function fcBounds(){
@@ -5281,7 +5281,7 @@ var AN_WD = ['一','二','三','四','五','六','日'], AN_PRESET_MAX = 12;
 var AN_PERIOD_ZH = {day:'本日', week:'本週', month:'本月', year:'本年', custom:'自訂區間', all:'全部'};
 function anBlank(){ return {plats:[], wdays:[], hFrom:null, hTo:null}; }
 var anFilter = anBlank(), anFilterOpen = false, anPresetId = null;
-function anAvailable(){ return betaOn(); }
+function anAvailable(){ return vipLaunched(); }
 function anHasTime(f){ return f.hFrom!=null && f.hTo!=null && f.hFrom!==f.hTo; }
 function anIsSet(f){ return !!(f.plats.length || f.wdays.length || anHasTime(f)); }
 function anActive(){ return (anAvailable() && isVip() && anIsSet(anFilter)) ? anFilter : null; }
@@ -5942,8 +5942,20 @@ var VIP_FEATURES = [
 ];
 var VIP_PERIODS = {year:1, custom:1, all:1};
 function vipGated(){ return VIP_GATE || betaOn(); }
+// 上架開關 (2026-11-23, B3-01): the VIP features of the launch (原 1.0 五項＋原 2.0 前五項) and the free 每趟公里數 they use
+// show in the normal app as soon as VIP_GATE is on; until then only in 測試版. No switch of its own: one less to forget.
+function vipLaunched(){ return betaOn() || VIP_GATE; }
+// 推播 is not in the launch (更新一, B3-04): while PUSH_LIVE is false the normal app never mentions 重大路況通知, never asks
+// for the notification permission and never gets a push id; 測試版 keeps all of it.
+var PUSH_LIVE = false;
+// ⚙️ 關於「🆓 免費使用」 from the day VIP_GATE is on (11/23 定案)
+var ABOUT_FREE_VIP = '記帳功能免費,不需註冊帳號;進階分析、路況快報等功能需訂閱 VIP。';
+function pushLive(){ return betaOn() || PUSH_LIVE; }
+// 「VIP 測試」 and the stand-in store (假服務商) (B3-02, 11/23 Q2): once VIP is sold only the installed 測試版 app has them;
+// the website's 測試模式 (版本號 5 下, ?beta=1) still shows the other new features but never unlocks VIP.
+function vipTestAllowed(){ return betaOn() && (isNativeApp() || !VIP_GATE); }
 // The 「VIP 測試」 switch lives in the ledger, so it travels in backups: it only counts in 跑車人生 測試版.
-function isVip(){ return !vipGated() || vipVerdict().vip || (betaOn() && !!state.vipTest); }
+function isVip(){ return !vipGated() || vipVerdict().vip || (vipTestAllowed() && !!state.vipTest); }
 
 /* ---------- VIP 資料不足引導 (2026-11-20) ----------
    Several VIP features only have something to show once the driver records a certain thing (打卡, 每日里程, 上車／下車,
@@ -6139,7 +6151,7 @@ var VipMock = (function(){
 })();
 // The real adapter goes here once the developer accounts exist: in the installed app only, never on the website.
 var VIP_REAL_PROVIDER = null;
-function vipProvider(){ return VIP_REAL_PROVIDER || (betaOn() ? VipMock : VipNone); }
+function vipProvider(){ return VIP_REAL_PROVIDER || (vipTestAllowed() ? VipMock : VipNone); }
 function vipCanBuy(){ return vipProvider() !== VipNone; }
 var vipEnt = {provider:null, cache:null, error:null, userId:'', ready:null, checking:null, lastTry:0, gen:0};
 function vipCacheLoad(name){
@@ -6311,7 +6323,7 @@ function openVipIntro(feature, period){
     h += '<div style="'+small+'">訂閱會自動續訂,費用由你的 '+store.name+' 帳號支付;在當期結束前至少 24 小時取消,下一期就不會扣款。可以隨時到 '+store.name+' 的「訂閱」管理或取消。不訂閱,記帳功能照常免費。</div>';
   }
   if(canBuy) h += '<div style="'+small+';margin-top:8px"><a style="'+link+'" target="_blank" rel="noopener" href="'+VIP_TERMS_URL+'">使用條款</a> · <a style="'+link+'" target="_blank" rel="noopener" href="'+VIP_PRIVACY_URL+'">隱私權政策</a></div>';
-  if(betaOn()){
+  if(vipTestAllowed()){
     h += '<div class="card" style="margin-top:12px;padding:10px 14px;border-style:dashed"><div style="'+small+';margin-bottom:8px">🧪 測試版:上面的購買是假的,不會扣款;結果照 ⚙️「VIP 情境模擬」選的來。也可以直接按下面按鈕當成已經是 VIP(要切回免費版,到 ⚙️「記帳首頁與功能」最下面取消「VIP 測試」)。</div>';
     h += '<div class="btn-row"><button class="btn btn-ghost" data-act="vip-test-on">開啟 VIP 測試</button></div></div>';
   }
@@ -6394,7 +6406,7 @@ function vipMockApply(scene){
 // summary only, next to the driver's own fares (not 實收: the survey counts fares before platform fees), never as a grade.
 // The survey runs every 2 years: the 2027 one comes out around 2028-10.
 var OFFICIAL_TAXI_REF = {year:2025, monthGross:55788, dailyHours:9.0};
-function summaryAvailable(){ return betaOn(); }
+function summaryAvailable(){ return vipLaunched(); }
 var sumView = {kind:'week', offset:1};
 var WEEKDAY_ZH = ['日','一','二','三','四','五','六'];
 function mdStr(ds){ return (+ds.slice(5,7))+'/'+(+ds.slice(8,10)); }
@@ -6523,7 +6535,7 @@ function summaryHomeHtml(){
    The reserves are off until the driver turns them on (規格 (a)): maintenance as an amount per km (until ② 車輛成本
    brings its own per-km cost), tax as a % of 實收. 換車預留 waits for ②. They sit in state.dispReserve, so they go
    along with backups, restores and the cloud copy like every other ledger setting. */
-function dispAvailable(){ return betaOn(); }
+function dispAvailable(){ return vipLaunched(); }
 function dispOn(){ return dispAvailable() && uiShow('dispIncome') && isVip(); }
 var DISP_MAINT_MAX = 100, DISP_TAX_MAX = 50;
 function dispRes(){
@@ -6667,7 +6679,7 @@ function saveDispSettings(){
    - 回本 (規格 (g)): only the 購車價, against 累計可支配所得 from the later of 購車日 / 開始記帳日; reserves left out.
    - 車貸: shown, and taken off 可支配所得 only when no 固定成本 already carries it (named 車貸/貸款, or ticked). */
 function vcObj(x){ return !!x && typeof x==='object' && !Array.isArray(x); }
-function vcAvailable(){ return betaOn(); }
+function vcAvailable(){ return vipLaunched(); }
 function vcOn(){ return vcAvailable() && uiShow('vehCost') && isVip(); }
 var VC_MIN_DAYS = 90, VC_MONEY_MAX = 20000000, VC_KM_MAX = 3000000, VC_YEARS_MAX = 30, VC_LOAN_MAX = 240;
 var VC_MAINT_SUBS = ['機油', '定期保養'];  // 小保養 / 大保養: either one moves 下次保養 on, and 下次保養 is priced from them
@@ -6958,7 +6970,7 @@ function saveVcost(){
 // print screen saves it as PDF. Either way it is made on the device with the device's fonts: nothing is uploaded and
 // no font is shipped. Every number comes from the functions the analysis page and the 經營摘要 already use.
 // Icons are the built-in ones only (FLUENT), so the three platforms draw the same picture.
-function reportAvailable(){ return betaOn(); }
+function reportAvailable(){ return vipLaunched(); }
 var rptView = {kind:'month', offset:1, from:null, to:null};
 var RPT_HILLS = '<svg class="rp-hills" viewBox="0 0 210 26" preserveAspectRatio="none" aria-hidden="true"><path d="M0 10 C28 1 62 2 100 10 S168 17 210 4 V26 H0Z" fill="#B9D49A"/><path d="M0 19 C36 9 78 11 118 17 S180 20 210 12 V26 H0Z" fill="#86AB57"/></svg>';
 var RPT_CSS = '@page{size:A4;margin:0}'+
@@ -7713,7 +7725,7 @@ function hotspotHtml(days, dayKeys){
    歷史) the last trip of the day and gaps over EMPTY_GAP_CAP_MIN are left out. An order taken during the ride (無縫接單)
    waits 0. Trips without a drop-off position are not counted. Worked out on the phone; the place names come from the
    上車熱區 cache, looked up with the cell's grid point only. 「下一單在哪裡上車」(i) waits for the second version. */
-function dsAvailable(){ return betaOn(); }
+function dsAvailable(){ return vipLaunched(); }
 var DS_DAYS = [30, 90, 180, 365], DS_DAYS_DEF = 90, DS_TOP = 10, DS_DEAD_TOP = 5, DS_MIN_DEAD = 3;
 // a 死區 waits clearly longer than the driver's own average: at least DS_DEAD_RATIO times it and DS_DEAD_MORE minutes more
 // (a cell that waits less than average is not a dead zone, even when it is among the few with enough data)
@@ -8152,7 +8164,7 @@ function rnIsPbsCopy(it){ return it && it.s==='tdx' && (String(it.id||'').indexO
 var RN_GROUP = {'事故':'acc','阻塞':'jam','道路施工':'work','交通管制':'ctl'};   // the rest count as one 「障礙」 group when merging
 var RN_SRC = {pbs:'警廣', tdx:'交通部 TDX'};
 var rnData = null, rnErr = '', rnBusy = false, rnTab = 'live', rnGen = 0, rnTimer = null;
-function rnAvailable(){ return betaOn(); }
+function rnAvailable(){ return vipLaunched(); }
 function rnCityNames(keys){
   return keys.map(function(k){ var c = TRAFFIC_CITIES.filter(function(x){ return x.key===k; })[0]; return c ? (c.short||c.name) : k; }).join('、');
 }
@@ -8300,7 +8312,7 @@ function rnBodyHtml(){
     : '警廣的事故、壅塞 1 小時沒更新會變淡(可能已排除),2 小時後消失;火災、翻覆、封路等重大事件留 4 小時。<br>'+
       '交通部 TDX 的事件在結束前都會顯示(最多 6 小時);交通管制留 6 小時或到公告結束日;已排除的變灰色,1 小時後消失。')+
     '<br>時間為最後更新時間 · 點一則看 Google 地圖路況。'+
-    '<br>標「位置不確定」的是來源沒有給準確位置的通報(多半是國道、省道),沒有地圖可看,也不會發通知。</div>';
+    '<br>標「位置不確定」的是來源沒有給準確位置的通報(多半是國道、省道),沒有地圖可看'+(pushLive() ? ',也不會發通知' : '')+'。</div>';
   return h;
 }
 function rnSheetHtml(){
@@ -8308,7 +8320,7 @@ function rnSheetHtml(){
   return '<div class="modal-title">🚦 路況快報<button class="close" style="margin-left:auto;margin-right:8px;font-size:18px" data-act="rn-set" aria-label="路況快報設定">⚙️</button><button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div><div id="rnSheet">'+
     '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 8px">城市:<b style="color:var(--text)">'+esc(rnCityNames(keys))+'</b>(照「常用路況地點」的我主要跑) · <a data-act="traffic-spots" style="color:var(--accent);cursor:pointer;font-weight:700">改城市</a></div>'+
     '<div id="rnBody">'+rnBodyHtml()+'</div>'+
-    '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:12px;border-top:1px solid var(--border);padding-top:8px">資料來源:警察廣播電臺即時路況、交通部運輸資料流通服務平臺(TDX);鄉鎮區位置:內政部國土測繪中心。<br>內容僅供參考,以現場狀況為準;開車時請勿操作。<br>只送出你選的城市,不送你的位置。'+(isNativeApp() && rnPushPlugin() ? '重大路況通知要自己在 ⚙️ 打開(預設不收)。' : '打開才讀,網頁版沒有通知。')+'</div></div>';
+    '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:12px;border-top:1px solid var(--border);padding-top:8px">資料來源:警察廣播電臺即時路況、交通部運輸資料流通服務平臺(TDX);鄉鎮區位置:內政部國土測繪中心。<br>內容僅供參考,以現場狀況為準;開車時請勿操作。<br>只送出你選的城市,不送你的位置。'+(!pushLive() ? '打開才讀。' : isNativeApp() && rnPushPlugin() ? '重大路況通知要自己在 ⚙️ 打開(預設不收)。' : '打開才讀,網頁版沒有通知。')+'</div></div>';
 }
 function rnRefresh(){ var b = document.getElementById('rnBody'); if(b) b.innerHTML = rnBodyHtml(); rnSumRefresh(); }
 function rnLoad(force){
@@ -8336,7 +8348,7 @@ function rnLoad(force){
 function openRoadNews(){
   if(!isVip()){ openVipIntro('官方路況快報'); return; }
   // the first time on a phone that can get pushes: ask (預設不收) before the list
-  if(!rnPushCfg().asked && isNativeApp() && rnPushPlugin()){
+  if(pushLive() && !rnPushCfg().asked && isNativeApp() && rnPushPlugin()){
     rnPushCan().then(function(can){ if(can && !rnPushCfg().asked) openModal(rnPushAskHtml()); else openRoadNewsSheet(); });
     return;
   }
@@ -8379,8 +8391,10 @@ function rnLsGet(k){ try{ var v = JSON.parse(localStorage.getItem(k)||'null'); r
 function rnLsSet(k, v){ try{ if(v==null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
 function rnPushReg(){ return rnLsGet(RN_PUSH_LS) || {}; }
 function rnPushRegSet(ch){ var r = rnPushReg(); for(var k in ch) r[k] = ch[k]; rnLsSet(RN_PUSH_LS, r); return r; }
-// true when this phone can get pushes: the installed 測試版 app, built with the Firebase settings
+// true when this phone can get pushes: the installed 測試版 app, built with the Firebase settings. The normal app also
+// carries them (both Android apps share google-services.json), so it also needs PUSH_LIVE (B3-04).
 function rnPushCan(){
+  if(!pushLive()) return Promise.resolve(false);
   if(rnPushCanP) return rnPushCanP;
   var nt = nativeTools();
   if(!rnPushPlugin() || !nt || !rnAvailable()) return Promise.resolve(false);
@@ -8428,7 +8442,7 @@ function rnPushCities(){ return trafficPicks().filter(function(k){ return RN_PUS
 // what the server should hold for this phone right now
 // VIP 到期 (or 測試版「VIP 測試」 off): the server is told to stop and deletes this phone; the driver's 「通知」 choice and
 // the token stay on the phone, so when VIP comes back the next screen draw sends on:true again by itself (11/20)
-function rnPushHeld(){ var c = rnPushCfg(); return !!c.on && isNativeApp() && !isVip(); }
+function rnPushHeld(){ var c = rnPushCfg(); return !!c.on && isNativeApp() && pushLive() && !isVip(); }
 function rnPushPayload(now){
   var c = rnPushCfg(), r = rnPushReg(), id = rnPushId();
   if(!c.on || !r.token || !isVip()) return {id:id, on:false};
@@ -8442,7 +8456,7 @@ function rnPushPending(){
   if(!r.token && !r.sent) return false;   // never registered on this phone: nothing to tell
   return JSON.stringify(rnPushPayload(Date.now())) !== r.sent;
 }
-function rnPushSyncSoon(){ if(!rnPushPlugin()) return; clearTimeout(rnPushTimer); rnPushTimer = setTimeout(rnPushSync, 700); }
+function rnPushSyncSoon(){ if(!rnPushPlugin() || !pushLive()) return; clearTimeout(rnPushTimer); rnPushTimer = setTimeout(rnPushSync, 700); }
 function rnPushSync(){
   if(rnPushBusy || !rnPushPending()) return;
   if(navigator.onLine===false){ rnPushErr = 'offline'; rnPushUi(); return; }   // the 'online' event sends it
@@ -8467,6 +8481,7 @@ function rnPushSync(){
 }
 // after 好: the phone's permission, the quiet 「重大路況」 channel, then the token (it arrives in the 'registration' listener)
 function rnPushEnable(){
+  if(!pushLive()) return Promise.resolve();
   var pn = rnPushPlugin();
   rnPushListen();   // the token comes through these listeners
   return rnPushCan().then(function(can){
@@ -8493,7 +8508,7 @@ function rnPushDisable(){
 }
 var rnPushListening = false;
 function rnPushListen(){
-  var pn = rnPushPlugin(); if(!pn || rnPushListening) return;
+  var pn = rnPushPlugin(); if(!pn || rnPushListening) return;   // listening asks nothing; the token only comes after register(), which needs rnPushCan()
   rnPushListening = true;
   try{
     pn.addListener('registration', function(t){
@@ -8521,7 +8536,7 @@ function rnPushListen(){
 // a line for the ⚙️ sheet and the 記帳頁 card: where this phone stands
 function rnPushStatus(){
   var c = rnPushCfg(), r = rnPushReg(), now = Date.now();
-  if(!c.on || !isNativeApp()) return '';
+  if(!c.on || !isNativeApp() || !pushLive()) return '';
   if(rnPushHeld()) return 'VIP 到期,通知已暫停(恢復 VIP 後自動打開)';
   if(!r.token) return rnPushWaitTok ? '正在向手機取得通知編號…' : '這支手機還沒開通知(到 ⚙️ 打開)';
   if(rnPushPending()) return rnPushErr==='offline' ? '同步中(有網路就會送出)' : '同步中…';
@@ -8550,8 +8565,9 @@ function rnSwitch(id, on, label, sub){
 }
 var rnSetCan = null;   // what rnPushCan() answered, for drawing the sheet
 function rnSetBodyHtml(){
-  var c = rnPushCfg(), now = Date.now(), h = '', native = isNativeApp(), can = native && rnSetCan!==false && !!rnPushPlugin();
-  if(!native) h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.7;padding:8px 0;border-bottom:1px solid var(--border)">🔔 重大路況通知:網頁版(iPhone)目前沒有通知,打開路況快報才讀。記帳頁摘要照常可用。</div>';
+  var c = rnPushCfg(), now = Date.now(), h = '', native = isNativeApp(), live = pushLive(), can = live && native && rnSetCan!==false && !!rnPushPlugin();
+  if(!live){}   // the normal app before 更新一: no notification line at all
+  else if(!native) h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.7;padding:8px 0;border-bottom:1px solid var(--border)">🔔 重大路況通知:網頁版(iPhone)目前沒有通知,打開路況快報才讀。記帳頁摘要照常可用。</div>';
   else if(!can) h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.7;padding:8px 0;border-bottom:1px solid var(--border)">🔔 重大路況通知:這個版本還不能收通知。</div>';
   else {
     h += rnSwitch('f-rn-push', c.on, '🔔 重大路況通知', '上班打卡中、有封路或無法通行這類重大事件時通知(無聲、不震動)。請於合法停車後查看。');
@@ -9537,13 +9553,14 @@ function wireFeePlatToggle(){
   });
 }
 /* ---------- 顯示模式與功能開關 ---------- */
-var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/悠遊卡/愛心卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['paperSlip','紙本簽單(企業簽單是紙本,要拿回車隊換現金)'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(Uber 小黃)'],['tip','小費'],['tripToll','過路費(Uber、BOLT 記車資時順手填)'],['tripKm','每趟公里數(車隊 App 上的里程,算每公里實收)','','beta'],['fxTip','外幣小費(美金、日圓…自動換算台幣)'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
-var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日、本月目標進度(還差多少錢)'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['liveRate','今日行車顯示目前時薪'],['restRemind','休息提醒(連續開太久、今天上班太久)'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告'],['fareCompare','🧮 各車隊實收比較(輸入車資看各車隊實拿多少)'],['targetCalc','目標還要跑多久(依平均時薪算還要幾小時、幾趟)','vip'],['roadNews','🚦 官方路況快報(事故、壅塞、封路、施工)','vip','beta']];
-var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度'],['dispIncome','💰 可支配所得(本週、本月真正落袋)','vip','beta'],['vehCost','🚗 車輛成本(每公里成本、回本、保養預估)','vip','beta'],['fleetCmp','🏁 我的車隊收益比較(每小時、每公里實收,換車隊試算)','vip','beta'],['dropStat','📍 下車地統計(下車熱區、下車後空檔、死區)','vip','beta']];
+var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/悠遊卡/愛心卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['paperSlip','紙本簽單(企業簽單是紙本,要拿回車隊換現金)'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(Uber 小黃)'],['tip','小費'],['tripToll','過路費(Uber、BOLT 記車資時順手填)'],['tripKm','每趟公里數(車隊 App 上的里程,算每公里實收)','','launch'],['fxTip','外幣小費(美金、日圓…自動換算台幣)'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
+var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日、本月目標進度(還差多少錢)'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['liveRate','今日行車顯示目前時薪'],['restRemind','休息提醒(連續開太久、今天上班太久)'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告'],['fareCompare','🧮 各車隊實收比較(輸入車資看各車隊實拿多少)'],['targetCalc','目標還要跑多久(依平均時薪算還要幾小時、幾趟)','vip'],['roadNews','🚦 官方路況快報(事故、壅塞、封路、施工)','vip','launch']];
+var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度'],['dispIncome','💰 可支配所得(本週、本月真正落袋)','vip','launch'],['vehCost','🚗 車輛成本(每公里成本、回本、保養預估)','vip','launch'],['fleetCmp','🏁 我的車隊收益比較(每小時、每公里實收,換車隊試算)','vip','launch'],['dropStat','📍 下車地統計(下車熱區、下車後空檔、死區)','vip','launch']];
 var UI_DEFAULT_OFF = ['shiftFix','campaign','restRemind','fxTip','fareCompare','targetCalc','fleetCmp','tripKm'];  // extras nobody sees unless they turn them on
 var UI_SIMPLE_OFF = ['liveRate','subtype','fareType','payment','discount','markup','addOn','coupon','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
-// x[2] 'vip': a VIP feature (👑 while VIP is sold); x[3] 'beta': only in 跑車人生 測試版 while it is tried out
-function uiListed(x){ return x[3]!=='beta' || betaOn(); }
+// x[2] 'vip': a VIP feature (👑 while VIP is sold); x[3] 'beta': only in 跑車人生 測試版 while it is tried out;
+// 'launch': 測試版 now, the normal app too from the day VIP_GATE is on (vipLaunched)
+function uiListed(x){ return x[3]==='beta' ? betaOn() : x[3]==='launch' ? vipLaunched() : true; }
 // turning 看即時路況 on turns 路況快報 on with it (either can be turned off again on its own)
 function uiLinkRoadNews(){
   var rn = document.getElementById('f-ui-roadNews');
@@ -10094,7 +10111,7 @@ var HELP = [
     ['加價金額', '乘客加價叫車的單(台灣大、大都會、YOXI、Uber 小黃),記下加價多少,分析頁統計多收多少。', 'addOn'],
     ['優惠券折抵', '(Uber 小黃)乘客用優惠券少付的錢。車資照跳表全額打,選「平台會補回」或「自己吸收」,今日現金和撥款會算對。', 'coupon'],
     ['小費、備註', '記帳時選填。', 'tip'],
-    ['每趟公里數', '記車資時多一格「這趟幾公里」,填車隊 App 上顯示的里程(選填)。分析頁「🏁 我的車隊收益比較」用它算各家每公里實收、短中長程;沒填的用上下車位置的直線距離估。預設關閉。', 'tripKm', '', 'beta'],
+    ['每趟公里數', '記車資時多一格「這趟幾公里」,填車隊 App 上顯示的里程(選填)。分析頁「🏁 我的車隊收益比較」用它算各家每公里實收、短中長程;沒填的用上下車位置的直線距離估。預設關閉。', 'tripKm', '', 'launch'],
     ['過路費(Uber、BOLT)', '記車資時可以順手填這趟的過路費(選填),不算車資、不扣手續費,會加進那一批撥款,分析頁拿來抵 E-Tag 支出。沒空填就到撥款頁一次填整批。Uber 小黃是跳表,過路費已經算在車資裡,所以沒有這一欄。', 'tripToll'],
     ['🧮 各車隊實收比較', '記帳頁「收入/平台」旁的按鈕:輸入車資,馬上看各車隊扣完手續費實拿多少,可選刷卡或現金。', 'fareCompare'],
     ['外幣小費', '小費旁邊選幣別(美金、日圓…),自動用國際參考匯率換成台幣,匯率可以自己改。', 'fxTip'],
@@ -10109,7 +10126,7 @@ var HELP = [
     ['支出細項', '例如保養維修 → 機油(小保養)、定期保養(大保養)、輪胎、煞車、電瓶、鈑金烤漆、其他維修。⚙️ 支出項目管理可以自己改。', 'expSub'],
     ['固定成本', '「支出」頁新增靠行費、保險、月費等,每月自動算進成本。'],
     ['車輛提醒', '「支出」頁上方「🔧 車輛提醒」:設定保養里程、驗車日、各張保單到期日,快到時首頁提醒。目前里程會加上每天記的里程;記加油、保養維修時可以填儀表板里程校正,細項選「機油」或「定期保養」會自動算下次保養。'],
-    ['🚗 車輛成本', '「支出」頁「🔧 車輛提醒」上面:每開 1 公里車子花你多少(油錢、保養維修、折舊),回本進度,車貸還剩多少,下次保養約幾天後到、大概花多少;打開支出細項還能看輪胎、煞車等分項成本和更換提醒。購車價、車貸都是選填,只在手機上算。', 'vehCost', 'vip', 'beta']
+    ['🚗 車輛成本', '「支出」頁「🔧 車輛提醒」上面:每開 1 公里車子花你多少(油錢、保養維修、折舊),回本進度,車貸還剩多少,下次保養約幾天後到、大概花多少;打開支出細項還能看輪胎、煞車等分項成本和更換提醒。購車價、車貸都是選填,只在手機上算。', 'vehCost', 'vip', 'launch']
   ]],
   ['上班與工時', [
     ['上下班打卡、休息', '記帳頁「今日行車」按上班打卡 / 下班打卡,休息按休息開始 / 結束。忘了打下班卡,下次打開會問你。', 'shift'],
@@ -10125,10 +10142,10 @@ var HELP = [
     ['上車 / 下車', '客人上車按「上車」,下車按「下車」→ 選平台、打車資;還不知道車資可以「稍後再填」。位置只在按下那一刻記一次。', 'trips'],
     ['接到單了(前往接客)', '⚙️「隱私與分享」→「進階:記錄接單時間」打勾後出現(上下車滿 30 趟也會提示一次),分析頁會分出等單和接駁各花多久;活動追蹤也用這個時間算趟數。載客中就接到下一單:按行程卡上的「📲 接到下一單」,下車後直接按「上車」(無縫接單,等單算 0)。'],
     ['📍 上車熱區', '分析頁看你最常上車的地方,可篩白天 / 晚上 / 深夜,點 ✏️ 取名。「⏰ 現在」看過去 12 週同一個星期幾、現在前後一小時最常上車的地方。', 'hotspot'],
-    ['📍 下車地統計', '分析頁「上車熱區」下面:最近 90 天(可改 30 天、180 天、1 年)你最常在哪裡下車(前 10 名),每一區下車後平均多久才接到下一單;「死區提醒」列下車後等單明顯比你平均久的地方(平均空檔是你平均的 1.5 倍以上,同一區至少 3 次才列,最多 5 區)。空檔是估算:下車到按「接到單了」(沒按就到下一趟上車),每天最後一趟、下班前最後一趟、休息中都不算。要按上車／下車並允許定位才有資料,只在手機上算。', 'dropStat', 'vip', 'beta'],
+    ['📍 下車地統計', '分析頁「上車熱區」下面:最近 90 天(可改 30 天、180 天、1 年)你最常在哪裡下車(前 10 名),每一區下車後平均多久才接到下一單;「死區提醒」列下車後等單明顯比你平均久的地方(平均空檔是你平均的 1.5 倍以上,同一區至少 3 次才列,最多 5 區)。空檔是估算:下車到按「接到單了」(沒按就到下一趟上車),每天最後一趟、下班前最後一趟、休息中都不算。要按上車／下車並允許定位才有資料,只在手機上算。', 'dropStat', 'vip', 'launch'],
     ['👥 車友熱區', '同意分享上車熱區才能看附近車友都在哪裡上車,每個地點也會顯示你自己在那裡載過幾趟、平均實收多少;只分享約 1 公里一格,不含精確位置、金額;取消分享會刪除你分享過的資料。'],
     ['即時路況', '記帳頁「看即時路況」開 Google 地圖;常用地點可以新增、排序。停車或紅燈時再看。', 'traffic'],
-    ['🚦 官方路況快報', '記帳頁的「🚦 路況快報」(可以在 ⚙️ 記帳首頁排列單獨排順序、單獨開關;不開「看即時路況」也能用):依「常用路況地點」勾的我主要跑城市(快報裡的「改城市」也能改),列出警察廣播電臺和交通部 TDX 公布的事故、壅塞、封路、交通管制;施工另外放在「🚧 施工」。點一則開 Google 地圖路況。只送出城市、不送位置。右上角 ⚙️:重大路況通知(安卓測試版,預設不收;上班打卡中才通知,無聲)、記帳頁摘要(重大、事故各幾則)、不打擾時段、暫停 1 小時。停車或紅燈時再看。', 'roadNews', 'vip', 'beta']
+    ['🚦 官方路況快報', '記帳頁的「🚦 路況快報」(可以在 ⚙️ 記帳首頁排列單獨排順序、單獨開關;不開「看即時路況」也能用):依「常用路況地點」勾的我主要跑城市(快報裡的「改城市」也能改),列出警察廣播電臺和交通部 TDX 公布的事故、壅塞、封路、交通管制;施工另外放在「🚧 施工」。點一則開 Google 地圖路況。只送出城市、不送位置。右上角 ⚙️:重大路況通知(安卓測試版,預設不收;上班打卡中才通知,無聲)、記帳頁摘要(重大、事故各幾則)、不打擾時段、暫停 1 小時。停車或紅燈時再看。', 'roadNews', 'vip', 'launch']
   ]],
   ['分析', [
     ['看賺多少', '分析頁選本日 / 本週 / 本月 / 本年 / 自訂,看實收、淨利、時薪。'],
@@ -10138,8 +10155,8 @@ var HELP = [
     ['時段、星期、月份', '哪個時段、星期幾最好賺。', 'timeslot'],
     ['收入目標', '⚙️「收入目標」設定每天 / 每月目標,記帳頁顯示今日、本月目標進度和還差多少錢,分析頁也有目標進度。', 'todayTarget'],
     ['目標還要跑多久', '打開後,今日／本月目標下面會依目前的平均時薪和每趟實收,算出還要跑幾小時、幾趟;每記一筆就自動更新。剛開始跑還沒資料時,用近 30 天平均。', 'targetCalc', 'vip'],
-    ['💰 可支配所得', '分析頁選本週或本月:實收扣掉已記的支出、固定成本(依天數分攤)和你自己開啟的預留款(保養、稅金,預設都不扣),看真正落袋多少;本月還有「照目前速度」的月底預測(每月 4 號起)。都是估算,只在手機上算。', 'dispIncome', 'vip', 'beta'],
-    ['🏁 我的車隊收益比較', '分析頁(功能開關打開後):「我的實際比較」列各車隊趟數、車資、手續費、實收、手續費率、每小時實收(估算:上一趟下車到這趟下車的時間算給這一趟的車隊,第一趟從上班打卡算起)、每公里實收(有填每趟公里數就用它,沒填用上下車直線距離)、活動獎勵,還有各時段哪家每小時實收最高、多久入帳、短中長程比例(分界可以自己改);「換車隊試算」把一家的單、車資不變,用另一家現在的手續費重算,看實收差多少、車資要差多少才打平。只比手續費算法,不含活動獎勵、派單量。只在手機上算。', 'fleetCmp', 'vip', 'beta'],
+    ['💰 可支配所得', '分析頁選本週或本月:實收扣掉已記的支出、固定成本(依天數分攤)和你自己開啟的預留款(保養、稅金,預設都不扣),看真正落袋多少;本月還有「照目前速度」的月底預測(每月 4 號起)。都是估算,只在手機上算。', 'dispIncome', 'vip', 'launch'],
+    ['🏁 我的車隊收益比較', '分析頁(功能開關打開後):「我的實際比較」列各車隊趟數、車資、手續費、實收、手續費率、每小時實收(估算:上一趟下車到這趟下車的時間算給這一趟的車隊,第一趟從上班打卡算起)、每公里實收(有填每趟公里數就用它,沒填用上下車直線距離)、活動獎勵,還有各時段哪家每小時實收最高、多久入帳、短中長程比例(分界可以自己改);「換車隊試算」把一家的單、車資不變,用另一家現在的手續費重算,看實收差多少、車資要差多少才打平。只比手續費算法,不含活動獎勵、派單量。只在手機上算。', 'fleetCmp', 'vip', 'launch'],
     ['每公里油錢、電費', '分析頁效率指標:記加油的金額算每公里油錢;電動車記充電時填度數,算每公里電費和每度電可跑幾公里。', 'efficiency'],
     ['📊 年度報表', '⚙️「年度報表」,可以匯出 CSV 檔,用 Excel、Numbers 或 Google 試算表都能打開。']
   ]],
@@ -10177,13 +10194,17 @@ var HELP = [
     ['隱私', '帳只存在你的手機。不具名使用統計可以在 ⚙️ 取消;完整隱私權政策在「關於跑車人生」。']
   ]]
 ];
+// while 推播 is not live (the normal app, PUSH_LIVE false): the same lines without 重大路況通知 (B3-04)
+var HELP_NOPUSH = {roadNews: [/右上角 ⚙️:重大路況通知[^。]*。/, '右上角 ⚙️ 可以開關記帳頁摘要(重大、事故各幾則)。']};
 function helpItemHtml(it){
   if(it[4]==='beta' && !betaOn()) return '';
-  var key = it[2], off = key && !uiOn(key);
+  if(it[4]==='launch' && !vipLaunched()) return '';
+  var key = it[2], off = key && !uiOn(key), txt = it[1], np = !pushLive() && HELP_NOPUSH[key];
+  if(np) txt = txt.replace(np[0], np[1]);
   return '<div class="help-item" style="padding:9px 0;border-bottom:1px solid var(--border)">'+
     '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="font-size:13.5px">'+esc(it[0])+(it[3]==='vip' && vipGated() ? ' 👑' : '')+'</b>'+
     (off ? '<button class="btn" style="width:auto;padding:4px 10px;font-size:11.5px" data-act="help-on:'+key+'">目前關閉 · 打開</button>' : '')+'</div>'+
-    '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.65;margin-top:3px">'+esc(it[1])+'</div></div>';
+    '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.65;margin-top:3px">'+esc(txt)+'</div></div>';
 }
 function openHelp(q){
   var h = '<div class="modal-title">📖 功能說明<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
@@ -11046,7 +11067,7 @@ function openSettingsModal(){
   h += '<div class="btn-row" style="margin:-4px 0 12px"><button class="btn btn-ghost" data-act="ob-rerun">🧭 重新跑一次設定引導</button></div>';
   var hdr = h, S = {};
   S.basic = nickSettingsHtml() + uiSettingsHtml('basic');
-  S.features = uiSettingsHtml('features') + (vipGated() ? vipSettingsHtml() : '') + (betaOn() ? vipTestHtml() + vipMockPanelHtml() : '');
+  S.features = uiSettingsHtml('features') + (vipGated() ? vipSettingsHtml() : '') + (vipTestAllowed() ? vipTestHtml() + vipMockPanelHtml() : '');
   h = feeSettingsHtml(fr);
 
   h += '<div class="form-row" style="margin-top:6px"><label>平台管理(用 ▲▼ 排序,可改名/隱藏/新增)</label></div>';
@@ -11165,7 +11186,7 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.23.6';
+var APP_VERSION = '2026.11.23.7';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
@@ -11416,7 +11437,8 @@ function aboutHtml(){
   var link = 'color:var(--accent);text-decoration:none;font-weight:700';
   function para(title, body){ return '<div style="margin-bottom:12px"><div style="font-weight:700;font-size:13px;margin-bottom:3px">'+title+'</div><div style="font-size:12.5px;color:var(--text-muted);line-height:1.65">'+body+'</div></div>'; }
   var h = '<div class="card" style="margin-top:18px;padding:14px 16px"><div style="font-size:15px;font-weight:700;margin-bottom:12px">關於跑車人生</div>';
-  h += para('🆓 免費使用', '本記帳本完全免費,不需註冊帳號。');
+  // B3-10: once VIP is sold the ledger itself stays free (the website shows the same line: it sells nothing, but the 👑 previews are there)
+  h += para('🆓 免費使用', VIP_GATE ? ABOUT_FREE_VIP : '本記帳本完全免費,不需註冊帳號。');
   h += para('🔤 字型與圖示', '金額數字使用 Space Grotesk 字型(Florian Karsten 設計,SIL Open Font License 1.1 開源授權);平台、支出項目的彩色圖示使用 Microsoft Fluent Emoji(© Microsoft Corporation,MIT 授權)。都已內建在記帳本裡,不用另外下載。');
   h += '<details class="lic" style="margin:-6px 0 12px"><summary tabindex="0" style="'+link+';cursor:pointer;font-size:12.5px">📜 第三方授權全文</summary>'+THIRD_PARTY_LICENSES.map(function(x){ return '<div style="font-weight:700;font-size:12.5px;margin:10px 0 4px">'+esc(x[0])+'</div>'+'<pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;line-height:1.5;color:var(--text-muted);background:rgba(127,127,127,.10);padding:8px 10px;border-radius:8px;margin:0;font-family:ui-monospace,Menlo,Consolas,monospace">'+esc(x[1])+'</pre>'; }).join('')+'</details>';
   h += para('🔒 你的帳由你掌握', '帳本預設存在你的手機,我們不預設取得;選擇分享車友熱區時,才會送出約 1 公里的格點、時段和趟數;備份檔和雲端同步放在哪裡由你選擇(雲端同步存在你自己的 Google 帳號)。<br>為了保護你的資料,建議手機設定螢幕鎖,並定期備份。');
@@ -12678,7 +12700,7 @@ document.addEventListener('click', function(e){
   else if(cmd==='need-on'){ if(VIP_NEED_ON[arg]){ var no = {}; no[arg] = true; state.ui = Object.assign({}, state.ui||{}, no); save(); renderAll(); showToast('✓ 已打開「'+VIP_NEED_ON[arg][0]+'」,'+VIP_NEED_ON[arg][1]); } }
   else if(cmd==='need-expense'){ closeModal(); currentTab = 'entry'; renderAll(); var nx = document.getElementById('homeExpenses'); if(nx){ try{ nx.scrollIntoView({behavior:'smooth', block:'start'}); }catch(e){ nx.scrollIntoView(); } } }
   else if(cmd==='vc-subs-on'){ state.ui = Object.assign({}, state.ui||{}, {expSub:true}); save(); renderAll(); showToast('✓ 已打開支出細項,記保養維修時可以選'); }
-  else if(cmd==='vip-test-on'){ state.vipTest = true; vipTurnOnAsked(); save(); closeModal(); if(vipPendingPeriod) analyticsPeriod = vipPendingPeriod; vipPendingPeriod = null; renderAll(); showToast('👑 已開啟 VIP 測試'); }
+  else if(cmd==='vip-test-on'){ if(!vipTestAllowed()) return; state.vipTest = true; vipTurnOnAsked(); save(); closeModal(); if(vipPendingPeriod) analyticsPeriod = vipPendingPeriod; vipPendingPeriod = null; renderAll(); showToast('👑 已開啟 VIP 測試'); }
   else if(cmd==='year'){ uiMonth.setFullYear(uiMonth.getFullYear()+(+arg)); renderAll(); }
   else if(cmd==='hot-slot'){ hotspotSlot=arg; renderAll(); }
   else if(cmd==='hot-src'){ hotSource=arg; renderAll(); }
@@ -13142,7 +13164,7 @@ document.addEventListener('change', function(e){
   if(e.target.matches && e.target.matches('[data-mirror]')){ var mt = document.getElementById(e.target.getAttribute('data-mirror')); if(mt) mt.checked = e.target.checked; if(mt && mt.id==='f-ui-traffic' && mt.checked) uiLinkRoadNews(); return; }
   if(e.target.id && e.target.id.indexOf('f-ui-')===0){ document.querySelectorAll('[data-mirror="'+e.target.id+'"]').forEach(function(m){ m.checked = e.target.checked; }); }
   if(e.target.checked && (e.target.id==='f-ui-traffic' || (e.target.getAttribute && e.target.getAttribute('data-mirror')==='f-ui-traffic'))) uiLinkRoadNews();
-  if(e.target.id==='f-vip-test'){ state.vipTest = e.target.checked; save(); renderAll(); showToast(e.target.checked ? '👑 已開啟 VIP 測試' : '已切回免費版'); return; }
+  if(e.target.id==='f-vip-test'){ if(!vipTestAllowed()) return; state.vipTest = e.target.checked; save(); renderAll(); showToast(e.target.checked ? '👑 已開啟 VIP 測試' : '已切回免費版'); return; }
   if(e.target.id==='f-vip-scene'){
     if(state.vipTest){ state.vipTest = false; save(); var vtc = document.getElementById('f-vip-test'); if(vtc) vtc.checked = false; renderAll(); }
     vipMockApply(e.target.value); showToast('🧪 情境:'+e.target.options[e.target.selectedIndex].text); return;
