@@ -137,7 +137,7 @@ body{
 .content{flex:1;overflow-y:auto;padding:14px 16px 24px;-webkit-overflow-scrolling:touch;position:relative}
 .bottom-nav{
   position:sticky;bottom:0;z-index:20;
-  display:grid;grid-template-columns:repeat(5,1fr);
+  display:grid;grid-template-columns:repeat(5,minmax(0,1fr));
   background:var(--surface);border-top:1px solid var(--border);
   padding:6px 6px calc(6px + env(safe-area-inset-bottom,0px));
 }
@@ -146,7 +146,11 @@ body{
   background:none;border:none;color:var(--text-muted);font-size:12px;
   padding:5px 2px;border-radius:10px;cursor:pointer;font-family:inherit;
 }
-.nav-btn .ic{position:relative;display:flex;align-items:center;justify-content:center;width:52px;height:30px;border-radius:15px;transition:background .15s}
+.nav-btn .ic{position:relative;display:flex;align-items:center;justify-content:center;width:52px;max-width:100%;height:30px;border-radius:15px;transition:background .15s}
+.nav-btn{min-width:0;white-space:nowrap}
+/* B3-05 (Q3): the phone tab bar grows with the font size only up to 大 (1.15×), so all five tabs fit even at 超大 on a
+   320-wide phone; the page above it keeps the size the driver picked (--nav-zoom = min(z, 1.15) / z, applyFontScale) */
+html:not(.wide-ui) .bottom-nav{zoom:var(--nav-zoom, 1)}
 .ico{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;flex:none}
 .nav-btn.active .ic{background:var(--accent-soft)}
 .nav-btn.active .ico{stroke-width:2.4}
@@ -203,7 +207,14 @@ body{
 }
 .shift-btn.start{background:var(--income-soft);color:var(--income)}
 .shift-btn.stop{background:var(--expense-soft);color:var(--expense)}
-.hours-badge{font-family:var(--num-font);font-weight:700;font-size:13px}
+.hours-badge{font-family:var(--num-font);font-weight:700;font-size:13px;white-space:nowrap}
+/* B3-16: a number and its unit (6.18 小時, 2,808.0 km) stay on one line; the rest of the line may still wrap */
+.nw{white-space:nowrap}
+/* B3-16: the 經營摘要 card on the 記帳 page; when the text would get less than about 11 characters' width (a narrow
+   phone or large type), the buttons move below it instead of squeezing it into a thin column */
+.sum-home{margin-bottom:12px;padding:12px 14px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.sum-home .sh-txt{flex:1 1 11em;min-width:0;font-size:13px;line-height:1.5}
+.sum-home .sh-btns{display:flex;gap:6px;margin-left:auto;flex:none}
 
 .list-item{
   display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--border);
@@ -255,6 +266,9 @@ body{
 .jump-exp{white-space:nowrap;background:none;border:1px solid var(--border);border-radius:16px;padding:6px 12px;min-height:34px;font:inherit;font-size:12.5px;font-weight:700;color:var(--text);cursor:pointer}
 .cal-cell{min-width:0;overflow:hidden}
 .cal-cell .n{max-width:100%;overflow:hidden;white-space:nowrap}
+/* B3-05 (Q3): when an amount does not fit its day cell (measured, fitCalendar), the month shows dates and colours only;
+   the amounts are in the day summary below and in each cell's aria-label */
+.cal-grid.cal-nonum .cal-cell .n{display:none}
 /* large type: seven columns must still fit the screen */
 .big-ui .cal-grid{gap:2px}
 .big-ui .cal-cell{border-radius:7px}
@@ -647,7 +661,7 @@ function payKey(r){
   }
   return r.platform;
 }
-/* 預約單 (威爾森 11/23, B2 Q5): a booked order comes through one fleet and pays that fleet's fee, exactly as the
+/* 預約單 (Welson 11/23, B2 Q5): a booked order comes through one fleet and pays that fleet's fee, exactly as the
    fleet's own order would. r.subPlatform is the name picked (one of the built-in names below, never a renamed one);
    r.subKey, the fleet's key, is kept with it from 2026.11.23.4 on and is used when the name says nothing. resAsFleet
    turns the record into that fleet's own order, so rawNet, grossBase, netBeforeCoupon (its rounding), BOLT's weekly
@@ -690,7 +704,8 @@ function mergePlatformOverride(p, ov){
   for(var k in p){ out[k]=p[k]; }
   if(ov && ov.label) out.label = ov.label;
   if(ov && ov.icon) out.icon = ov.icon;
-  if(ov && ov.color) out.color = ov.color;
+  if(ov && ov.color && isHexColor(ov.color)) out.color = ov.color;
+  out.color = safeColor(out.color);
   out.hidden = !!(ov && ov.hidden);
   return out;
 }
@@ -707,7 +722,7 @@ function allPlatforms(){
     return mergePlatformOverride(p, state.platformOverrides[p.key]);
   });
   (state.customPlatforms||[]).forEach(function(c){
-    var cp = {key:c.key, label:c.label, hidden:!!c.hidden, custom:true, icon:c.icon||'🚘', color:c.color||'#8A8272'};
+    var cp = {key:c.key, label:c.label, hidden:!!c.hidden, custom:true, icon:c.icon||'🚘', color:safeColor(c.color)};
     if(c.subtypeOptions && c.subtypeOptions.length) cp.subtypeOptions = c.subtypeOptions;
     list.push(cp);
   });
@@ -823,6 +838,47 @@ function esc(s){
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
   });
 }
+// B3-03: a platform colour goes into style="…" and a spot's coordinates into a link. Nothing on screen lets a driver type
+// either one (the colour picker always gives #rrggbb, coordinates are turned into numbers), but a backup file or a
+// cloud snapshot from elsewhere could carry anything. cleanLedgerFields runs wherever a ledger comes in (fillMissing):
+// a colour that is not # + 3 or 6 hex digits becomes the default one, a spot whose coordinates are not numbers is
+// dropped (the rest of the backup still restores). The screens escape them as well (esc), as a second guard.
+var DEFAULT_PLAT_COLOR = '#8A8272';
+function isHexColor(c){ return typeof c==='string' && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(c); }
+function safeColor(c){ return isHexColor(c) ? c : DEFAULT_PLAT_COLOR; }
+function cleanSpotList(list){
+  if(!Array.isArray(list)) return null;
+  var out = [];
+  list.forEach(function(s){
+    if(!s || typeof s!=='object' || s.lat==null || s.lng==null || s.lat==='' || s.lng==='') return;
+    var a = +s.lat, b = +s.lng;
+    if(!isFinite(a) || !isFinite(b)) return;
+    s.lat = a; s.lng = b;
+    if(typeof s.name!=='string') s.name = s.name==null ? '' : String(s.name);
+    out.push(s);
+  });
+  return out;
+}
+function cleanLedgerFields(s){
+  if(!s || typeof s!=='object') return s;
+  if(Array.isArray(s.customPlatforms)) s.customPlatforms.forEach(function(c){
+    if(c && typeof c==='object' && c.color!=null && !isHexColor(c.color)) c.color = DEFAULT_PLAT_COLOR;
+  });
+  var ov = s.platformOverrides;
+  if(ov && typeof ov==='object') Object.keys(ov).forEach(function(k){
+    if(ov[k] && typeof ov[k]==='object' && ov[k].color!=null && !isHexColor(ov[k].color)) delete ov[k].color;
+  });
+  if('trafficSpots' in s){
+    var sp = cleanSpotList(s.trafficSpots);
+    if(sp) s.trafficSpots = sp; else delete s.trafficSpots;
+  }
+  if('trafficSpotsBy' in s){
+    var by = s.trafficSpotsBy;
+    if(!by || typeof by!=='object' || Array.isArray(by)) delete s.trafficSpotsBy;
+    else Object.keys(by).forEach(function(k){ var l = cleanSpotList(by[k]); if(l) by[k] = l; else delete by[k]; });
+  }
+  return s;
+}
 function allCats(){
   var ov = state.catOverrides || {};
   var list = CATS.map(function(c){
@@ -923,6 +979,7 @@ function fillMissing(s){
   if(!('dayCutoffHour' in s) || s.dayCutoffHour==null) s.dayCutoffHour = LEGACY_DAY_CUTOFF;
   var d = defaultState();
   for(var k in d){ if(!(k in s)) s[k] = d[k]; }
+  cleanLedgerFields(s);
   if(fillLegacyHours(s)) legacyHoursFilled = true;
   return s;
 }
@@ -1017,7 +1074,7 @@ function packState(st){
   out.lvl = Math.max(+st.lvl||0, LEDGER_LEVEL);   // see LEDGER_LEVEL: a copy, backup or cloud snapshot says it too
   return JSON.stringify(out);
 }
-// B1-08 (威爾森 11/22): a backup file (存成備份檔, 複製文字) leaves out this phone's own settings (DEVICE_KEYS: the cloud
+// B1-08 (Welson 11/22): a backup file (存成備份檔, 複製文字) leaves out this phone's own settings (DEVICE_KEYS: the cloud
 // sync address, the stats and hot-spot ids, which backups it sent…). A restore never takes them from the file anyway
 // (replaceLedger keeps the phone's own), so nothing changes there; a file passed to someone else no longer shows them.
 // The phone's own ledger file, the copies kept before a restore and the cloud snapshot keep the whole state.
@@ -1717,7 +1774,7 @@ function rawNet(r){
     return Math.max(0, gross*(1-pct3/100) - (+fees.linegoFlat||0));
   }
   if(r.platform==='metro' && r.dispatchPct!=null){
-    // 0 月費方案: the dispatch fee already covers card payments, 個人錢包 and electronic company accounts (威爾森 11/23:
+    // 0 月費方案: the dispatch fee already covers card payments, 個人錢包 and electronic company accounts (Welson 11/23:
     // no extra 6% for 企業簽單 any more, earlier entries too); paper slips cashed at the office are another matter
     return Math.max(0, gross*(1-r.dispatchPct/100));
   }
@@ -3705,7 +3762,7 @@ function openCancelModal(mode, arg, thenStart){
     title = '取消單 · '+c.date;
   } else {
     var day = arg || currentEntryDate();
-    cxForm = {mode:'add', date:day, by:'', fleet:''};   // no fleet picked in advance (威爾森 11/21): the driver chooses
+    cxForm = {mode:'add', date:day, by:'', fleet:''};   // no fleet picked in advance (Welson 11/21): the driver chooses
     title = '補記被取消的單'+(day!==todayStr() ? ' · '+day : '');
   }
   var F = cxForm, lbl = 'font-size:13px;font-weight:700;margin:0 0 6px';
@@ -3976,10 +4033,38 @@ function renderAll(){
   var c = document.getElementById('content');
   c.className = 'content tab-'+currentTab;
   if(currentTab==='entry') c.innerHTML = renderEntry();
-  else if(currentTab==='history') c.innerHTML = renderHistory();
+  else if(currentTab==='history'){ c.innerHTML = renderHistory(); fitCalendar(); }
   else if(currentTab==='expense') c.innerHTML = renderExpenseTab();
   else if(currentTab==='analytics') c.innerHTML = renderAnalytics();
   else if(currentTab==='payout') c.innerHTML = renderPayoutTab();
+}
+// B3-05 (Q3): with large type on a narrow phone a day's amount may not fit its cell (cut off at the side or the bottom).
+// Measured on the cells as drawn, not by a fixed screen width: when any amount does not fit, the month first tries
+// the shorter form (+1.6k); when that does not fit either, it shows the dates and colours only (the day summary below
+// has the amounts, and each cell's aria-label still says them).
+function fitCalendar(){
+  var grids = document.querySelectorAll('#content .cal-grid');
+  for(var g=0; g<grids.length; g++){
+    var grid = grids[g];
+    grid.classList.remove('cal-nonum');
+    var nums = grid.querySelectorAll('.cal-cell .n');
+    var setText = function(which){
+      for(var j=0; j<nums.length; j++){ var t = nums[j].getAttribute(which); if(t!=null) nums[j].textContent = t; }
+    };
+    var anyCut = function(){
+      for(var i=0; i<nums.length; i++){
+        var n = nums[i], cell = n.parentNode;
+        if(!cell.clientWidth) continue;   // not laid out (hidden): nothing to measure
+        var cr = cell.getBoundingClientRect(), nr = n.getBoundingClientRect();
+        if(n.scrollWidth > n.clientWidth + 0.5 || nr.bottom > cr.bottom - 1 || nr.top < cr.top) return true;
+      }
+      return false;
+    };
+    setText('data-full');
+    if(!anyCut()) continue;
+    setText('data-short');
+    if(anyCut()) grid.classList.add('cal-nonum');
+  }
 }
 // red count on 撥款 for batches whose payday has passed without the amount being confirmed
 function renderPayoutBadge(){
@@ -4037,7 +4122,7 @@ function targetPaceHtml(left, from, to){
   var rate = P.rate, per = (trips > 0 && tripNet > 0) ? tripNet/trips : null;
   if(!rate && !per) return '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px">記幾趟、打卡之後,這裡會算出還要跑多久</div>';
   var parts = [];
-  if(rate) parts.push('約 <b>'+fmtNum(left/rate,1)+' 小時</b>');
+  if(rate) parts.push('約 <b><span class="nw">'+fmtNum(left/rate,1)+' 小時</span></b>');
   if(per) parts.push('約 <b>'+Math.ceil(left/per)+' 趟</b>');
   // 11/20: only 趟 and no 小時 — say why (no clock-in hours), with the switch when it is off
   var why = rate ? '' : '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.6">💡 '+(uiOn('shift') ? '上下班打卡之後,也會算還要跑幾小時' :
@@ -4218,7 +4303,7 @@ function renderEntry(){
   visiblePlatforms().forEach(function(p){
     var pt = platformTotals[p.key]||0;
     hp += '<div class="platform-chip" data-act="open-income:'+p.key+'">'+
-         '<div class="plat-badge" style="background:'+(p.color||'#8A8272')+'">'+iconHtml(p.icon||'🚘')+'</div>'+
+         '<div class="plat-badge" style="background:'+esc(safeColor(p.color))+'">'+iconHtml(p.icon||'🚘')+'</div>'+
          '<div class="pname">'+esc(p.label)+'</div>'+
          '<div class="ptotal '+(pt>0?'has':'')+' num">'+(pt>0?fmtMoney(pt):'—')+'</div></div>';
   });
@@ -4256,7 +4341,7 @@ function renderEntry(){
   var hd = h; h = '';
   var showDaily = uiShow('km') || uiShow('shift') || uiShow('toilet');
   if(showDaily) h += '<div class="section"><div class="section-title">今日行車</div><div class="card daily-card">';
-  if(uiShow('km')) h += '<div class="daily-row"><span class="l">今日里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(meta.km!=null?meta.km:'')+'" placeholder="0.0" data-km-input></div>';
+  if(uiShow('km')) h += '<div class="daily-row"><span class="l">今日里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(meta.km!=null?meta.km:'')+'" placeholder="0.0" aria-label="今日里程,公里" data-km-input></div>';
   if(uiShow('shift')) h += '<div class="daily-row"><span class="l">工時(已扣休息)</span><div style="display:flex;align-items:center;gap:10px"><span class="hours-badge">'+esc(hoursLabel)+'</span>'+shiftBtn+'</div></div>';
   if(uiShow('shift') && carriedOpen(t, meta)){
     // a shift carried over the boundary: one line says where its first part went (11/22)
@@ -4454,7 +4539,7 @@ function renderHistory(){
   var calShow = state.calShow==='hours'||state.calShow==='rate' ? state.calShow : 'net';
 
   var h='';
-  h += '<div class="month-nav"><button data-act="month:-1">‹</button><div class="m-title">'+y+' 年 '+(mo+1)+' 月</div><button data-act="month:1">›</button></div>';
+  h += '<div class="month-nav"><button data-act="month:-1" aria-label="上個月">‹</button><div class="m-title">'+y+' 年 '+(mo+1)+' 月</div><button data-act="month:1" aria-label="下個月">›</button></div>';
   h += '<div class="segmented" style="margin:0 0 8px">'+[['net','結餘'],['hours','工時'],['rate','平均時薪']].map(function(x){ return '<button class="'+(calShow===x[0]?'active':'')+'" data-act="cal-show:'+x[0]+'">'+x[1]+'</button>'; }).join('')+'</div>';
   h += '<div class="card"><div class="cal-grid">';
   DOW.forEach(function(d){ h+='<div class="cal-dow">'+d+'</div>'; });
@@ -4462,11 +4547,12 @@ function renderHistory(){
   for(var d=1; d<=daysInMonth; d++){
     var ds = y+'-'+pad(mo+1)+'-'+pad(d);
     var net = netByDay[ds], cellTxt = '', cellSaid = '';
-    if(calShow==='net'){ if(net) cellTxt = (net>0?'+':'')+calAmount(net); }
+    var cellShort = '';   // the shorter 1.6k form, tried by fitCalendar before a month's amounts are left out
+    if(calShow==='net'){ if(net){ cellTxt = (net>0?'+':'')+calAmount(net); cellShort = (net>0?'+':'')+calAmount(net, true); } }
     else {
       var dh = totalHoursInRange(ds, ds), inc = incByDay[ds]||0;
       if(calShow==='hours'){ if(dh>0){ cellTxt = (Math.round(dh*10)/10)+'h'; cellSaid = ',工時 '+(Math.round(dh*10)/10)+' 小時'; } }
-      else if(dh>=RATE_MIN_H && inc>0){ cellTxt = calAmount(inc/dh); cellSaid = ',平均時薪 '+Math.round(inc/dh)+' 元'; }
+      else if(dh>=RATE_MIN_H && inc>0){ cellTxt = calAmount(inc/dh); cellShort = calAmount(inc/dh, true); cellSaid = ',平均時薪 '+Math.round(inc/dh)+' 元'; }
       net = cellTxt ? 1 : 0;
     }
     var cls = 'cal-cell';
@@ -4475,7 +4561,7 @@ function renderHistory(){
     if(ds===selectedDay) cls+=' selected';
     if(TW_HOLIDAYS[ds]) cls+=' holiday';
     var said = (mo+1)+' 月 '+d+' 日'+(calShow==='net' ? (net ? ',結餘 '+(net<0?'負 ':'')+Math.abs(Math.round(net)).toLocaleString('zh-Hant-TW')+' 元' : '') : cellSaid)+(TW_HOLIDAYS[ds]?',假日':'')+(ds===selectedDay?',已選取':'');
-    h += '<div class="'+cls+'" data-act="select-day:'+ds+'" aria-label="'+esc(said)+'"><span class="d">'+d+'</span>'+(cellTxt?('<span class="n">'+cellTxt+'</span>'):'')+'</div>';
+    h += '<div class="'+cls+'" data-act="select-day:'+ds+'" aria-label="'+esc(said)+'"><span class="d">'+d+'</span>'+(cellTxt?('<span class="n"'+(cellShort && cellShort!==cellTxt ? ' data-full="'+esc(cellTxt)+'" data-short="'+esc(cellShort)+'"' : '')+'>'+cellTxt+'</span>'):'')+'</div>';
   }
   h += '</div></div>';
   if(calShow!=='net') h += '<div style="font-size:11px;color:var(--text-muted);margin:4px 2px 0">'+(calShow==='hours' ? '工時＝當天上下班打卡的時數(扣掉休息)' : '平均時薪＝當天實收 ÷ 工時(含空車、等單,扣掉休息);沒有打卡的日子不會顯示')+'</div>';
@@ -4504,16 +4590,16 @@ function renderHistory(){
   h += '<div class="section" style="margin-top:14px"><div class="section-title">'+selectedDay+' 摘要</div><div class="summary-row" style="grid-template-columns:1fr 1fr">'+
     '<div class="stat-tile"><div class="lbl">趟數</div><div class="val num">'+dayTrips+' 趟</div></div>'+
     '<div class="stat-tile"><div class="lbl">實收(含小費)</div><div class="val income num">'+fmtMoney(dayNet)+'</div></div>'+
-    '<div class="stat-tile"><div class="lbl">工時(已扣休息)</div><div class="val num">'+fmtNum(dayHours,2)+' 小時</div></div>'+
+    '<div class="stat-tile"><div class="lbl">工時(已扣休息)</div><div class="val num"><span class="nw">'+fmtNum(dayHours,2)+' 小時</span></div></div>'+
     '<div class="stat-tile"><div class="lbl">平均時薪</div><div class="val num">'+rateText(periodRate(selectedDay, selectedDay).rate)+'</div></div>'+
     '</div>'+dayActs+'</div>';
 
-  var histMeta = dm(selectedDay);
+  var histMeta = dm(selectedDay), hmd = (+selectedDay.slice(5,7))+'/'+(+selectedDay.slice(8,10));   // B3-15: names read out by a screen reader
   h += '<div class="section"><div class="card daily-card">'+
-    (uiShow('km') ? '<div class="daily-row"><span class="l">'+selectedDay+' 里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(histMeta.km!=null?histMeta.km:'')+'" placeholder="0.0" data-km-input-date="'+selectedDay+'"></div>' : '')+
-    (uiShow('shift') ? '<div class="daily-row"><span class="l">'+selectedDay+' 工時(小時)</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.workedMs||0)/3600000).toFixed(2)+'" placeholder="0.00" data-hours-input-date="'+selectedDay+'"></div>' : '')+
-    (uiShow('shift') ? '<div class="daily-row"><span class="l">'+selectedDay+' 休息時間(小時)</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.breakMs||0)/3600000).toFixed(2)+'" placeholder="0.00" data-break-input-date="'+selectedDay+'"></div>' : '')+
-    (uiShow('toilet') ? '<div class="daily-row"><span class="l">'+selectedDay+' 🚻 上廁所(次)</span><input class="km-input" type="number" step="1" min="0" inputmode="numeric" value="'+(histMeta.toilet!=null?histMeta.toilet:'')+'" placeholder="0" data-toilet-input-date="'+selectedDay+'"></div>' : '')+
+    (uiShow('km') ? '<div class="daily-row"><span class="l">'+selectedDay+' 里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(histMeta.km!=null?histMeta.km:'')+'" placeholder="0.0" aria-label="'+hmd+' 里程,公里" data-km-input-date="'+selectedDay+'"></div>' : '')+
+    (uiShow('shift') ? '<div class="daily-row"><span class="l">'+selectedDay+' 工時(小時)</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.workedMs||0)/3600000).toFixed(2)+'" placeholder="0.00" aria-label="'+hmd+' 工時,小時" data-hours-input-date="'+selectedDay+'"></div>' : '')+
+    (uiShow('shift') ? '<div class="daily-row"><span class="l">'+selectedDay+' 休息時間(小時)</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.breakMs||0)/3600000).toFixed(2)+'" placeholder="0.00" aria-label="'+hmd+' 休息時間,小時" data-break-input-date="'+selectedDay+'"></div>' : '')+
+    (uiShow('toilet') ? '<div class="daily-row"><span class="l">'+selectedDay+' 🚻 上廁所(次)</span><input class="km-input" type="number" step="1" min="0" inputmode="numeric" value="'+(histMeta.toilet!=null?histMeta.toilet:'')+'" placeholder="0" aria-label="'+hmd+' 上廁所,次" data-toilet-input-date="'+selectedDay+'"></div>' : '')+
     '<div style="font-size:11px;color:var(--text-muted);line-height:1.5">補記或修改過往的工時/休息時間/上廁所次數,直接改數字就會覆蓋掉原本的紀錄。</div>'+
     '</div></div>';
 
@@ -4521,7 +4607,7 @@ function renderHistory(){
 
   h += '<div class="section"><div class="section-title">幫 '+selectedDay+' 補記收入(點明細可修改/刪除)</div><div class="platform-grid">';
   visiblePlatforms().forEach(function(p){
-    h += '<div class="platform-chip" data-act="open-income:'+p.key+'"><div class="plat-badge" style="background:'+(p.color||'#8A8272')+'">'+iconHtml(p.icon||'🚘')+'</div><div class="pname">'+esc(p.label)+'</div></div>';
+    h += '<div class="platform-chip" data-act="open-income:'+p.key+'"><div class="plat-badge" style="background:'+esc(safeColor(p.color))+'">'+iconHtml(p.icon||'🚘')+'</div><div class="pname">'+esc(p.label)+'</div></div>';
   });
   h += '<div class="platform-chip" data-act="cx-add:'+selectedDay+'"><div class="plat-badge" style="background:'+CANCEL_FEE_DEF.color+'">'+iconHtml(CANCEL_FEE_DEF.icon)+'</div><div class="pname">取消單</div></div>';
   h += '</div></div>';
@@ -4546,7 +4632,7 @@ function renderExpenseTab(){
   exps.forEach(function(e){ byCat[e.category]=(byCat[e.category]||0)+(+e.amount||0); });
 
   var h='';
-  h += '<div class="month-nav"><button data-act="month:-1">‹</button><div class="m-title">'+y+' 年 '+(mo+1)+' 月 支出</div><button data-act="month:1">›</button></div>';
+  h += '<div class="month-nav"><button data-act="month:-1" aria-label="上個月">‹</button><div class="m-title">'+y+' 年 '+(mo+1)+' 月 支出</div><button data-act="month:1" aria-label="下個月">›</button></div>';
 
   h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
   h += '<div class="stat-tile"><div class="lbl">變動支出</div><div class="val expense num">'+fmtMoney(totalVar)+'</div></div>';
@@ -4852,7 +4938,7 @@ function fcStats(from, to){
   recordsInRange(from, to).forEach(function(r){
     if(r.platform==='bonus'){ var bk = r.bonusPlatform; if(bk && !platformDef(bk).tipOnly) F(bk).bonus += (+r.revenue||0); return; }
     if(platformDef(r.platform).tipOnly) return;
-    // a 預約單 counts for the fleet it came through (威爾森 11/23): its trips, money, hours, slots, km and payouts
+    // a 預約單 counts for the fleet it came through (Welson 11/23): its trips, money, hours, slots, km and payouts
     var m = F(fcKeyOf(r)), g = grossBase(r);
     var n = computeNetRevenue(r)+(+r.tip||0);
     m.trips++; if(r.platform==='reservation' && m.key!=='reservation') m.resN++; m.gross += g; m.fee += Math.max(0, g - netBeforeCoupon(r)); m.net += n; m.tripBonus += (+r.tripBonus||0);
@@ -5462,7 +5548,7 @@ function renderAnalytics(){
   if(analyticsPeriod==='day'){
     h += '<div class="month-nav" style="margin-top:-4px"><button data-act="day:-1">‹</button><div class="m-title"><input type="date" id="dayPicker" value="'+analyticsDay+'" style="background:none;border:none;color:inherit;font:inherit;font-weight:700;text-align:center;width:100%"></div><button data-act="day:1">›</button></div>';
   } else if(analyticsPeriod==='month'){
-    h += '<div class="month-nav" style="margin-top:-4px"><button data-act="month:-1">‹</button><div class="m-title">'+uiMonth.getFullYear()+' 年 '+(uiMonth.getMonth()+1)+' 月</div><button data-act="month:1">›</button></div>';
+    h += '<div class="month-nav" style="margin-top:-4px"><button data-act="month:-1" aria-label="上個月">‹</button><div class="m-title">'+uiMonth.getFullYear()+' 年 '+(uiMonth.getMonth()+1)+' 月</div><button data-act="month:1" aria-label="下個月">›</button></div>';
   } else if(analyticsPeriod==='year'){
     h += '<div class="month-nav" style="margin-top:-4px"><button data-act="year:-1">‹</button><div class="m-title">'+uiMonth.getFullYear()+' 年</div><button data-act="year:1">›</button></div>';
   } else if(analyticsPeriod==='custom'){
@@ -5511,8 +5597,8 @@ function renderAnalytics(){
   h += '<div class="section"><div class="section-title">本期概況</div><div class="card"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
   h += '<div class="stat-tile"><div class="lbl">'+(wholeDays?'營業天數':'有符合紀錄的天數')+'</div><div class="val num">'+workDays+' 天</div></div>';
   h += '<div class="stat-tile"><div class="lbl">平均日實收</div><div class="val income num">'+(workDays>0?fmtMoney(net.total/workDays):'—')+'</div></div>';
-  if(uiShow('shift') && wholeDays) h += '<div class="stat-tile"><div class="lbl">平均每日工時</div><div class="val num">'+(workDays>0?fmtNum(hours/workDays,2)+' 小時':'—')+'</div></div>';
-  if(uiShow('shift') && wholeDays) h += '<div class="stat-tile"><div class="lbl">平均每日休息時間</div><div class="val num">'+(workDays>0?fmtNum(breakHours/workDays,2)+' 小時':'—')+'</div></div>';
+  if(uiShow('shift') && wholeDays) h += '<div class="stat-tile"><div class="lbl">平均每日工時</div><div class="val num">'+(workDays>0?'<span class="nw">'+fmtNum(hours/workDays,2)+' 小時</span>':'—')+'</div></div>';
+  if(uiShow('shift') && wholeDays) h += '<div class="stat-tile"><div class="lbl">平均每日休息時間</div><div class="val num">'+(workDays>0?'<span class="nw">'+fmtNum(breakHours/workDays,2)+' 小時</span>':'—')+'</div></div>';
   var campRecs = recs.filter(function(r){ return r.tripBonus>0 || (r.platform==='bonus' && r.campaignId); });
   if(campRecs.length){
     var campAmt = campRecs.reduce(function(a,r){ return a + (r.platform==='bonus' ? (+r.revenue||0) : (+r.tripBonus||0)); }, 0);
@@ -5531,30 +5617,30 @@ function renderAnalytics(){
   h += '<div class="section"><div class="section-title">效率指標</div><div class="card"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
   if(!wholeDays){
   h += '<div class="stat-tile"><div class="lbl">含空檔時薪</div><div class="val num">'+rateText(fm.hourly)+'</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">載客＋空檔時間</div><div class="val num">'+fmtNum(fm.hours,2)+' 小時</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">載客＋空檔時間</div><div class="val num"><span class="nw">'+fmtNum(fm.hours,2)+' 小時</span></div></div>';
   h += '<div class="stat-tile"><div class="lbl">有上下車時間的趟數</div><div class="val num">'+fm.timed+' / '+fm.trips+' 趟</div></div>';
   h += '<div class="stat-tile"><div class="lbl">平均每趟實收</div><div class="val income num">'+(fm.trips>0?fmtMoney2(net.total/fm.trips):'—')+'</div></div>';
   } else {
   var effRate = F ? fm.rateP : periodRate(range.from, range.to);
   h += '<div class="stat-tile"><div class="lbl">平均時薪(已扣休息)</div><div class="val num">'+rateText(effRate.rate)+'</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">總工時</div><div class="val num">'+fmtNum(hours,2)+' 小時</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">總工時</div><div class="val num"><span class="nw">'+fmtNum(hours,2)+' 小時</span></div></div>';
   // per km: the fixed costs up to today, as the km are (a month still running does not carry the whole month's yet)
   var kmFixTo = range.to>todayStr() ? todayStr() : range.to, kmExp = varExp + fixedTotalForRange(range.from, kmFixTo);
   if(!F) h += '<div class="stat-tile"><div class="lbl">每公里成本</div><div class="val expense num">'+(km>0?fmtMoney2(kmExp/km):'—')+'</div>'+(km>0 && kmFixTo<range.to && fixExp>0 ? '<div class="km-fix-note" style="font-size:10.5px;color:var(--text-muted);margin-top:2px">固定成本算到今天</div>' : '')+'</div>';
   h += '<div class="stat-tile"><div class="lbl">每公里實收</div><div class="val income num">'+(km>0?fmtMoney2(net.total/km):'—')+'</div></div>';
-  h += '<div class="stat-tile"><div class="lbl">總里程</div><div class="val num">'+fmtNum(km,1)+' km</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">總里程</div><div class="val num"><span class="nw">'+fmtNum(km,1)+' km</span></div></div>';
   if(!F){
-  h += '<div class="stat-tile"><div class="lbl">每公升可跑</div><div class="val num">'+(fuel.liters>0?fmtNum(km/fuel.liters,2)+' km':'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">每公升可跑</div><div class="val num">'+(fuel.liters>0?'<span class="nw">'+fmtNum(km/fuel.liters,2)+' km</span>':'—')+'</div></div>';
   if(fuel.cost>0) h += '<div class="stat-tile"><div class="lbl">每公里油錢</div><div class="val expense num">'+(km>0?fmtMoney2(fuel.cost/km):'—')+'</div></div>';
   var chg = chargeStatsInRange(range.from, range.to);
   if(chg.cost>0) h += '<div class="stat-tile"><div class="lbl">每公里電費</div><div class="val expense num">'+(km>0?fmtMoney2(chg.cost/km):'—')+'</div></div>';
   if(vcOn()){ var vpk = vcPeriodPerKm(range.from, range.to, km); if(vpk!=null) h += '<div class="stat-tile"><div class="lbl">每公里總成本(估)</div><div class="val expense num">'+fmtMoney2(vpk)+'</div></div>'; }
   if(chg.kwh>0){
-    h += '<div class="stat-tile"><div class="lbl">每度電可跑</div><div class="val num">'+(km>0?fmtNum(km/chg.kwh,2)+' km':'—')+'</div></div>';
+    h += '<div class="stat-tile"><div class="lbl">每度電可跑</div><div class="val num">'+(km>0?'<span class="nw">'+fmtNum(km/chg.kwh,2)+' km</span>':'—')+'</div></div>';
     h += '<div class="stat-tile"><div class="lbl">平均每度電價</div><div class="val num">'+fmtMoney2(chg.costKwh/chg.kwh)+'</div></div>';
   }
   }
-  h += '<div class="stat-tile"><div class="lbl">總休息時間</div><div class="val num">'+fmtNum(breakHours,2)+' 小時</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">總休息時間</div><div class="val num"><span class="nw">'+fmtNum(breakHours,2)+' 小時</span></div></div>';
   }
   h += '</div>'+(wholeDays ? rateMissNoteHtml(effRate) : '')+'</div></div>';
   }
@@ -5568,7 +5654,7 @@ function renderAnalytics(){
     h += '<div class="summary-row" style="grid-template-columns:1fr 1fr">';
     h += '<div class="stat-tile"><div class="lbl">總上廁所次數</div><div class="val num">'+ts.total+' 次</div></div>';
     h += '<div class="stat-tile"><div class="lbl">平均每日上廁所</div><div class="val num">'+fmtNum(ts.total/ts.days,2)+' 次</div></div>';
-    h += '<div class="stat-tile"><div class="lbl">平均多久上一次</div><div class="val num">'+(ts.total>0?'每 '+fmtNum(ts.hours/ts.total,2)+' 小時':'—')+'</div></div>';
+    h += '<div class="stat-tile"><div class="lbl">平均多久上一次</div><div class="val num">'+(ts.total>0?'每 <span class="nw">'+fmtNum(ts.hours/ts.total,2)+' 小時</span>':'—')+'</div></div>';
     h += '<div class="stat-tile"><div class="lbl">整天沒上廁所</div><div class="val num'+(ts.zeroDays?' expense':'')+'">'+ts.zeroDays+' 天</div></div>';
     h += '</div>';
     h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">從 '+ts.since+' 開始記錄,只算這之後的營業日(共 '+ts.days+' 天)。「多久上一次」用工時加休息時間計算。</div>';
@@ -5791,7 +5877,7 @@ function tripInsightsHtml(range, f){
 var hotspotSlot = 'all';
 /* ---------- 車友熱區:opt-in sharing of ~1 km pickup cells, shown back only where 3+ drivers overlap ---------- */
 var HOT_URL = 'https://script.google.com/macros/s/AKfycbyeHn97F3a2z9UtMt59DcyQQ_2WXDqzXrAhMSYelEEnUKg-wsLFRdOlQxL53-mlM08N/exec';  // the parameter can't be named sid: Google answers 400
-var hotSource = 'mine', friendHot = {};  // friendHot[slot] = {status:'loading'|'ok'|'err', data}
+var hotSource = 'mine', friendHot = {};  // friendHot[slot] = {status:'loading'|'ok'|'err'|'test'|'env', data}
 function cellKeyOf(lat, lng){ return (Math.round(lat*100)/100).toFixed(2)+','+(Math.round(lng*100)/100).toFixed(2); }
 function shareIdOf(){
   if(!state.shareId){
@@ -5846,7 +5932,7 @@ var VIP_FEATURES = [
   ['🗓️', '定期經營摘要', '每週、每月自動整理,時薪跟你自己前幾週、去年同期比'],
   ['📄', 'PDF 經營報告', '月報、年報、自訂期間排成有質感的 A4 報告,可以存檔、分享、列印'],
   ['⭐', '可保存的分析組合', '分析頁篩選平台、星期、時段,常看的條件存起來,點一下就打開'],
-  ['🔥', '人潮情報', '雙北演唱會、展覽、比賽的散場時間與地點,每週更新'],
+  ['🔥', '人潮情報', '哪裡要散場、哪裡要封路,先知道就先卡位:雙北演唱會、展覽、比賽、繞境進香、馬拉松等大型活動的時間、地點與交通管制,整理成一頁,點一下導航'],
   ['💰', '可支配所得', '實收扣掉支出、固定成本和你想先存的錢,看本週、本月真正落袋多少,還有照目前速度的月底預測'],
   ['⏱️', '目標還要跑多久', '今日、本月目標還差多少錢,照你的平均時薪和每趟實收,算出還要跑幾小時、幾趟'],
   ['🚗', '車輛成本與保養預測', '每開 1 公里車子花你多少(油錢、保養、折舊),回本進度、下次保養大概幾天後到、花多少,輪胎等分項更換提醒'],
@@ -6370,7 +6456,7 @@ function summaryHtml(S){
   var h = '<div class="summary-row" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:12px">'+
     '<div class="stat-tile"><div class="lbl">實收</div><div class="val income num">'+fmtMoney(s.net)+'</div></div>'+
     '<div class="stat-tile"><div class="lbl">時薪</div><div class="val num">'+(s.rate!=null?fmtMoney(s.rate):'—')+'</div></div>'+
-    '<div class="stat-tile"><div class="lbl">工時</div><div class="val num" style="font-size:15px">'+s.days+' 天<br>'+(Math.round(s.hours*10)/10)+' 小時</div></div></div>';
+    '<div class="stat-tile"><div class="lbl">工時</div><div class="val num" style="font-size:15px">'+s.days+' 天<br><span class="nw">'+(Math.round(s.hours*10)/10)+' 小時</span></div></div></div>';
   if(s.rate==null && s.net>0) h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin:-6px 0 10px">💡 時薪要有上下班打卡才算得出來(這段期間沒有打卡時數)。'+
     (uiOn('shift') ? '' : ' <span data-act="need-on:shift" role="button" tabindex="0" style="cursor:pointer;color:var(--accent);font-weight:700;white-space:nowrap">打開「上下班打卡」›</span>')+'</div>';
   if(s.rate!=null) h += rateMissNoteHtml(s.rateP, 'font-size:12px;color:var(--text-muted);line-height:1.6;margin:-6px 0 10px');
@@ -6404,7 +6490,7 @@ function openSummary(kind, offset){
   var h = '<div class="modal-title">📊 '+summaryTitle(p)+'<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
   h += '<div class="segmented" style="margin-bottom:10px"><button class="'+(p.kind==='week'?'active':'')+'" data-act="sum-kind:week">每週</button><button class="'+(p.kind==='month'?'active':'')+'" data-act="sum-kind:month">每月</button></div>';
   var maxOff = p.kind==='week' ? 52 : 24;
-  h += '<div class="month-nav" style="margin-bottom:10px"><button data-act="sum-nav:1"'+(sumView.offset>=maxOff?' disabled':'')+'>‹</button><div class="m-title" style="font-size:13.5px">'+mdStr(p.from)+' – '+mdStr(p.to)+'</div><button data-act="sum-nav:-1"'+(sumView.offset<=1?' disabled':'')+'>›</button></div>';
+  h += '<div class="month-nav" style="margin-bottom:10px"><button data-act="sum-nav:1" aria-label="上一期"'+(sumView.offset>=maxOff?' disabled':'')+'>‹</button><div class="m-title" style="font-size:13.5px">'+mdStr(p.from)+' – '+mdStr(p.to)+'</div><button data-act="sum-nav:-1" aria-label="下一期"'+(sumView.offset<=1?' disabled':'')+'>›</button></div>';
   h += S ? summaryHtml(S) : '<div style="padding:24px 0;text-align:center;color:var(--text-muted);font-size:13px">這段期間沒有記帳。</div>';
   if(reportAvailable()) h += '<div class="btn-row" style="margin-top:12px"><button class="btn btn-ghost" data-act="open-report:summary">📄 存成 PDF 報告</button></div>';
   openModal(h);
@@ -6419,15 +6505,15 @@ function summaryHomeHtml(){
   if(!pick) return '';
   var name = pick.kind==='month' ? (+pick.from.slice(5,7))+' 月經營摘要' : '上週經營摘要';
   if(!isVip()){
-    return '<div class="card" style="margin-bottom:12px;padding:12px 14px;display:flex;gap:10px;align-items:center"><div style="flex:1;font-size:13px;line-height:1.5"><b>📊 '+name+'出爐了 👑</b><div style="font-size:12px;color:var(--text-muted)">VIP 每週、每月自動幫你整理</div></div>'+
-      '<button class="btn btn-ghost" style="flex:none" data-act="open-summary-home:'+pick.kind+'">看看</button><button class="btn btn-ghost" style="flex:none;padding:6px 10px" data-act="summary-dismiss:'+pick.kind+'" aria-label="關閉">✕</button></div>';
+    return '<div class="card sum-home"><div class="sh-txt"><b>📊 '+name+'出爐了 👑</b><div style="font-size:12px;color:var(--text-muted)">VIP 每週、每月自動幫你整理</div></div>'+
+      '<div class="sh-btns"><button class="btn btn-ghost" style="flex:none" data-act="open-summary-home:'+pick.kind+'">看看</button><button class="btn btn-ghost" style="flex:none;padding:6px 10px" data-act="summary-dismiss:'+pick.kind+'" aria-label="關閉">✕</button></div></div>';
   }
   var S = buildSummary(pick);
   if(!S){ return ''; }
   var sub = S.s.rate!=null ? '時薪 '+fmtMoney(S.s.rate)+(S.verdict ? (S.verdict.mood==='good' ? ' 👍 比平常高 '+Math.abs(Math.round(S.verdict.diff*100))+'%' : S.verdict.mood==='low' ? ' 🤔 比平常低 '+Math.abs(Math.round(S.verdict.diff*100))+'%' : ' 👌 跟平常差不多') : '') : '實收 '+fmtMoney(S.s.net);
   if(dispOn()){ var dm = monthRange(new Date(t+'T00:00:00')), dc = dispCalc(dm.from, dm.to); if(dc) sub += '<br>本月可支配所得(估) '+fmtMoney(dc.disp); }
-  return '<div class="card" style="margin-bottom:12px;padding:12px 14px;display:flex;gap:10px;align-items:center"><div style="flex:1;font-size:13px;line-height:1.5"><b>📊 '+name+'出爐了</b><div style="font-size:12.5px;color:var(--text-muted)">'+sub+'</div></div>'+
-    '<button class="btn btn-primary" style="flex:none" data-act="open-summary-home:'+pick.kind+'">看摘要</button><button class="btn btn-ghost" style="flex:none;padding:6px 10px" data-act="summary-dismiss:'+pick.kind+'" aria-label="關閉">✕</button></div>';
+  return '<div class="card sum-home"><div class="sh-txt"><b>📊 '+name+'出爐了</b><div style="font-size:12.5px;color:var(--text-muted)">'+sub+'</div></div>'+
+    '<div class="sh-btns"><button class="btn btn-primary" style="flex:none" data-act="open-summary-home:'+pick.kind+'">看摘要</button><button class="btn btn-ghost" style="flex:none;padding:6px 10px" data-act="summary-dismiss:'+pick.kind+'" aria-label="關閉">✕</button></div></div>';
 }
 /* ---------- 💰 可支配所得 (VIP 2.0; only in 跑車人生 測試版 while it is tried out) ----------
    What is really the driver's for a week or a month: 實收 (fees taken off, tips in) − the expenses written down
@@ -7244,7 +7330,7 @@ function openReport(kind, offset){
     h += '<div class="form-grid2" style="margin-bottom:10px"><div class="form-row"><label>起始日期</label><input type="date" id="rpt-from" value="'+v.from+'" max="'+todayStr()+'"></div>'+
       '<div class="form-row"><label>結束日期</label><input type="date" id="rpt-to" value="'+v.to+'" max="'+todayStr()+'"></div></div>';
   } else {
-    h += '<div class="month-nav" style="margin-bottom:10px"><button data-act="rpt-nav:1"'+(v.offset>=(v.kind==='year'?10:60)?' disabled':'')+'>‹</button><div class="m-title">'+p.title+'</div><button data-act="rpt-nav:-1"'+(v.offset<=0?' disabled':'')+'>›</button></div>';
+    h += '<div class="month-nav" style="margin-bottom:10px"><button data-act="rpt-nav:1" aria-label="上一期"'+(v.offset>=(v.kind==='year'?10:60)?' disabled':'')+'>‹</button><div class="m-title">'+p.title+'</div><button data-act="rpt-nav:-1" aria-label="下一期"'+(v.offset<=0?' disabled':'')+'>›</button></div>';
   }
   if(!R){
     h += '<div style="padding:24px 0;text-align:center;color:var(--text-muted);font-size:13px">這段期間沒有記帳,沒有東西可以做成報告。</div>';
@@ -7454,7 +7540,10 @@ function myHotCenter(){
   }); });
   return best ? best.split(',').map(Number) : null;
 }
+// B3-14: like sending and deleting, looking at 車友熱區 only talks to the real server from the real app or website;
+// a test build or a test page shows a note instead (while the environment is still being found out, it waits)
 function loadFriendHot(slot){
+  if(!maySendShared()){ friendHot[slot] = {status: APP_ENV==null ? 'env' : 'test'}; return; }
   var c = myHotCenter();
   friendHot[slot] = {status:'loading'};
   var u = HOT_URL+'?action=hot&who='+shareIdOf()+'&slot='+slot+(c?('&lat='+c[0]+'&lng='+c[1]):'');
@@ -7486,8 +7575,9 @@ function friendHotHtml(){
   var fk = hotspotSlot;
   if(fk==='now'){ var nw = nowWindow(); fk = 'w'+nw.wd+'h'+nw.h; }
   var f = friendHot[fk];
-  if(!f){ loadFriendHot(fk); f = friendHot[fk]; }
-  if(f.status==='loading') return '<div style="'+muted+'">讀取車友熱區中…</div>';
+  if(!f || f.status==='env'){ loadFriendHot(fk); f = friendHot[fk]; }
+  if(f.status==='test') return '<div style="'+muted+'">測試版不連車友熱區。</div>';
+  if(f.status==='loading' || f.status==='env') return '<div style="'+muted+'">讀取車友熱區中…</div>';
   if(f.status==='err') return '<div style="'+muted+'">'+(f.error==='not_sharing'?'你的分享資料還沒送到(每天會送前一天的),明天再來看看。':'暫時讀不到車友熱區,請確認網路後')+' <a data-act="hot-reload" style="cursor:pointer;color:var(--accent)">重新讀取</a></div>';
   var j = f.data, list = j.cells||[], mine = myCellStats();
   var h = '';
@@ -7913,9 +8003,12 @@ function trafficTabsHtml(picks){
     return '<button type="button" class="chip-opt'+(k===cur?' selected':'')+'" style="font-size:12px;padding:4px 10px" data-act="traffic-show:'+k+'">'+esc(c.short||c.name)+'</button>';
   }).join('')+'</div>';
 }
+// B3-03 / B3-12: only numbers ever go into the link (a backup file or a relay answer could carry text here)
 function trafficUrl(lat, lng){
   var u = 'https://www.google.com/maps/@?api=1&map_action=map&layer=traffic&zoom=16';
-  return (lat!=null && lng!=null) ? u+'&center='+lat+','+lng : u;
+  if(lat==null || lng==null || lat==='' || lng==='') return u;
+  var a = +lat, b = +lng;
+  return (isFinite(a) && isFinite(b)) ? u+'&center='+a+','+b : u;
 }
 function trafficCardHtml(){
   var h = '<div class="section"><div class="card" style="padding:12px 14px">';
@@ -8250,6 +8343,7 @@ function openRoadNews(){
   openRoadNewsSheet();
 }
 function openRoadNewsSheet(){
+  if(!isVip()) return openVipIntro('官方路況快報');   // B3-13: the list itself checks, not only the buttons that lead here
   if(rnData && rnData.cities!==trafficPicks().join(',')) rnData = null;
   rnTab = 'live';
   openModal(rnSheetHtml());
@@ -8553,7 +8647,7 @@ function openTrafficSpotsModal(){
   }
   h += '<div class="card" style="margin-bottom:14px">';
   h += spots.length ? spots.map(function(s,i){
-    return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(s.name)+'</div><div class="li-sub">'+s.lat+', '+s.lng+'</div></div>'+
+    return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(s.name)+'</div><div class="li-sub">'+esc(s.lat)+', '+esc(s.lng)+'</div></div>'+
       '<div style="display:flex;gap:6px">'+(i>0?'<button class="btn btn-ghost" style="width:auto;padding:6px 10px" data-act="traffic-spot-up:'+i+'">↑</button>':'')+(i<spots.length-1?'<button class="btn btn-ghost" style="width:auto;padding:6px 10px" data-act="traffic-spot-down:'+i+'">↓</button>':'')+
       '<button class="btn btn-ghost" style="width:auto;padding:6px 10px;color:var(--expense)" data-act="traffic-spot-del:'+i+'">刪除</button></div></div>';
   }).join('') : '<div style="font-size:12.5px;color:var(--text-muted);padding:6px 0">目前沒有常用地點。</div>';
@@ -9485,16 +9579,19 @@ function uiModeLabel(ui){
 var FONT_SCALES = [['標準',1],['大',1.15],['特大',1.3],['超大',1.5]];
 function fontScaleLabel(){ var z = +state.fontScale||1; var m = FONT_SCALES.filter(function(x){ return x[1]===z; })[0]; return m ? m[0] : '標準'; }
 // a day's amount in a calendar cell: in large type the full figure would not fit, so thousands become 「4.6k」
-function calAmount(v){
-  if(!document.documentElement.classList.contains('big-ui') || Math.abs(v)<1000) return fmtNum(v);
+function calAmount(v, short){
+  if((!short && !document.documentElement.classList.contains('big-ui')) || Math.abs(v)<1000) return fmtNum(v);
   return (Math.round(v/100)/10).toString()+'k';
 }
 function applyFontScale(){
   var z = +state.fontScale||1, de = document.documentElement;
   de.style.zoom = z===1 ? '' : String(z);
   de.style.setProperty('--zoom', String(z)); // vh grows with zoom too, so pop-ups divide it back to fit the screen
+  de.style.setProperty('--nav-zoom', z>NAV_MAX_ZOOM ? (NAV_MAX_ZOOM/z).toFixed(4) : '1');
   de.classList.toggle('big-ui', z>=1.3);
+  if(typeof fitCalendar==='function') fitCalendar();
 }
+var NAV_MAX_ZOOM = 1.15;   // B3-05 (Q3): the phone tab bar stops growing at 大
 var LAYOUT_WIDTHS = [['自動','auto'],['手機寬度','phone'],['填滿螢幕','full']];
 function layoutWidthLabel(){ var m = LAYOUT_WIDTHS.filter(function(x){ return x[1]===state.layoutWidth; })[0]; return m ? m[0] : '自動'; }
 // a tablet is a screen whose short side is at least 600 points; a phone turned sideways stays a phone
@@ -9515,7 +9612,7 @@ function applyLayoutWidth(){
 }
 var layoutResizeTimer = null;
 // the keyboard only changes the height, so typing never triggers this; turning or splitting the screen does
-window.addEventListener('resize', function(){ clearTimeout(layoutResizeTimer); layoutResizeTimer = setTimeout(function(){ if(applyLayoutWidth()){ renderAll(); syncSystemBars(); } }, 150); });
+window.addEventListener('resize', function(){ clearTimeout(layoutResizeTimer); layoutResizeTimer = setTimeout(function(){ if(applyLayoutWidth()){ renderAll(); syncSystemBars(); } else fitCalendar(); }, 150); });
 // iPhone home-screen app: after the keyboard goes away iOS sometimes leaves the page scrolled up and keyboard-short,
 // so the tab bar floats mid-screen over blank space until the driver scrolls by hand (or reopens the app). When the
 // keyboard closes or the app comes back to the front, scroll the page back ourselves: a scroll is what makes iOS
@@ -10362,7 +10459,7 @@ function openDayReport(t){
   h += '<div class="summary-row" style="grid-template-columns:1fr 1fr;margin-bottom:10px">';
   h += tile('今日實收', fmtMoney(net), 'income') + tile('今日結餘(扣今日支出)', fmtMoney(net-exp));
   h += tile('趟數', trips+' 趟') + tile('每趟平均', trips?fmtMoney(tripNet/trips):'—');
-  h += tile('工時(已扣休息)', hours>0?fmtNum(hours,2)+' 小時':'—') + tile('平均時薪', rate!=null?fmtMoney(rate):'—', 'income');
+  h += tile('工時(已扣休息)', hours>0?'<span class="nw">'+fmtNum(hours,2)+' 小時</span>':'—') + tile('平均時薪', rate!=null?fmtMoney(rate):'—', 'income');
   var addOn = uiOn('addOn') ? recs.filter(function(r){ return r.addOn>0; }) : [];
   if(addOn.length) h += tile('加價單', addOn.length+' 單') + tile('加價多收', fmtMoney(addOn.reduce(function(a,r){ return a+r.addOn; },0)), 'income');
   h += '</div>';
@@ -10958,7 +11055,7 @@ function openSettingsModal(){
     h += '<div class="plat-row" data-key="'+p.key+'">'+
       orderBtnsHtml('platOrderList', p.key)+
       '<input type="text" id="f-plat-icon-'+p.key+'" readonly inputmode="none" data-act="icon-pick:f-plat-icon-'+p.key+'" value="'+esc(p.icon||'🚘')+'" maxlength="4" style="width:32px;flex:none;text-align:center;background:var(--surface-sunken);border:1px solid var(--border);border-radius:8px;padding:6px 2px;font-size:14px;color:var(--text)">'+
-      '<input type="color" id="f-plat-color-'+p.key+'" value="'+(p.color||'#8A8272')+'" style="width:28px;height:28px;flex:none;padding:0;border:1px solid var(--border);border-radius:7px;background:none">'+
+      '<input type="color" id="f-plat-color-'+p.key+'" value="'+esc(safeColor(p.color))+'" style="width:28px;height:28px;flex:none;padding:0;border:1px solid var(--border);border-radius:7px;background:none">'+
       '<input type="text" id="f-plat-name-'+p.key+'" value="'+esc(p.label)+'" style="flex:1;min-width:0;background:var(--surface-sunken);border:1px solid var(--border);border-radius:8px;padding:7px 9px;font-size:13px;color:var(--text)">'+
       '<label style="display:flex;align-items:center;gap:3px;font-size:10.5px;color:var(--text-muted);white-space:nowrap"><input type="checkbox" id="f-plat-hidden-'+p.key+'" '+(p.hidden?'checked':'')+'>隱藏</label>'+
       (p.custom ? '<button class="li-del" data-act="del-platform:'+p.key+'">'+ICON_TRASH+'</button>' : '')+
@@ -11068,12 +11165,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.23.5';
+var APP_VERSION = '2026.11.23.6';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.23.6', '🔠 字體選「超大」時,下方 5 個分頁都看得到;小手機上的日曆不再被切到一半(放不下金額時只顯示日期和顏色,金額看下方當天摘要)。另外系統除錯優化:匯入還原更安全、讀螢幕報讀更清楚'],
   ['2026.11.23.5', '🚕 載客效率:有打卡的日子,按了休息的時間不再算成等單和空檔,平均空檔更接近真正空等的時間', '', {tab:'analytics', find:'🚕 載客效率'}],
   ['2026.11.23.4', '📅 預約單會照各車隊的手續費算了(以前記的也一起重算,所以預約單的實收會比以前少一點);大都會多了「個人錢包」付款;0 月費方案的電子企業簽單不再多扣 6%;🏁 車隊比較把預約單算進那家車隊', '', {tab:'entry', find:'預約單'}],
   ['2026.11.23.3', '🔢 數字更準、更一致:同一天的平均時薪在報告、歷史、分析頁都一樣(上班滿 30 分鐘才算);沒打卡那天的錢不再把時薪拉高;前 7 天改成比前 7 個營業日;月底預測早上看也準;月中的每公里成本、平台手續費率修正', '', {tab:'analytics', find:'效率指標'}],
@@ -11322,7 +11420,7 @@ function aboutHtml(){
   h += para('🔤 字型與圖示', '金額數字使用 Space Grotesk 字型(Florian Karsten 設計,SIL Open Font License 1.1 開源授權);平台、支出項目的彩色圖示使用 Microsoft Fluent Emoji(© Microsoft Corporation,MIT 授權)。都已內建在記帳本裡,不用另外下載。');
   h += '<details class="lic" style="margin:-6px 0 12px"><summary tabindex="0" style="'+link+';cursor:pointer;font-size:12.5px">📜 第三方授權全文</summary>'+THIRD_PARTY_LICENSES.map(function(x){ return '<div style="font-weight:700;font-size:12.5px;margin:10px 0 4px">'+esc(x[0])+'</div>'+'<pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;line-height:1.5;color:var(--text-muted);background:rgba(127,127,127,.10);padding:8px 10px;border-radius:8px;margin:0;font-family:ui-monospace,Menlo,Consolas,monospace">'+esc(x[1])+'</pre>'; }).join('')+'</details>';
   h += para('🔒 你的帳由你掌握', '帳本預設存在你的手機,我們不預設取得;選擇分享車友熱區時,才會送出約 1 公里的格點、時段和趟數;備份檔和雲端同步放在哪裡由你選擇(雲端同步存在你自己的 Google 帳號)。<br>為了保護你的資料,建議手機設定螢幕鎖,並定期備份。');
-  h += para('📊 不具名使用人數統計', '為了知道有多少司機在用,記帳本每天會送出一次不具名資料:一組隨機編號、日期、版本、簡單/完整模式、手機系統(iPhone/安卓)、是否從主畫面打開。<br>不包含任何金額、平台、位置或個人資料,製作者也無法從編號知道你是誰。不想參與,可以在上面「不具名使用人數統計」取消勾選。');
+  h += para('📊 不具名使用人數統計', '為了知道有多少司機在用,記帳本每天會送出一次不具名資料:一組隨機編號、日期、版本、簡單/完整模式、手機系統(iPhone/安卓)、是否從主畫面打開、你在路況卡「我主要跑」勾的城市(不是定位)、是否訂閱 VIP。<br>不包含任何金額、平台、精確位置或個人資料,製作者也無法從編號知道你是誰。不想參與,可以在上面「不具名使用人數統計」取消勾選。');
   h += para('📄 隱私權政策', '完整說明記帳本會處理哪些資料、存在哪裡、保存多久:<br><a style="'+link+'" target="_blank" rel="noopener" href="https://app.realway.com.tw/privacy.html">查看隱私權政策 ›</a>');
   h += rvAboutHtml(para, link);
   h += para('📍 車友熱區', '同意分享的人,記帳本每天會送出前一天的「約 1 公里一格的上車區域、時段、趟數」,不含精確位置、金額、平台。至少 3 位車友都上過車的地方才會顯示給有分享的人看,看不到任何人的個人紀錄。可以隨時在上面取消分享。');
@@ -11802,7 +11900,40 @@ function ledgerProblem(p, strictDates){
     ((p.activeTrip!=null && (!isObj(p.activeTrip) || (strictDates && !isTs(p.activeTrip.pickup)))) ? '「載客中的行程」格式不對' : '') ||
     ((strictDates && p.pendingAccept!=null && (!isObj(p.pendingAccept) || typeof p.pendingAccept.ts!=='number' || !isFinite(p.pendingAccept.ts))) ? '「接到的單」格式不對' : '') ||
     // checked on an explicit restore only: a ledger already on the phone is never refused over it (nickName() reads anything as '')
-    ((strictDates && p.nickname!=null && typeof p.nickname!=='string') ? '「你的稱呼」的格式不對' : '');
+    ((strictDates && p.nickname!=null && typeof p.nickname!=='string') ? '「你的稱呼」的格式不對' : '') ||
+    (strictDates ? unsafeIdProblem(p) : '');
+}
+// B3-03: ids and keys (a record's id, its platform, a custom platform's key…) go straight into data-act="…" on screen.
+// This app only ever writes letters, digits and _ - . : in them, so a quote or < > there means the file was changed by
+// hand or by something else; it is not restored (checked on an explicit restore only; text the driver typed, such as a
+// note or a name, may hold any character and is escaped wherever it is shown).
+var LEDGER_ID_FIELDS = ['id','key','platform','category','tripId','subPlatform','subKey','campaignId','bonusPlatform'];
+var LEDGER_ID_LISTS = {records:'收入', expenses:'支出', customPlatforms:'自訂平台', customCats:'自訂支出項目', fixedCosts:'固定成本', analysisPresets:'分析組合', campaigns:'活動', cancels:'取消接客', payouts:'撥款核對', pendingTrips:'行程'};
+var LEDGER_ID_MAPS = ['platformOverrides','payoutSettings','dailyMeta','netEntryPlats','catOverrides','tollRefunds','fixedOverrides'];
+function unsafeIdProblem(p){
+  var BAD = /["'<>`\\]/, msg = '';
+  function bad(v){ return typeof v==='string' && BAD.test(v); }
+  Object.keys(LEDGER_ID_LISTS).some(function(k){
+    var list = p[k];
+    if(!Array.isArray(list)) return false;
+    for(var i=0;i<list.length;i++){
+      var x = list[i];
+      if(!x || typeof x!=='object') continue;
+      for(var j=0;j<LEDGER_ID_FIELDS.length;j++){
+        if(bad(x[LEDGER_ID_FIELDS[j]])){ msg = '「'+LEDGER_ID_LISTS[k]+'」第 '+(i+1)+' 筆的編號有不正常的符號,這份備份可能被改過,沒有還原'; return true; }
+      }
+    }
+    return false;
+  });
+  if(msg) return msg;
+  if(Array.isArray(p.platformOrder) && p.platformOrder.some(bad)) return '「平台排列」有不正常的符號,這份備份可能被改過,沒有還原';
+  LEDGER_ID_MAPS.some(function(k){
+    var o = p[k];
+    if(!o || typeof o!=='object' || Array.isArray(o)) return false;
+    if(Object.keys(o).some(bad)){ msg = '「'+((typeof LEDGER_PART_NAMES!=='undefined' && LEDGER_PART_NAMES[k])||k)+'」有不正常的符號,這份備份可能被改過,沒有還原'; return true; }
+    return false;
+  });
+  return msg;
 }
 // every way of swapping in a whole ledger (backup file, cloud backup, undo, clear) goes through here:
 // check it, keep the current ledger aside, and say it worked only once the phone has really stored it.
@@ -11996,7 +12127,7 @@ function savePlatformSettings(){
     var name = nameEl.value.trim() || p.label;
     var hidden = hiddenEl.checked;
     var icon = iconEl ? (iconEl.value.trim()||p.icon) : p.icon;
-    var color = colorEl ? colorEl.value : p.color;
+    var color = safeColor(colorEl ? colorEl.value : p.color);
     if(p.custom){
       var cp = state.customPlatforms.filter(function(c){return c.key===p.key;})[0];
       if(cp){ cp.label=name; cp.hidden=hidden; cp.icon=icon; cp.color=color; }
@@ -12521,7 +12652,8 @@ document.addEventListener('click', function(e){
   else if(cmd==='rn-tab'){ rnTab = arg==='work' ? 'work' : 'live'; rnRefresh(); }
   else if(cmd==='rn-set'){ openRoadSettings(); }
   else if(cmd==='rn-ask'){
-    if(arg==='yes'){ rnPushEnable().then(function(){ openRoadNewsSheet(); }); }
+    if(!isVip()) openVipIntro('官方路況快報');   // B3-13
+    else if(arg==='yes'){ rnPushEnable().then(function(){ openRoadNewsSheet(); }); }
     else { rnPushSet({on:false, asked:true}); openRoadNewsSheet(); showToast('不會收重大路況通知;之後可以在路況快報的 ⚙️ 打開', 3200); }
   }
   else if(cmd==='rn-pause'){ rnPushSet({pauseUntil:Date.now()+RN_PAUSE_MS}); rnSetRefresh(); renderAll(); showToast('通知暫停到 '+hhmm(Date.now()+RN_PAUSE_MS)); }
@@ -12860,7 +12992,7 @@ document.addEventListener('click', function(e){
     var typed = prompt('確定要清除,請輸入「清除」兩個字:');
     if(typed===null) return;
     if(typed.trim()!=='清除'){ alert('輸入的不是「清除」,沒有清除任何資料。'); return; }
-    // B1-05 (威爾森 11/22): the cloud is not emptied with it; the empty ledger is never sent (canSyncLedger)
+    // B1-05 (Welson 11/22): the cloud is not emptied with it; the empty ledger is never sent (canSyncLedger)
     replaceLedger(defaultState(), '清除所有資料', function(){ return '已清除。\n如果是按錯了,到 ⚙️ →「匯入還原」,最下面「還原前保留的帳」按「↩️ 換回這份」。'+(state.syncUrl ? '\n\n雲端的備份不會被清掉;之後記新帳時,雲端會開始存新的帳。' : ''); });
   }
   else if(cmd==='icon-pick'){ toggleIconPicker(arg); }
@@ -13095,6 +13227,7 @@ renderAll();
 loadCloudKey().then(function(){ setTimeout(function(){ cloudAuthCheck(function(){ cloudSyncIfBehind(); }); }, 1500); });
 detectAppEnv().then(function(env){
   APP_ENV = env;
+  if(currentTab==='analytics' && hotSource==='friends') renderAll();   // 車友熱區 waits for this (B3-14)
   setTimeout(hotDeleteFlush, 2500);
   setTimeout(statPing, 4000);
   setTimeout(hotSharePush, 6000);
