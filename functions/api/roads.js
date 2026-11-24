@@ -675,6 +675,20 @@ export async function onRequest(context) {
     if (!n) hx = env.ROADS_KV ? { ok: false } : undefined;
     else if (n.hx) hx = n.hx.d ? { ok: !!n.hx.ok, at: n.hx.d.at, S: n.hx.d.S, N: n.hx.d.N } : { ok: false };
   }
+  // 國道車速：只讀分區裡 Worker 整理好的慢路段（這裡不抓高公局）。選的縣市經過的才給、同一段只給一次、最慢的排前面。
+  // 分區讀不到（Worker 停了）→ ok:false；分區都沒有 fw（Worker 還是舊版或 FW_OFF）→ 不給，App 就不顯示國道分頁
+  let fw;
+  if (regs.some(r => got[r] && got[r].fw) || (env.ROADS_KV && regs.some(r => !got[r]))) {
+    const parts = regs.map(r => got[r] && got[r].fw);
+    if (parts.some(x => !x)) fw = { ok: false };
+    else {
+      const seen = {}, list = [];
+      parts.forEach(x => ((x.d && x.d.items) || []).forEach(it => { if (!seen[it.id] && it.cs.some(c => sel.indexOf(c) >= 0)) { seen[it.id] = 1; const o = Object.assign({}, it); delete o.cs; list.push(o); } }));
+      list.sort((a, b) => a.v - b.v);
+      const ats = parts.filter(x => x.d && x.d.at).map(x => x.d.at);
+      fw = parts.every(x => x.d) ? { ok: parts.every(x => x.ok), at: ats.length ? Math.min(...ats) : null, items: list } : { ok: false };
+    }
+  }
   const tdxOk = tdxOn && tdx.length > 0 && tdx.every(g => g.ok);
   const bad = tdx.find(g => !g.ok || g.err);
   const ats = tdx.filter(g => g.ok && g.at).map(g => g.at);
@@ -686,6 +700,7 @@ export async function onRequest(context) {
       tdx: { on: tdxOn, ok: tdxOk, part: tdxOn && !tdxOk && tdx.some(g => g.ok), at: ats.length ? Math.max(...ats) : null, err: bad ? errText(bad.err || 'fail') : null, stale: tdx.some(g => g.stale) }
     },
     items: out,
-    hx
+    hx,
+    fw
   });
 }

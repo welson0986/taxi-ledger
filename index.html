@@ -8320,8 +8320,16 @@ function rnBodyHtml(){
   // the server keeps the last good data when a source fails for a while; say how old it is
   var stale = [['pbs','警廣'],['tdx','交通部 TDX']].filter(function(x){ return src[x[0]] && src[x[0]].ok && src[x[0]].stale && src[x[0]].at; });
   if(!rnErr && stale.length) h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:6px">'+stale.map(function(x){ return x[1]+'暫時讀不到最新的,先顯示 '+hhmm(src[x[0]].at)+' 的'; }).join(';')+'。</div>';
-  h += '<div class="segmented" style="margin-bottom:8px"><button class="'+(rnTab==='live'?'active':'')+'" data-act="rn-tab:live">即時路況('+v.live.length+')</button><button class="'+(rnTab==='work'?'active':'')+'" data-act="rn-tab:work">🚧 施工('+v.work.length+')</button></div>';
-  if(rnTab==='live') h += rnHxHtml(rnData.hx, now, keys);
+  var fwOn = rnFwShow(keys, rnData);
+  if(rnTab==='fw' && !fwOn){ rnTab = 'live'; list = v.live; }
+  if(fwOn){
+    // three tabs: shorter names so they fit a small phone and 超大字
+    var fwN = rnData.fw.ok || rnData.fw.items ? String(rnFwList(rnData.fw).length) : '—';
+    h += '<div class="segmented" style="margin-bottom:8px"><button class="'+(rnTab==='live'?'active':'')+'" data-act="rn-tab:live">即時('+v.live.length+')</button><button class="'+(rnTab==='work'?'active':'')+'" data-act="rn-tab:work">🚧 施工('+v.work.length+')</button><button class="'+(rnTab==='fw'?'active':'')+'" data-act="rn-tab:fw">🛣️ 國道('+fwN+')</button></div>';
+  } else h += '<div class="segmented" style="margin-bottom:8px"><button class="'+(rnTab==='live'?'active':'')+'" data-act="rn-tab:live">即時路況('+v.live.length+')</button><button class="'+(rnTab==='work'?'active':'')+'" data-act="rn-tab:work">🚧 施工('+v.work.length+')</button></div>';
+  // 雪隧 lives at the top of 🛣️ 國道 when that tab is there; otherwise at the top of 即時路況
+  if(rnTab==='fw') return h + rnHxHtml(rnData.hx, now, keys) + rnFwBodyHtml(rnData.fw, now);
+  if(rnTab==='live' && !fwOn) h += rnHxHtml(rnData.hx, now, keys);
   if(!list.length) h += '<div style="'+NOTE+'">'+(rnTab==='work' ? '最近 7 天沒有'+esc(rnCityNames(keys))+'的施工消息。' : '目前沒有收到通報（不代表道路通暢）')+'</div>';
   h += list.map(function(e){ return rnItemHtml(e, now, keys); }).join('');
   h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:10px">'+(rnTab==='work'
@@ -8373,23 +8381,82 @@ function rnHxRow(name, o){
   return '<div style="display:flex;gap:10px;margin-top:6px;font-size:13px;line-height:1.55"><div style="flex:none;width:46px;font-weight:700">'+name+'</div><div style="flex:1;min-width:0">'+
     (l1 ? '<div>'+l1+'</div>' : '')+'<div>'+l2+'</div></div></div>';
 }
+/* 2026.11.24.2 (Welson): not every driver goes through 雪隧 every day, so the card folds to one line (往宜蘭/往台北 幾分 · 順不順,
+   the part that matters most) and a tap opens the lanes. Open by default only for drivers whose 我主要跑 has 宜蘭; once the driver
+   taps, that choice is kept. ⚙️ 「🏔️ 顯示雪隧」 hides it entirely. Both live on this phone only (not in the ledger, backups or sync). */
+var RN_HX_LS = 'taxi_rn_hx_v1';
+function rnHxPref(){ return rnLsGet(RN_HX_LS) || {}; }
+function rnHxSetPref(ch){ var p = rnHxPref(); for(var k in ch) p[k] = ch[k]; rnLsSet(RN_HX_LS, p); }
+function rnHxOn(keys){ return rnHxShow(keys) && rnHxPref().off!==true; }
+function rnHxOpen(keys){ var p = rnHxPref(); return typeof p.open==='boolean' ? p.open : keys.indexOf('ila')>=0; }
+// the folded line for one direction: 「11 分·順暢」 (no section time → 順不順 from the lanes)
+function rnHxBrief(o){
+  if(o.tt) return rnHxMins(o.tt).replace('約 ', '')+(o.v!=null ? '·'+rnHxLevel(o.v) : '');
+  var a = [o.L,o.R].filter(function(x){ return x!=null; });
+  return a.length ? rnHxLevel(Math.round(a.reduce(function(s,x){ return s+x; },0)/a.length)) : '—';
+}
 function rnHxHtml(hx, now, keys){
-  if(!hx || !rnHxShow(keys)) return '';
-  var head = '<div style="display:flex;align-items:baseline;gap:8px"><b style="font-size:13.5px">🏔️ 雪隧(坪林—頭城)</b>';
-  var foot = '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin-top:6px">隧道內全線禁止變換車道,請停車時查看、進隧道前選好。資料:交通部高速公路局「交通資料庫」,僅供參考,以現場標誌為準。</div>';
+  if(!hx || !rnHxOn(keys)) return '';
+  var open = rnHxOpen(keys), age = hx.at ? now - hx.at : Infinity, gone = !hx.S || !hx.N || age > RN_HX_GONE, old = !gone && age > RN_HX_OLD;
   var box = '<div class="card" style="padding:10px 12px;margin:0 0 8px">';
-  var age = hx.at ? now - hx.at : Infinity;
-  if(!hx.S || !hx.N || age > RN_HX_GONE) return box+head+'</div><div style="font-size:12.5px;color:var(--text-muted);margin-top:4px">暫時讀不到雪隧資料。</div>'+foot+'</div>';
-  var old = age > RN_HX_OLD;
-  return box+head+'<span style="margin-left:auto;font-size:11.5px;color:var(--text-muted)">'+hhmm(hx.at)+' 的資料'+(old ? ' · 較舊' : '')+'</span></div>'+
+  var tap = ' data-act="rn-hx" role="button" aria-expanded="'+(open?'true':'false')+'" style="cursor:pointer;';
+  if(!open){
+    var body = gone ? '<span style="color:var(--text-muted)">暫時讀不到雪隧資料</span>'
+      : '<span>往宜蘭 '+rnHxBrief(hx.S)+'</span><span>往台北 '+rnHxBrief(hx.N)+'</span>'+(old ? '<span style="color:var(--text-muted)">較舊</span>' : '');
+    return box+'<div'+tap+'display:flex;align-items:center;gap:8px"><b style="flex:none;font-size:13.5px">🏔️ 雪隧</b>'+
+      '<div style="flex:1;min-width:0;display:flex;flex-wrap:wrap;column-gap:12px;font-size:13px;line-height:1.55'+(old ? ';opacity:.6' : '')+'">'+body+'</div>'+
+      '<span style="flex:none;color:var(--accent);font-size:13px;font-weight:700">左右線 ›</span></div></div>';
+  }
+  var head = '<div'+tap+'display:flex;align-items:baseline;gap:8px"><b style="font-size:13.5px">🏔️ 雪隧(坪林—頭城)</b>';
+  var foot = '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin-top:6px">隧道內全線禁止變換車道,請停車時查看、進隧道前選好。資料:交通部高速公路局「交通資料庫」,僅供參考,以現場標誌為準。</div>';
+  var fold = '<span style="flex:none;color:var(--accent);font-size:12.5px;font-weight:700">收起 ⌃</span>';
+  if(gone) return box+head+'<span style="margin-left:auto"></span>'+fold+'</div><div style="font-size:12.5px;color:var(--text-muted);margin-top:4px">暫時讀不到雪隧資料。</div>'+foot+'</div>';
+  return box+head+'<span style="margin-left:auto;font-size:11.5px;color:var(--text-muted)">'+hhmm(hx.at)+' 的資料'+(old ? ' · 較舊' : '')+'</span>'+fold+'</div>'+
     '<div'+(old ? ' style="opacity:.55"' : '')+'>'+rnHxRow('往宜蘭', hx.S)+rnHxRow('往台北', hx.N)+'</div>'+foot+'</div>';
+}
+/* ---------- 🛣️ 國道：docs/規格草案_國道車速分頁_2026-11-24.md ----------
+   A third tab in 路況快報 (it takes no room from 即時路況): the freeway sections in the driver's cities that are slow right now,
+   slowest first, from the same 高公局「交通資料庫」 file as 雪隧. Lists only < 60 km/h (the server keeps < 80, so this
+   number can change with the app alone). ⚙️ 「🛣️ 顯示國道分頁」 hides the tab (this phone only). No push, no location. */
+var RN_FW_MAX = 60, RN_FW_LS = 'taxi_rn_fw_v1', RN_FW_NONE = ['hun','ttt'];   // 花蓮、台東 have no 國道
+var RN_FW_DIR = {N:'北上', S:'南下', E:'東向', W:'西向'};
+function rnFwPref(){ return rnLsGet(RN_FW_LS) || {}; }
+function rnFwCities(keys){ return keys.some(function(k){ return RN_FW_NONE.indexOf(k)<0; }); }
+function rnFwOn(keys){ return rnFwCities(keys) && rnFwPref().off!==true; }
+function rnFwShow(keys, d){ return !!(d && d.fw) && rnFwOn(keys); }
+// a server reply is data, not markup: numbers stay numbers, names are escaped when drawn
+function rnFwClean(j){
+  if(!j || typeof j!=='object') return null;
+  var num = function(x){ if(x==null || x==='') return null; x = Number(x); return isFinite(x) ? x : null; }, txt = function(x){ return String(x==null ? '' : x).slice(0, 24); };
+  var items = j.items instanceof Array ? j.items.slice(0, 300).map(function(i){
+    return i && typeof i==='object' ? {id:txt(i.id), r:txt(i.r), d:RN_FW_DIR[i.d] ? i.d : '', f:txt(i.f), to:txt(i.to), v:num(i.v), tt:num(i.tt), la:num(i.la), lo:num(i.lo)} : null;
+  }).filter(function(i){ return i && i.v!=null && i.v>0; }) : null;
+  return {ok:!!j.ok, at:rnHxNum(j.at), items:items};
+}
+function rnFwList(fw){ return (fw && fw.items || []).filter(function(i){ return i.v < RN_FW_MAX; }).sort(function(a, b){ return a.v - b.v; }); }
+function rnFwBodyHtml(fw, now){
+  var NOTE = 'font-size:12.5px;color:var(--text-muted);line-height:1.65;padding:10px 0';
+  var foot = '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:10px">時速是高公局的路段平均,大約是 3～6 分鐘前的車況;點一段看 Google 地圖路況。<br>資料:交通部高速公路局「交通資料庫」,僅供參考。開車時請勿操作。</div>';
+  var age = fw && fw.at ? now - fw.at : Infinity;
+  if(!fw || !fw.items || age > RN_HX_GONE) return '<div style="'+NOTE+'">暫時讀不到國道車速,稍後再按重新整理。</div>'+foot;
+  var old = age > RN_HX_OLD, list = rnFwList(fw), h = '<div style="font-size:12px;color:var(--text-muted);margin:0 0 4px">'+hhmm(fw.at)+' 的資料'+(old ? ' · 較舊' : '')+' · 只列時速 '+RN_FW_MAX+' 以下的路段</div>';
+  if(!list.length) return h+'<div style="'+NOTE+'">你選的城市目前國道都順(時速 '+RN_FW_MAX+' 以上)。</div>'+foot;
+  h += list.map(function(i){
+    var lv = i.v < RN_HX_JAM ? '塞' : '車多', link = i.la!=null && i.lo!=null;
+    var body = '<div style="flex:1;min-width:0;font-size:13.5px;line-height:1.5"><b>'+esc(i.r)+' '+(RN_FW_DIR[i.d]||'')+'</b> '+esc(i.f)+'→'+esc(i.to)+
+      '<div style="font-size:12.5px;color:var(--text-muted)"><b style="color:var(--text)">'+Math.round(i.v)+' km/h</b> · '+lv+(i.tt ? ' · 這段約 '+Math.max(1, Math.round(i.tt/60))+' 分' : '')+'</div></div>'+
+      (link ? '<div style="flex:none;align-self:center;color:var(--accent);font-size:12.5px;white-space:nowrap">看路況 ›</div>' : '');
+    var st = 'text-decoration:none;color:inherit;align-items:flex-start;gap:8px'+(old ? ';opacity:.6' : '');
+    return link ? '<a class="list-item rn-item rn-fw" style="'+st+'" target="_blank" rel="noopener" href="'+trafficUrl(i.la, i.lo)+'">'+body+'</a>' : '<div class="list-item rn-item rn-fw" style="'+st+'">'+body+'</div>';
+  }).join('');
+  return h+foot;
 }
 function rnSheetHtml(){
   var keys = trafficPicks();
   return '<div class="modal-title">🚦 路況快報<button class="close" style="margin-left:auto;margin-right:8px;font-size:18px" data-act="rn-set" aria-label="路況快報設定">⚙️</button><button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div><div id="rnSheet">'+
     '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 8px">城市:<b style="color:var(--text)">'+esc(rnCityNames(keys))+'</b>(照「常用路況地點」的我主要跑) · <a data-act="traffic-spots" style="color:var(--accent);cursor:pointer;font-weight:700">改城市</a></div>'+
     '<div id="rnBody">'+rnBodyHtml()+'</div>'+
-    '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:12px;border-top:1px solid var(--border);padding-top:8px">資料來源:警察廣播電臺即時路況、交通部運輸資料流通服務平臺(TDX)'+(rnHxShow(keys) ? ';雪隧:交通部高速公路局「交通資料庫」' : '')+';鄉鎮區位置:內政部國土測繪中心。<br>內容僅供參考,以現場狀況為準;開車時請勿操作。<br>只送出你選的城市,不送你的位置。'+(!pushLive() ? '打開才讀。' : isNativeApp() && rnPushPlugin() ? '重大路況通知要自己在 ⚙️ 打開(預設不收)。' : '打開才讀,網頁版沒有通知。')+'</div></div>';
+    '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:12px;border-top:1px solid var(--border);padding-top:8px">資料來源:警察廣播電臺即時路況、交通部運輸資料流通服務平臺(TDX)'+(rnHxOn(keys) || rnFwOn(keys) ? ';'+[rnHxOn(keys) ? '雪隧' : '', rnFwOn(keys) ? '國道車速' : ''].filter(Boolean).join('、')+':交通部高速公路局「交通資料庫」' : '')+';鄉鎮區位置:內政部國土測繪中心。<br>內容僅供參考,以現場狀況為準;開車時請勿操作。<br>只送出你選的城市,不送你的位置。'+(!pushLive() ? '打開才讀。' : isNativeApp() && rnPushPlugin() ? '重大路況通知要自己在 ⚙️ 打開(預設不收)。' : '打開才讀,網頁版沒有通知。')+'</div></div>';
 }
 function rnRefresh(){ var b = document.getElementById('rnBody'); if(b) b.innerHTML = rnBodyHtml(); rnSumRefresh(); }
 function rnLoad(force){
@@ -8409,7 +8476,7 @@ function rnLoad(force){
     if(gen!==rnGen) return;
     if(!j || !j.ok || !(j.items instanceof Array)) return fail();
     clearTimeout(rnTimer);
-    rnData = {at:Date.now(), cities:keys, src:j.src||{}, items:j.items, hx:rnHxClean(j.hx)};
+    rnData = {at:Date.now(), cities:keys, src:j.src||{}, items:j.items, hx:rnHxClean(j.hx), fw:rnFwClean(j.fw)};
     rnBusy = false; rnErr = ''; rnRefresh();
     if(document.getElementById('rnSheet')) rnMarkSeen();   // what the driver has now seen, for 「上次查看後新增」
   }).catch(fail);
@@ -8644,6 +8711,8 @@ function rnSetBodyHtml(){
     if(!rnPushCities().length) h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6">目前只有台北、新北有通知;你選的城市是 '+esc(rnCityNames(trafficPicks()))+'。</div>';
   }
   h += rnSwitch('f-rn-sum', c.summary, '📋 記帳頁摘要', '記帳頁的路況快報下面顯示一行:重大、事故各幾則,上次查看後新增幾則重大路況。');
+  if(rnFwCities(trafficPicks())) h += rnSwitch('f-rn-fw', rnFwPref().off!==true, '🛣️ 顯示國道分頁', '路況快報多一個「🛣️ 國道」分頁:你選的城市裡,現在時速 '+RN_FW_MAX+' 以下的國道路段,最慢的排前面。只存在這支手機。');
+  if(rnHxShow(trafficPicks())) h += rnSwitch('f-rn-hx', rnHxPref().off!==true, '🏔️ 顯示雪隧', '路況快報最上面一行:坪林—頭城往宜蘭、往台北要幾分鐘、順不順,點一下看左右線車速。不常走雪隧可以關掉。只存在這支手機。');
   if(can){
     h += rnSwitch('f-rn-quiet', c.quiet.on, '🌙 不打擾時段', '這段時間不通知(台灣時間,可以跨午夜,例如 23:00 到 06:00)');
     h += '<div style="display:flex;gap:8px;align-items:center;padding:8px 0 10px;border-bottom:1px solid var(--border);'+(c.quiet.on?'':'opacity:.5')+'"><input type="time" id="f-rn-qfrom" value="'+c.quiet.from+'" style="flex:1"'+(c.quiet.on?'':' disabled')+'><span>到</span><input type="time" id="f-rn-qto" value="'+c.quiet.to+'" style="flex:1"'+(c.quiet.on?'':' disabled')+'></div>';
@@ -8668,6 +8737,8 @@ function openRoadSettings(){
 function rnSettingChange(t){
   if(t.id==='f-rn-push'){ if(t.checked) rnPushEnable(); else rnPushDisable(); return true; }
   if(t.id==='f-rn-sum'){ rnPushSet({summary:t.checked}); rnSetRefresh(); renderAll(); return true; }
+  if(t.id==='f-rn-hx'){ rnHxSetPref({off:!t.checked}); rnSetRefresh(); return true; }   // this phone only, the ledger is not touched
+  if(t.id==='f-rn-fw'){ rnLsSet(RN_FW_LS, {off:!t.checked}); if(!t.checked && rnTab==='fw') rnTab = 'live'; rnSetRefresh(); return true; }
   if(t.id==='f-rn-quiet'){ var q = rnPushCfg().quiet; q.on = t.checked; rnPushSet({quiet:q}); rnSetRefresh(); return true; }
   if(t.id==='f-rn-qfrom' || t.id==='f-rn-qto'){
     if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(t.value)) return true;
@@ -10214,7 +10285,7 @@ var HELP = [
     ['📍 下車地統計', '分析頁「上車熱區」下面:最近 90 天(可改 30 天、180 天、1 年)你最常在哪裡下車(前 10 名),每一區下車後平均多久才接到下一單;「死區提醒」列下車後等單明顯比你平均久的地方(平均空檔是你平均的 1.5 倍以上,同一區至少 3 次才列,最多 5 區)。空檔是估算:下車到按「接到單了」(沒按就到下一趟上車),每天最後一趟、下班前最後一趟、休息中都不算。要按上車／下車並允許定位才有資料,只在手機上算。', 'dropStat', 'vip', 'launch'],
     ['👥 車友熱區', '同意分享上車熱區才能看附近車友都在哪裡上車,每個地點也會顯示你自己在那裡載過幾趟、平均實收多少;只分享約 1 公里一格,不含精確位置、金額;取消分享會刪除你分享過的資料。'],
     ['即時路況', '記帳頁「看即時路況」開 Google 地圖;常用地點可以新增、排序。停車或紅燈時再看。', 'traffic'],
-    ['🚦 官方路況快報', '記帳頁的「🚦 路況快報」(可以在 ⚙️ 記帳首頁排列單獨排順序、單獨開關;不開「看即時路況」也能用):依「常用路況地點」勾的我主要跑城市(快報裡的「改城市」也能改),列出警察廣播電臺和交通部 TDX 公布的事故、壅塞、封路、交通管制;施工另外放在「🚧 施工」。點一則開 Google 地圖路況。選了台北、新北或宜蘭時,最上面有「🏔️ 雪隧」:坪林—頭城往宜蘭、往台北各要幾分鐘、順不順,左線、右線各多快(交通部高速公路局「交通資料庫」;隧道內禁止變換車道,進隧道前選好)。只送出城市、不送位置。右上角 ⚙️:重大路況通知(安卓測試版,預設不收;上班打卡中才通知,無聲)、記帳頁摘要(重大、事故各幾則)、不打擾時段、暫停 1 小時。停車或紅燈時再看。', 'roadNews', 'vip', 'launch']
+    ['🚦 官方路況快報', '記帳頁的「🚦 路況快報」(可以在 ⚙️ 記帳首頁排列單獨排順序、單獨開關;不開「看即時路況」也能用):依「常用路況地點」勾的我主要跑城市(快報裡的「改城市」也能改),列出警察廣播電臺和交通部 TDX 公布的事故、壅塞、封路、交通管制;施工另外放在「🚧 施工」。點一則開 Google 地圖路況。「🛣️ 國道」分頁:你選的城市裡現在時速 60 以下的國道路段,最慢的排前面。選了台北、新北或宜蘭時,國道分頁最上面有「🏔️ 雪隧」:坪林—頭城往宜蘭、往台北各要幾分鐘、順不順,點一下看左線、右線各多快(隧道內禁止變換車道,進隧道前選好)。國道、雪隧的資料是交通部高速公路局「交通資料庫」,不常用可以在 ⚙️ 關掉。只送出城市、不送位置。右上角 ⚙️:重大路況通知(安卓測試版,預設不收;上班打卡中才通知,無聲)、記帳頁摘要(重大、事故各幾則)、不打擾時段、暫停 1 小時。停車或紅燈時再看。', 'roadNews', 'vip', 'launch']
   ]],
   ['分析', [
     ['看賺多少', '分析頁選本日 / 本週 / 本月 / 本年 / 自訂,看實收、淨利、時薪。'],
@@ -11255,12 +11326,14 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.24.1';
+var APP_VERSION = '2026.11.24.2';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.24.2', '🛣️ 測試版:路況快報多一個「國道」分頁:你選的城市裡現在時速 60 以下的國道路段,最慢的排前面,點一段看地圖路況;雪隧也搬到這一頁最上面。不想看可以在 ⚙️ 關掉「顯示國道分頁」', 'beta', {tab:'entry', find:'路況快報'}],
+  ['2026.11.24.2', '🏔️ 測試版:雪隧平常收成一行(往宜蘭、往台北要幾分鐘、順不順),點一下才看左右線;「我主要跑」有宜蘭的預設打開。不常走雪隧的,路況快報 ⚙️ 可以關掉「顯示雪隧」', 'beta', {tab:'entry', find:'路況快報'}],
   ['2026.11.24.1', '🏔️ 測試版:路況快報選了台北、新北或宜蘭時,最上面多一張「雪隧」:坪林—頭城往宜蘭、往台北各要幾分鐘、順不順,左線、右線各多快。隧道內禁止變換車道,請停車時看、進隧道前選好', 'beta', {tab:'entry', find:'路況快報'}],
   ['2026.11.23.6', '🔠 字體選「超大」時,下方 5 個分頁都看得到;小手機上的日曆不再被切到一半(放不下金額時只顯示日期和顏色,金額看下方當天摘要)。另外系統除錯優化:匯入還原更安全、讀螢幕報讀更清楚'],
   ['2026.11.23.5', '🚕 載客效率:有打卡的日子,按了休息的時間不再算成等單和空檔,平均空檔更接近真正空等的時間', '', {tab:'analytics', find:'🚕 載客效率'}],
@@ -12494,12 +12567,12 @@ var READ_ONLY_ACTS = ['tab','noop','close-modal','discard-settings','jump-expens
   'open-help','open-settings','set-sec','ver-tap','dismiss-tab-warning','wn-go',
   'open-import','open-import-pick','do-import','open-restore','do-restore','undo-restore','move-from-web',
   'export-file','quick-backup','open-export','copy-export','copy-saved','backup-dest','backup-snooze','share-day','share-day-go','share-back','copy-vip-id','rn-copy-id',
-  'open-crowd','crowd-close','crowd-reload','open-roadnews','rn-tab','rn-reload','traffic-show','open-fare-compare','cmp-pay','open-subbreakdown','exp-cat-detail','explain-net',
+  'open-crowd','crowd-close','crowd-reload','open-roadnews','rn-tab','rn-hx','rn-reload','traffic-show','open-fare-compare','cmp-pay','open-subbreakdown','exp-cat-detail','explain-net',
   'fc-tab','ds-days','anf-toggle','anf-plat','anf-wd','anf-clear','anp-apply','hot-slot','hot-src','hot-reload',
   'open-vip','pace-vip','disp-vip','fc-vip','rn-vip','vc-vip','ds-vip','rate-app'];
 // the same for a box that saves itself when changed (里程、工時、休息、上廁所 in 歷史) or a setting that applies at once:
 // only these change nothing in the ledger
-var READ_ONLY_CHANGES = ['rpt-from','rpt-to','fc-src','fc-dst','anf-from','anf-to','dayPicker','customFrom','customTo','importFile','f-cloud-key-show'];
+var READ_ONLY_CHANGES = ['rpt-from','rpt-to','fc-src','fc-dst','anf-from','anf-to','dayPicker','customFrom','customTo','importFile','f-cloud-key-show','f-rn-hx','f-rn-fw'];
 document.addEventListener('click', function(e){
   var t = e.target.closest('[data-act]');
   if(!t) return;
@@ -12741,7 +12814,8 @@ document.addEventListener('click', function(e){
   else if(cmd==='rn-vip'){ openVipIntro('官方路況快報'); }
   else if(cmd==='open-roadnews'){ openRoadNews(); }
   else if(cmd==='rn-reload'){ rnLoad(true); }
-  else if(cmd==='rn-tab'){ rnTab = arg==='work' ? 'work' : 'live'; rnRefresh(); }
+  else if(cmd==='rn-tab'){ rnTab = arg==='work' ? 'work' : arg==='fw' ? 'fw' : 'live'; rnRefresh(); }
+  else if(cmd==='rn-hx'){ rnHxSetPref({open:!rnHxOpen(trafficPicks())}); rnRefresh(); }
   else if(cmd==='rn-set'){ openRoadSettings(); }
   else if(cmd==='rn-ask'){
     if(!isVip()) openVipIntro('官方路況快報');   // B3-13
