@@ -290,6 +290,12 @@ html:not(.wide-ui) .bottom-nav{zoom:var(--nav-zoom, 1)}
 .segmented button.active{background:var(--surface);color:var(--text);box-shadow:var(--shadow)}
 /* large type: let the choices wrap onto a second row instead of hiding the last ones off-screen */
 .big-ui .segmented{flex-wrap:wrap}
+.rn-tabs.rn-noico .rn-ico{display:none}
+.rn-hx-dir{white-space:nowrap}
+.rn-hx-narrow{flex-wrap:wrap}
+.rn-hx-narrow .rn-hx-body{flex:1 1 100%!important;order:2;display:block!important}
+.rn-hx-narrow .rn-hx-dir{display:block}
+.rn-hx-narrow .rn-hx-more{order:3;margin-left:auto!important}
 .big-ui .segmented button{flex:1 1 auto}
 
 .progress-wrap{margin-top:6px}
@@ -916,8 +922,13 @@ var LEDGER_FMT = 1;
 // show wrongly. Every save writes at least this version's level and never lowers it (packState), so a ledger saved by a
 // newer version tells an older one to open it read-only (ledgerTooNew): shown, but nothing is entered, nothing is
 // written to the phone and nothing is sent to the cloud; a backup at a higher level is refused like a newer fmt.
-// RULE: add 1 whenever a new feature makes an older version count or show existing data wrongly (a new kind of entry,
-// a field whose meaning changes). A new setting an older version simply ignores does not need it.
+// RULE (C1-03/05, Welson 11/24): add 1 whenever a new feature makes an older version read or save existing data wrongly:
+// a new kind of entry, a field whose meaning changes, or an older version would work a number out and SAVE it into the
+// ledger. A new setting an older version simply ignores does not need it, and neither does a pure calculation fix (fee
+// rates, how a fee is worked out, what 時薪 counts): an older version only shows the old figure and never stores it, so
+// the update note says what changed (2026.11.23.3 B2, .23.5 空檔扣休息 and .24.4 YOXI added none).
+// RELEASE: a version that raises the level goes on the web only after the store versions (Android, and iOS once it is
+// listed) are out, so a ledger saved on the web never locks an app driver's phone into read-only.
 //   (none) ledgers saved before 2026.11.22.13, which wrote no level
 //   1      the original layout (up to 2026.11.20)
 //   2      2026.11.21 記帳時填實收 (r.netEntry: an older version takes the 實收 as a fare and charges the fee again) and
@@ -2567,12 +2578,14 @@ function subBreakdown(recs){
 }
 function openSubBreakdownModal(item){
   var h = '<div class="modal-title">'+esc(item.label)+'<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
-  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">共 '+item.count+(item.notTrip?' 筆':' 趟')+',合計 '+fmtMoney(item.total)+'(點項目可查看/修改)</div>';
   var recsList = item.ids.map(function(id){ return state.records.filter(function(r){return r.id===id;})[0]; }).filter(Boolean);
+  // B2-08: BOLT pays to the cent, so its lines and total show the cents and add up
+  var allBolt = recsList.length && recsList.every(function(r){ return r.platform==='bolt'; });
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">共 '+item.count+(item.notTrip?' 筆':' 趟')+',合計 '+(allBolt ? fmtMoney2(item.total) : fmtMoney(item.total))+'(點項目可查看/修改)</div>';
   recsList.sort(function(a,b){ return a.date<b.date?1:(a.date>b.date?-1:(b.ts||0)-(a.ts||0)); });
   h += '<div class="card">' + recsList.map(function(r){
     var val = computeNetRevenue(r)+(+r.tip||0);
-    return '<div class="list-item" data-act="edit-income:'+r.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+r.date+'</div><div class="li-sub">'+(isNetMarked(r)?'實收 ':'車資 ')+fmtMoney(r.revenue||0)+(r.tip?(' · 小費 '+fmtMoney(r.tip)):'')+(r.area?(' · 📍'+esc(r.area)):'')+(r.event?(' · 🎉'+esc(r.event)):'')+(r.note?(' · '+esc(r.note)):'')+'</div></div><div class="li-amt income num">+'+fmtMoney(val)+'</div></div>';
+    return '<div class="list-item" data-act="edit-income:'+r.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+r.date+'</div><div class="li-sub">'+(isNetMarked(r)?'實收 ':'車資 ')+fmtMoney(r.revenue||0)+(r.tip?(' · 小費 '+fmtMoney(r.tip)):'')+(r.area?(' · 📍'+esc(r.area)):'')+(r.event?(' · 🎉'+esc(r.event)):'')+(r.note?(' · '+esc(r.note)):'')+'</div></div><div class="li-amt income num">+'+fmtMoneyFor(r.platform, val)+'</div></div>';
   }).join('') + '</div>';
   openModal(h);
 }
@@ -3173,19 +3186,22 @@ function ocrField(lines, labels){
   }
   return null;
 }
-function ocrYearFor(mo, day){
-  var now = new Date(), y = now.getFullYear();
+// now (optional, ms): the moment the screenshot is read; defaults to now (tests pass a fixed day)
+function ocrYearFor(mo, day, now){
+  now = now!=null ? new Date(+now) : new Date();
+  var y = now.getFullYear();
   var d = new Date(y, mo-1, day);
   if(d.getTime() - now.getTime() > 7*86400000) y--;   // a December statement read in January
   return y;
 }
-function ocrDate(mo, day){ return ocrYearFor(mo, day)+'-'+pad(mo)+'-'+pad(day); }
-function ocrPeriod(text){
+function ocrDate(mo, day, now){ return ocrYearFor(mo, day, now)+'-'+pad(mo)+'-'+pad(day); }
+function ocrPeriod(text, now){
+  var od = function(mo, day){ return ocrDate(mo, day, now); };
   var t = String(text).replace(/\s+/g,' ').replace(/[－—–~～]/g,'-');
   var m = t.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*-\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日/);          // Uber: 10月26日 - 11月2日
-  if(m) return {from:ocrDate(+m[1], +m[2]), to:ocrDate(+m[3], +m[4])};
+  if(m) return {from:od(+m[1], +m[2]), to:od(+m[3], +m[4])};
   m = t.match(/(\d{1,2})\s*(\d{1,2})\s*月\s*-\s*(\d{1,2})\s*(\d{1,2})\s*月/);                        // BOLT across months: 29 12月-4 1月
-  if(m) return {from:ocrDate(+m[2], +m[1]), to:ocrDate(+m[4], +m[3])};
+  if(m) return {from:od(+m[2], +m[1]), to:od(+m[4], +m[3])};
   m = t.match(/(\d{1,2})?\s*-\s*(\d{1,2}\s+\d{1,2}|\d{2,4})\s*月/);                             // BOLT: 9-15 11月
   if(m){
     // the OCR can drop the space ("1-712月") or the first day ("-712月"): split the digits into day + month
@@ -3195,13 +3211,16 @@ function ocrPeriod(text){
     var ok = tries.map(function(x){ return {day:+x[0], mo:+x[1]}; }).filter(function(x){ return x.mo>=1 && x.mo<=12 && x.day>=1 && x.day<=31; });
     if(m[1]) ok = ok.filter(function(x){ return x.day >= +m[1]; }).concat(ok.filter(function(x){ return x.day < +m[1]; }));
     else if(ok.length > 1){
-      // no first day to go by ("-111月" = 1 11月 or 11 1月): take the week that ended closest to today
-      var now = new Date(todayStr()+'T00:00:00').getTime();
-      ok.sort(function(a, b){ return Math.abs(new Date(ocrDate(a.mo, a.day)+'T00:00:00') - now) - Math.abs(new Date(ocrDate(b.mo, b.day)+'T00:00:00') - now); });
+      // no first day to go by ("-111月" = 1 11月 or 11 1月): take the week that ended closest to today. A statement's
+      // week has always ended already (C3-10): a reading that ends after today is only kept when every reading does
+      var today = now!=null ? toDateStr(new Date(+now)) : todayStr(), t0 = new Date(today+'T00:00:00').getTime();
+      var past = ok.filter(function(x){ return od(x.mo, x.day) <= today; });
+      if(past.length) ok = past;
+      ok.sort(function(a, b){ return Math.abs(new Date(od(a.mo, a.day)+'T00:00:00') - t0) - Math.abs(new Date(od(b.mo, b.day)+'T00:00:00') - t0); });
     }
     if(ok.length){
-      var to = ocrDate(ok[0].mo, ok[0].day);
-      return {from: m[1] && +m[1] <= ok[0].day ? ocrDate(ok[0].mo, +m[1]) : addDays(to, -6), to: to};
+      var to = od(ok[0].mo, ok[0].day);
+      return {from: m[1] && +m[1] <= ok[0].day ? od(ok[0].mo, +m[1]) : addDays(to, -6), to: to};
     }
   }
   m = t.match(/(\d{1,2})\s*月\s*(20\d\d)/);                                                         // a month view: 3月 2026
@@ -4930,8 +4949,9 @@ function comparisonHtml(range, f){
   }
   var h = '<div class="section"><div class="section-title">與'+cr.label+'比較('+shortRange(cr.cur)+' vs '+shortRange(cr.prev)+')</div><div class="card">';
   h += row('實收', a.net, b.net, fmtMoney);
-  // fixed costs for the days kept and passed in each range (fixedSpan), the same 淨利 as the card above
-  if(!f) h += row(profitLabel(cr.cur.from, cr.cur.to, fixedTotalKept(cr.cur.from, cr.cur.to)), a.profit, b.profit, fmtMoney, !!b.empty);
+  // fixed costs for the days kept and passed in each range (fixedSpan), the same 淨利 as the card above, so it
+  // carries the card's own label (11/24: 本年 had read 「從 9/21 算到今天」 above and 「從 9/21 起算」 here)
+  if(!f) h += row(profitLabel(range.from, range.to, fixedTotalKept(range.from, range.to)), a.profit, b.profit, fmtMoney, !!b.empty);
   h += row('趟數', a.trips, b.trips, function(v){ return v+' 趟'; });
   h += row(f && !anDayOnly(f) ? '含空檔時薪' : '平均時薪', a.hourly, b.hourly, fmtMoney);
   if(!f || anDayOnly(f)) h += row('每公里實收', a.perKm, b.perKm, fmtMoney2);
@@ -5619,7 +5639,7 @@ function anNoteHtml(f, fm, range){
   t.push(fm.dayOnly ? '只算這幾個星期的收入;工時、里程用這幾天的打卡和里程。支出和固定成本不拆到星期,所以不顯示成本和淨利。'
     : '只算符合條件的收入。支出、固定成本、打卡工時、里程分不到平台或時段,所以不顯示成本、淨利和每公里的數字。');
   if(anHasTime(f)) t.push('時段依上車時間,沒有按「上車」的用記帳時間'+(un ? ';有 '+un+' 筆是事後補記、不知道幾點,沒有列入' : '')+'。小費、活動獎勵不是單趟,篩時段時不列入。'+(f.hFrom>f.hTo && f.wdays.length ? '跨午夜的時段算同一個晚上,午夜後那段算前一天的星期。' : ''));
-  if(!fm.dayOnly) t.push('含空檔時薪＝有按上下車的 '+fm.timed+' 趟(符合條件的共 '+fm.trips+' 趟)的實收 ÷(載客時間＋上一趟下車到這趟上車的空檔)。空檔超過 '+EMPTY_GAP_CAP_MIN+' 分鐘當成休息不算;上班後第一趟前面的等單時間算不到,所以會比打卡算的時薪略高。');
+  if(!fm.dayOnly) t.push('含空檔時薪＝有按上下車的 '+fm.timed+' 趟(符合條件的共 '+fm.trips+' 趟)的實收 ÷(載客時間＋上一趟下車到這趟上車的空檔)。有打卡的日子,空檔只算上班時段內(按了休息、下班後都不算),第一趟從上班打卡算起;沒打卡的日子,空檔超過 '+EMPTY_GAP_CAP_MIN+' 分鐘當成休息不算,第一趟前面的等單時間算不到。');
   return '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px;line-height:1.6">🔎 '+t.join('<br>')+'</div>';
 }
 function anSavePreset(){
@@ -6049,6 +6069,7 @@ function tripInsightsHtml(range, f){
 }
 var hotspotSlot = 'all';
 /* ---------- 車友熱區:opt-in sharing of ~1 km pickup cells, shown back only where 3+ drivers overlap ---------- */
+var HOT_MIN_DRIVERS = 3;  // 上架當天改 5，跟 Apps Script MIN_DRIVERS、隱私權政策同一天改（C3-08：畫面上的四處說明都從這裡產生）
 var HOT_URL = 'https://script.google.com/macros/s/AKfycbyeHn97F3a2z9UtMt59DcyQQ_2WXDqzXrAhMSYelEEnUKg-wsLFRdOlQxL53-mlM08N/exec';  // the parameter can't be named sid: Google answers 400
 var hotSource = 'mine', friendHot = {};  // friendHot[slot] = {status:'loading'|'ok'|'err'|'test'|'env', data}
 function cellKeyOf(lat, lng){ return (Math.round(lat*100)/100).toFixed(2)+','+(Math.round(lng*100)/100).toFixed(2); }
@@ -6138,6 +6159,8 @@ function vipLaunched(){ return betaOn() || VIP_GATE; }
 var PUSH_LIVE = false;
 // ⚙️ 關於「🆓 免費使用」 from the day VIP_GATE is on (11/23 定案)
 var ABOUT_FREE_VIP = '記帳功能免費,不需註冊帳號;進階分析、路況快報等功能需訂閱 VIP。';
+// the website sells nothing (C3-07, Welson 11/24 Q4): it says where VIP is instead of asking to subscribe
+var ABOUT_FREE_VIP_WEB = '記帳功能免費,不需註冊帳號;進階分析、路況快報等是手機 App 的 VIP 功能。';
 function pushLive(){ return betaOn() || PUSH_LIVE; }
 // 「VIP 測試」 and the stand-in store (假服務商) (B3-02, 11/23 Q2): once VIP is sold only the installed 測試版 app has them;
 // the website's 測試模式 (版本號 5 下, ?beta=1) still shows the other new features but never unlocks VIP.
@@ -6353,9 +6376,10 @@ var VipMock = (function(){
   };
   return api;
 })();
-// The real adapter goes here once the developer accounts exist: in the installed app only, never on the website.
+// The real adapter goes here once the developer accounts exist. Set it straight to the adapter: the website never gets
+// it, vipProvider() keeps it to the installed app (C3-04), so no price or purchase can ever show on the web.
 var VIP_REAL_PROVIDER = null;
-function vipProvider(){ return VIP_REAL_PROVIDER || (vipTestAllowed() ? VipMock : VipNone); }
+function vipProvider(){ return (isNativeApp() && VIP_REAL_PROVIDER) || (vipTestAllowed() ? VipMock : VipNone); }
 function vipCanBuy(){ return vipProvider() !== VipNone; }
 var vipEnt = {provider:null, cache:null, error:null, userId:'', ready:null, checking:null, lastTry:0, gen:0};
 function vipCacheLoad(name){
@@ -6791,12 +6815,19 @@ function dispForecast(from, to){
   // 小版本 B2 (Welson Q4): the days already over (1 號 to yesterday) give the pace; today is still running, so it counts
   // as whichever is more, what it has made so far or an average day (08:00 before the first fare is not a 0 day);
   // every day after today at the average. 實收, 支出 and 里程 (保養、換車預留) alike; fixed costs for the whole month.
-  var done = dom - 1, c = dispCalc(from, addDays(t, -1)), d = dispCalc(t, t), left = mDays - dom;
+  // 小版本 C2 (C2-02, Welson 11/24): a driver who started keeping the ledger this month: the pace is from that first day
+  // (fixedSpan's start), not from the 1st, and fixed costs and 車貸 run from it to the month's end. Like the first 3 days
+  // of a month, the first 3 days kept say too little. Anyone who started before this month: the 1st, as before.
+  var first = dataFirstDate(), s0 = (first && first>from) ? first : from;
+  var done = Math.round((new Date(t+'T00:00:00') - new Date(s0+'T00:00:00'))/86400000);
+  if(s0>from && done<DISP_FORECAST_FROM_DAY-1) return {wait:true, since:s0};
+  if(done<1) return {wait:true};
+  var c = dispCalc(s0, addDays(t, -1)), d = dispCalc(t, t), left = mDays - dom;
   if(!(c.net>0)) return {wait:true};
   var run = function(a, b){ var avg = a/done; return a + Math.max(b, avg) + avg*left; };
   var net = run(c.net, d.net), varExp = run(c.varExp, d.varExp), km = run(c.km, d.km), rs = dispReserves(c.R, net, km, c.rates);
-  var loan = vcAvailable() ? vcLoanForRange(from, to) : 0;
-  return {net:net, disp:net - varExp - fixedTotalForRange(from, to) - loan - rs.maint - rs.repl - rs.tax};
+  var loan = vcAvailable() ? vcLoanForRange(s0, to) : 0;
+  return {net:net, disp:net - varExp - fixedTotalForRange(s0, to) - loan - rs.maint - rs.repl - rs.tax, since:s0>from ? s0 : null};
 }
 function dispPreviewHtml(){
   return '<div class="section"><div class="card" style="padding:12px 14px;display:flex;gap:10px;align-items:center"><div style="flex:1;font-size:13px;line-height:1.5"><b>💰 可支配所得 👑</b>'+
@@ -6846,10 +6877,10 @@ function dispCardHtml(range, kind){
   if(warn.length) h += '<div style="font-size:12px;color:var(--expense);line-height:1.6;margin-top:8px">'+warn.map(function(w){ return '⚠️ '+esc(w); }).join('<br>')+'</div>';
   if(kind==='month'){
     var fc = dispForecast(range.from, range.to);
-    if(fc && fc.wait) h += '<div style="font-size:12px;color:var(--text-muted);margin-top:10px">📈 月底預測:每月 '+DISP_FORECAST_FROM_DAY+' 號起、本月有實收後顯示(月初資料太少,估不準)。</div>';
+    if(fc && fc.wait) h += '<div style="font-size:12px;color:var(--text-muted);margin-top:10px">📈 月底預測:'+(fc.since ? '開始記帳滿 '+(DISP_FORECAST_FROM_DAY-1)+' 天後顯示(剛開始資料太少,估不準)。' : '每月 '+DISP_FORECAST_FROM_DAY+' 號起、本月有實收後顯示(月初資料太少,估不準)。')+'</div>';
     else if(fc) h += '<div class="card" style="margin-top:10px;padding:10px 12px;font-size:13px;line-height:1.7;background:var(--surface-sunken)"><b>📈 照目前速度,月底(估算)</b><br>'+
       '實收約 <b class="num">'+fmtMoney(fc.net)+'</b>、可支配所得約 <b class="num">'+fmtMoney(fc.disp)+'</b>'+
-      '<div style="font-size:11px;color:var(--text-muted);margin-top:2px">用本月 1 號到昨天平均每天的實收、支出、里程推到月底(今天還在跑,用平均和今天已經賺的取較大的);固定成本算整個月。</div></div>';
+      '<div style="font-size:11px;color:var(--text-muted);margin-top:2px">'+(fc.since ? '用你 '+mdStr(fc.since)+' 開始記帳後到昨天' : '用本月 1 號到昨天')+'平均每天的實收、支出、里程推到月底(今天還在跑,用平均和今天已經賺的取較大的);固定成本'+(fc.since ? '從 '+mdStr(fc.since)+' 算到月底' : '算整個月')+'。</div></div>';
   }
   var anyRes = c.R.maintOn || c.R.taxOn || (c.R.replOn && c.rates.repl>0);
   h += '<div class="btn-row" style="margin-top:10px"><button class="btn btn-ghost" data-act="disp-settings">⚙️ 預留款設定'+(anyRes?'':'(目前都不扣)')+'</button></div>';
@@ -7277,16 +7308,17 @@ var RPT_HEAT_MIN_TRIPS = 3, RPT_HEAT_MIN_MIN = 60;
 function reportHeat(from, to){
   var b, d, rate = [], sum = [], trips = 0, timed = 0;
   for(b=0;b<6;b++){ rate.push([]); sum.push([]); for(d=0;d<7;d++){ rate[b].push({net:0, min:0, n:0}); sum[b].push({net:0, min:0, n:0}); } }
-  var at = function(grid, ts){ var x = new Date(ts); return grid[Math.floor(x.getHours()/4)][(x.getDay()+6)%7]; };
+  // the weekday is the fare's business day (B2-11: 週五 02:00 with the day changing at 04:00 is still Friday, as in 🏁)
+  var at = function(grid, ts, d){ var x = new Date(ts); return grid[Math.floor(x.getHours()/4)][(new Date((d||businessDayOf(ts))+'T00:00:00').getDay()+6)%7]; };
   recordsInRange(from, to).forEach(function(r){
     if(platformDef(r.platform).tipOnly) return;
     trips++;
     var ts = anRecTs(r); if(ts==null) return;
-    var c = at(sum, ts); c.net += computeNetRevenue(r)+(+r.tip||0); c.n++;
+    var c = at(sum, ts, r.date); c.net += computeNetRevenue(r)+(+r.tip||0); c.n++;
   });
   timedFares(from, to).forEach(function(x){
     if(!x.o.rec) return;
-    var c = at(rate, x.o.pickup.ts);
+    var c = at(rate, x.o.pickup.ts, x.d);
     c.net += computeNetRevenue(x.o.rec)+(+x.o.rec.tip||0); c.min += x.ride+x.gap; c.n++; timed++;
   });
   var useRate = timed>=20 && timed>=trips*0.5, src = useRate ? rate : sum, vals = [], v = [], lv = [], top = null;
@@ -7825,7 +7857,7 @@ function myCellStats(){
 function friendHotHtml(){
   var muted = 'font-size:12.5px;color:var(--text-muted);line-height:1.7;padding:6px 0';
   if(state.shareHot!==true){
-    return '<div style="'+muted+'">分享你的上車熱區,就能看到附近車友都在哪裡上車。<br>只送約 1 公里一格的區域和時段,不送精確位置、金額、平台;有 3 位以上車友都上過車的地方才會顯示。</div>'+
+    return '<div style="'+muted+'">分享你的上車熱區,就能看到附近車友都在哪裡上車。<br>只送約 1 公里一格的區域和時段,不送精確位置、金額、平台;有 '+HOT_MIN_DRIVERS+' 位以上車友都上過車的地方才會顯示。</div>'+
       '<div class="btn-row" style="margin-top:6px"><button class="btn btn-primary" data-act="share-hot-on">👍 同意分享,看車友熱區</button></div>';
   }
   var fk = hotspotSlot;
@@ -7857,7 +7889,7 @@ function openShareHotAsk(){
   h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.75;margin-bottom:14px">'+
     '・只送「約 1 公里一格的區域、日期、白天/晚上/深夜、趟數」<br>'+
     '・<b>不送</b>精確位置、金額、平台、任何個人資料<br>'+
-    '・至少 3 位車友都上過車的地方才會顯示,看不到任何人的紀錄<br>'+
+    '・至少 '+HOT_MIN_DRIVERS+' 位車友都上過車的地方才會顯示,看不到任何人的紀錄<br>'+
     '・有分享的人才能看車友熱區<br>'+
     '・隨時可以在 ⚙️ 取消,取消時會刪除你分享過的資料</div>';
   h += '<div class="btn-row"><button class="btn" data-act="share-hot-choose:no">先不要</button><button class="btn btn-primary" data-act="share-hot-choose:yes">👍 同意分享</button></div>';
@@ -8569,8 +8601,8 @@ function rnBodyHtml(){
   if(fwOn){
     // three tabs: shorter names so they fit a small phone and 超大字
     var fwN = rnData.fw.ok || rnData.fw.items ? String(rnFwList(rnData.fw).length) : '—';
-    h += '<div class="segmented" style="margin-bottom:8px"><button class="'+(rnTab==='live'?'active':'')+'" data-act="rn-tab:live">即時('+v.live.length+')</button><button class="'+(rnTab==='fw'?'active':'')+'" data-act="rn-tab:fw">🛣️ 國道('+fwN+')</button><button class="'+(rnTab==='work'?'active':'')+'" data-act="rn-tab:work">🚧 施工('+v.work.length+')</button></div>';
-  } else h += '<div class="segmented" style="margin-bottom:8px"><button class="'+(rnTab==='live'?'active':'')+'" data-act="rn-tab:live">即時路況('+v.live.length+')</button><button class="'+(rnTab==='work'?'active':'')+'" data-act="rn-tab:work">🚧 施工('+v.work.length+')</button></div>';
+    h += '<div class="segmented rn-tabs" style="margin-bottom:8px"><button class="'+(rnTab==='live'?'active':'')+'" data-act="rn-tab:live">即時('+v.live.length+')</button><button class="'+(rnTab==='fw'?'active':'')+'" data-act="rn-tab:fw"><span class="rn-ico">🛣️ </span>國道('+fwN+')</button><button class="'+(rnTab==='work'?'active':'')+'" data-act="rn-tab:work"><span class="rn-ico">🚧 </span>施工('+v.work.length+')</button></div>';
+  } else h += '<div class="segmented rn-tabs" style="margin-bottom:8px"><button class="'+(rnTab==='live'?'active':'')+'" data-act="rn-tab:live">即時路況('+v.live.length+')</button><button class="'+(rnTab==='work'?'active':'')+'" data-act="rn-tab:work"><span class="rn-ico">🚧 </span>施工('+v.work.length+')</button></div>';
   // 雪隧 lives at the top of 🛣️ 國道 when that tab is there; otherwise at the top of 即時路況
   if(rnTab==='fw') return h + rnHxHtml(rnData.hx, now, keys) + rnFwBodyHtml(rnData.fw, now);
   if(rnTab==='live' && !fwOn) h += rnHxHtml(rnData.hx, now, keys);
@@ -8646,10 +8678,10 @@ function rnHxHtml(hx, now, keys){
   var tap = ' data-act="rn-hx" role="button" aria-expanded="'+(open?'true':'false')+'" style="cursor:pointer;';
   if(!open){
     var body = gone ? '<span style="color:var(--text-muted)">暫時讀不到雪隧資料</span>'
-      : '<span>往宜蘭 '+rnHxBrief(hx.S)+'</span><span>往台北 '+rnHxBrief(hx.N)+'</span>'+(old ? '<span style="color:var(--text-muted)">較舊</span>' : '');
-    return box+'<div'+tap+'display:flex;align-items:center;gap:8px"><b style="flex:none;font-size:13.5px">🏔️ 雪隧</b>'+
-      '<div style="flex:1;min-width:0;display:flex;flex-wrap:wrap;column-gap:12px;font-size:13px;line-height:1.55'+(old ? ';opacity:.6' : '')+'">'+body+'</div>'+
-      '<span style="flex:none;color:var(--accent);font-size:13px;font-weight:700">左右線 ›</span></div></div>';
+      : '<span class="rn-hx-dir">往宜蘭 '+rnHxBrief(hx.S)+'</span><span class="rn-hx-dir">往台北 '+rnHxBrief(hx.N)+'</span>'+(old ? '<span class="rn-hx-dir" style="color:var(--text-muted)">較舊</span>' : '');
+    return box+'<div class="rn-hx-row"'+tap+'display:flex;align-items:center;gap:8px"><b style="flex:none;font-size:13.5px">🏔️ 雪隧</b>'+
+      '<div class="rn-hx-body" style="flex:1;min-width:0;display:flex;flex-wrap:wrap;column-gap:12px;font-size:13px;line-height:1.55'+(old ? ';opacity:.6' : '')+'">'+body+'</div>'+
+      '<span class="rn-hx-more" style="flex:none;color:var(--accent);font-size:13px;font-weight:700">左右線 ›</span></div></div>';
   }
   var head = '<div'+tap+'display:flex;align-items:baseline;gap:8px"><b style="font-size:13.5px">🏔️ 雪隧(坪林—頭城)</b>';
   var foot = '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin-top:6px">隧道內全線禁止變換車道,請停車時查看、進隧道前選好。資料:交通部高速公路局「交通資料庫」,僅供參考,以現場標誌為準。</div>';
@@ -8702,7 +8734,28 @@ function rnSheetHtml(){
     '<div id="rnBody">'+rnBodyHtml()+'</div>'+
     '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:12px;border-top:1px solid var(--border);padding-top:8px">資料來源:警察廣播電臺即時路況、交通部運輸資料流通服務平臺(TDX)'+(rnHxOn(keys) || rnFwOn(keys) ? ';'+[rnHxOn(keys) ? '雪隧' : '', rnFwOn(keys) ? '國道車速' : ''].filter(Boolean).join('、')+':交通部高速公路局「交通資料庫」' : '')+';鄉鎮區位置:內政部國土測繪中心。<br>內容僅供參考,以現場狀況為準;開車時請勿操作。<br>只送出你選的城市,不送你的位置。'+(!pushLive() ? '打開才讀。' : isNativeApp() && rnPushPlugin() ? '重大路況通知要自己在 ⚙️ 打開(預設不收)。' : '打開才讀,網頁版沒有通知。')+'</div></div>';
 }
-function rnRefresh(){ var b = document.getElementById('rnBody'); if(b) b.innerHTML = rnBodyHtml(); rnSumRefresh(); }
+function rnRefresh(){ var b = document.getElementById('rnBody'); if(b){ b.innerHTML = rnBodyHtml(); fitRoadNews(); } rnSumRefresh(); }
+/* C3-11: a narrow phone with the biggest text (320 寬＋超大) could not fit the tabs in one row or 雪隧's folded line
+   ("往宜蘭 15 分·車多" broke every few characters). Measured on what was drawn, as fitCalendar does (no width guesses):
+   tabs that take more than one row (or scroll) lose their icons; a direction never breaks inside, and when one does not
+   fit beside 雪隧, each direction takes a whole line and 左右線 › moves below, on the right. Redone on every
+   draw and on rotating or resizing. */
+function fitRoadNews(){
+  var root = document.getElementById('rnBody'); if(!root) return;
+  var tabs = root.querySelector('.rn-tabs');
+  if(tabs && tabs.clientWidth){
+    tabs.classList.remove('rn-noico');
+    var bs = tabs.querySelectorAll('button'), rows = false;
+    for(var i=1;i<bs.length;i++) if(bs[i].offsetTop !== bs[0].offsetTop) rows = true;
+    if(rows || tabs.scrollWidth > tabs.clientWidth + 0.5) tabs.classList.add('rn-noico');
+  }
+  var row = root.querySelector('.rn-hx-row'), body = row && row.querySelector('.rn-hx-body');
+  if(body && body.clientWidth){
+    row.classList.remove('rn-hx-narrow');
+    // the two directions may sit on two lines beside 雪隧 (that was always so); only one that does not fit moves things
+    if(body.scrollWidth > body.clientWidth + 0.5) row.classList.add('rn-hx-narrow');
+  }
+}
 function rnLoad(force){
   if(!isVip()) return;
   var keys = trafficPicks().join(',');
@@ -8738,7 +8791,7 @@ function openRoadNewsSheet(){
   if(!isVip()) return openVipIntro('官方路況快報');   // B3-13: the list itself checks, not only the buttons that lead here
   if(rnData && rnData.cities!==trafficPicks().join(',')) rnData = null;
   rnTab = 'live';
-  openModal(rnSheetHtml());
+  openModal(rnSheetHtml()); fitRoadNews();
   if(rnData) rnMarkSeen();
   rnLoad(false);
 }
@@ -9133,15 +9186,47 @@ function cloudStaleHtml(){
 }
 var NEW_HOME = 'https://app.realway.com.tw/';
 var MOVE_NOTICE_ON = false;
-function moveNoticeHtml(){
-  // off until the app is out: drivers move once, straight from here into the app (turn on at launch)
-  if(!MOVE_NOTICE_ON) return '';
-  if(location.hostname!=='welson0986.github.io' || (state.moveNoticeHideUntil||0)>Date.now()) return '';
-  return '<div class="card" style="border-color:var(--accent);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.7"><b style="color:var(--accent)">🚚 記帳本搬新家了</b><br>'+
-    '新網址:<a href="'+NEW_HOME+'" target="_blank" rel="noopener" style="color:var(--accent);font-weight:700">app.realway.com.tw</a>。帳存在這個瀏覽器裡,不會自己跟過去,請照順序搬:<br>'+
-    '① 按下面「存成備份檔」 ② 打開新網址 ③ 選「我有備份檔,把帳搬過來」匯入。<br>搬好後記得把新網址加到主畫面。<br><b>不急著搬也可以</b>:這裡照常能用,等 App 上架後,直接從這裡把帳搬進 App 就好。'+
-    '<div class="btn-row" style="margin-top:8px;gap:8px"><button class="btn btn-primary" style="flex:1" data-act="export-file">💾 存成備份檔</button><button class="btn btn-ghost" style="flex:1" data-act="move-notice-later">先不搬</button></div></div>';
+/* 舊網址搬家卡片 (C1-01, Welson 11/24): off until the app is out (turned on at launch). Drivers on the old address move
+   once, straight into the app, never to another web address first:
+     Android with the Play page up, iPhone with STORE_IOS_ID set: how to move into the app, with the store link;
+     iPhone before the iOS app is out: nothing to move yet, keep entering here;
+     anything else (a computer, the store page not up yet): nothing.
+   「我已經搬好了」 is kept in this browser only (MOVED_KEY), not in the ledger: it is about this address in this browser,
+   and must not travel with a backup into the app. The card then becomes one small line. */
+var MOVED_KEY = 'taxi_moved_v1';
+function movedAt(){ try{ var v = +localStorage.getItem(MOVED_KEY); return v>0 ? v : 0; }catch(e){ return 0; } }
+function pageHost(){ return location.hostname; }
+function moveNoticeKind(){
+  var os = phoneOs();
+  if(os==='android') return STORE_ANDROID_LISTED ? 'app' : '';
+  if(os==='ios') return /^[0-9]+$/.test(STORE_IOS_ID) ? 'app' : 'wait';
+  return '';
 }
+function moveNoticeHtml(){
+  if(!MOVE_NOTICE_ON || pageHost()!=='welson0986.github.io') return '';
+  var kind = moveNoticeKind(); if(!kind) return '';
+  var at = kind==='app' ? movedAt() : 0;
+  if(at) return '<div class="move-done-line" style="font-size:12px;color:var(--text-muted);margin:0 2px 10px;line-height:1.6">這裡的帳已經在 '+mdStr(toDateStr(new Date(at)))+' 搬到 App,新的帳請記在 App。 '+
+    '<button type="button" data-act="move-undo" style="background:none;border:0;padding:0;font:inherit;color:var(--accent);text-decoration:underline;cursor:pointer">還沒搬好?</button></div>';
+  if((state.moveNoticeHideUntil||0)>Date.now()) return '';
+  var box = '<div class="card move-card" style="border-color:var(--accent);margin-bottom:12px;padding:12px 14px;font-size:12.5px;line-height:1.7">';
+  if(kind==='wait') return box+'<b style="color:var(--accent)">📱 Android 版 App 已經上架</b><br>iPhone 版上架後,這裡會告訴你怎麼搬;這段期間照常在這裡記帳就好,<b>不用先搬到別的網址</b>。'+
+    '<div class="btn-row" style="margin-top:8px"><button class="btn btn-ghost" style="flex:1" data-act="move-notice-later">知道了</button></div></div>';
+  var ios = phoneOs()==='ios', store = ios ? 'App Store' : 'Google Play';
+  var url = ios ? 'https://apps.apple.com/app/id'+STORE_IOS_ID : 'https://play.google.com/store/apps/details?id='+STORE_ANDROID_ID;
+  return box+'<b style="color:var(--accent)">📲 跑車人生 App 上架了</b><br>這裡的帳存在這個瀏覽器裡,不會自己跟過去。照順序搬一次就好:<br>'+
+    '① 按下面「存成備份檔」,存到雲端硬碟'+(ios ? '(也可以存到 iCloud)' : '')+'<br>② 到 '+store+' 裝「跑車人生」<br>③ 打開 App,選「我有備份檔,把帳搬過來」,選剛剛那個檔<br>'+
+    '<b>搬好之後請只在 App 記帳</b>;這裡的帳不會自動跟過去,兩邊都記會變成兩本帳。'+
+    '<div class="btn-row" style="margin-top:8px;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" style="flex:1 1 45%" data-act="export-file">💾 存成備份檔</button>'+
+    '<a class="btn btn-ghost move-store" style="flex:1 1 45%;text-align:center;text-decoration:none" href="'+url+'" target="_blank" rel="noopener">到 '+store+'</a>'+
+    '<button class="btn btn-ghost" style="flex:1 1 45%" data-act="move-done">✅ 我已經搬好了</button><button class="btn btn-ghost" style="flex:1 1 45%" data-act="move-notice-later">先不搬</button></div></div>';
+}
+function moveDone(){
+  if(!confirm('確定已經在 App 打開、看到搬過去的帳了嗎?按確定後這裡不再提醒搬家。')) return;
+  try{ localStorage.setItem(MOVED_KEY, String(Date.now())); }catch(e){}
+  renderAll();
+}
+function moveUndo(){ try{ localStorage.removeItem(MOVED_KEY); }catch(e){} renderAll(); }
 function backupReminderHtml(){
   if(!backupReminderDue()) return '';
   var days = state.lastExportAt ? Math.floor((Date.now()-state.lastExportAt)/86400000) : null;
@@ -9225,12 +9310,14 @@ function yearReportData(year){
     var from = year+'-'+pad(mo)+'-01', to = year+'-'+pad(mo)+'-'+pad(new Date(year,mo,0).getDate());
     var recs = recordsInRange(from,to), exps = expensesInRange(from,to);
     var g = sumIncome(recs), nt = sumNetIncome(recs);
+    // C2-03 (B2-06): a coupon the driver swallowed lowers 實收 but is not the fleet's fee (as 分析頁 and the PDF count it)
+    var absorbed = recs.reduce(function(a, r){ return a + (r.couponType==='absorb' ? (+r.coupon||0) : 0); }, 0);
     var byCat = {}; allCats().forEach(function(c){ byCat[c.key]=0; });
     exps.forEach(function(e){ byCat[e.category] = (byCat[e.category]||0) + (+e.amount||0); });
     // fixed costs as 淨利 (fixedSpan): a month before the first record (or still to come) has none and no 淨利 (blank in the CSV)
     var fix = fixedTotalKept(from,to), tollR = tollRefundInRange(from,to), off = fixedSpan(from,to).none;
     rows.push({month:year+'-'+pad(mo), off:off, trips:recs.filter(function(r){ return !platformDef(r.platform).tipOnly; }).length,
-      gross:g.rev, tip:g.tip, fee:g.total-nt.total, net:nt.total, byCat:byCat, varExp:sumExpense(exps), toll:tollR, fixed:fix,
+      gross:g.rev, tip:g.tip, fee:g.total-nt.total-absorbed, net:nt.total, byCat:byCat, varExp:sumExpense(exps), toll:tollR, fixed:fix,
       profit:nt.total-sumExpense(exps)+tollR-fix, km:totalKmInRange(from,to), hours:totalHoursInRange(from,to), days:workingDaysInRange(from,to)});
   }
   var plat = {};
@@ -9238,7 +9325,7 @@ function yearReportData(year){
     var k = r.platform, p = plat[k] || (plat[k] = {label:platformDef(k).label, trips:0, gross:0, fee:0, net:0});
     if(!platformDef(k).tipOnly) p.trips++;
     var gr = computeGrossRevenue(r)+(+r.tip||0), ne = computeNetRevenue(r)+(+r.tip||0);
-    p.gross += gr; p.net += ne; p.fee += gr-ne;
+    p.gross += gr; p.net += ne; p.fee += gr-ne-(r.couponType==='absorb' ? (+r.coupon||0) : 0);
   });
   var bonus = {};
   recordsInRange(year+'-01-01', year+'-12-31').forEach(function(r){
@@ -9352,7 +9439,11 @@ function computePreviewRecordFromForm(key){
   rec.revenue = +grab('f-revenue')||0;
   var tf0 = tipFromForm(); rec.tip = tf0 ? tf0.tip : 0;
   if(def.fareTypeOptions){ var fte=document.getElementById('chip-fareType'); rec.fareType = fte?fte.value:def.fareTypeOptions[0]; }
-  if(def.paymentOptions){ var pe=document.getElementById('chip-payment'); rec.payment = pe?pe.value:def.paymentOptions[0]; }
+  // as saveIncome: a payment only where the form shows its row; 預估車資 with nothing tapped yet has no 實收 to show
+  if(def.paymentOptions){
+    var pe=document.getElementById('chip-payment');
+    if(payRowShown(key, rec.fareType, !!def.fareTypeOptions)){ rec.payment = (pe && pe.value) || undefined; if(!rec.payment){ if(payChoiceNeeded(key, rec.fareType) && uiOn('payment')) rec._payMissing = true; else rec.payment = payDefaultOf(def.paymentOptions); } }
+  }
   if(def.discountOptions){ var de=document.getElementById('chip-discountTier'); rec.discountTier = de?de.value:def.discountOptions[0]; rec.discountFinal = true; }
   if(def.enterpriseDiscountOptions){ var ee=document.getElementById('chip-enterpriseDiscount'); rec.enterpriseDiscount = ee?ee.value:def.enterpriseDiscountOptions[0]; }
   if(def.hasStationFee){ rec.stationFee = +grab('f-station-fee')||0; }
@@ -9372,6 +9463,12 @@ function updateIncomePreview(){
   var def = platformDef(currentIncomeModalKey);
   if(def.tipOnly){ return; }
   var rec = computePreviewRecordFromForm(currentIncomeModalKey);
+  if(rec._payMissing){
+    el.innerHTML = '<div class="summary-row" style="grid-template-columns:1fr 1fr 1fr">'+
+      '<div class="stat-tile"><div class="lbl">車資</div><div class="val num">'+fmtMoney(+rec.revenue||0)+'</div></div>'+
+      '<div class="stat-tile" style="grid-column:span 2"><div class="lbl">抽成、實收</div><div class="val" style="font-size:13px;color:var(--text-muted)">選付款方式後顯示</div></div></div>';
+    return;
+  }
   var net = computeNetRevenue(rec);
   var gross = computeGrossRevenue(rec);
   var fee = gross-net;
@@ -9467,13 +9564,13 @@ function buildIncomeForm(key, existing){
     h += off('discount', '<div class="form-row"><label>優惠派別</label>'+chipRowHtml('discountTier', def.discountOptions, (existing&&existing.discountTier)||def.discountOptions[0])+'<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">只是記錄這一單是什麼派,不影響金額計算</div></div>');
   }
   var curFareType = (existing&&existing.fareType) || (def.fareTypeOptions&&def.fareTypeOptions[0]);
-  var meterLike = curFareType==='跳表' || curFareType==='固定價' || (!def.fareTypeOptions);
+  var meterLike = payRowShown(key, curFareType, !!def.fareTypeOptions);
   var estLike = curFareType==='預估車資';
   var stationLike = curFareType==='據點叫車';
   // 預約單: which fleet it came through comes first, its payment options follow that fleet (resPayRefresh redraws them)
   // (預約單's 「屬於哪個平台」 is on the form above the amount: resSubRowHtml in openIncomeModal)
   if(def.paymentOptions){
-    var payH = incomePayHtml(key, def, existing, meterLike);
+    var payH = incomePayHtml(key, def, existing, meterLike, curFareType);
     h += def.subPlatformOptions ? '<div id="sec-res-pay">'+payH+'</div>' : payH;
   }
   if(def.hasStationFee){
@@ -9549,11 +9646,34 @@ function resSubOptions(existing){
 }
 // 付款方式 (and the rows that go with it: 紙本簽單, 優惠折數, 個人錢包's note) of the income form. existing: the entry
 // being edited, or for a 預約單 whose fleet was just changed, {payment, enterpriseDiscount} still picked on the form.
-function incomePayHtml(key, def, existing, meterLike){
+/* 小版本 C2 (C2-01, Welson 11/24): YOXI 預估車資 and 據點叫車, and 大都會 預估車資, are paid in cash or by card like any
+   order (YOXI 刷卡 10%＋2%, 企業簽單 1−折扣−10%; 大都會 刷卡 3%), so the form asks how it was paid. Nothing is picked
+   for the driver: it is tapped, or the entry is not saved (unless 付款方式 is switched off in ⚙️, then its default).
+   Entries saved before this without a payment stay as they were, priced as cash. Other fares keep their default. */
+function payChoiceNeeded(key, fareType){
+  return (key==='yoxi' && (fareType==='預估車資' || fareType==='據點叫車')) || (key==='metro' && fareType==='預估車資');
+}
+function payRowShown(key, fareType, hasFareTypes){
+  return !hasFareTypes || fareType==='跳表' || fareType==='固定價' || payChoiceNeeded(key, fareType);
+}
+// the 計價方式 just changed: to 預估車資／據點叫車 nothing stays picked (the driver taps one); back to 跳表, what was
+// tapped stays, and with nothing tapped the usual default comes back
+function payChipOnFareType(choose){
+  var hi = document.getElementById('chip-payment'); if(!hi || !uiOn('payment')) return;
+  var row = document.querySelector('.chip-row[data-group="payment"]'), opts = row ? [].slice.call(row.querySelectorAll('.chip-opt')).map(function(b){ return b.textContent; }) : [];
+  var v = choose ? '' : (hi.value || payDefaultOf(opts.length ? opts : ['現金']));
+  hi.value = v;
+  if(row) [].slice.call(row.querySelectorAll('.chip-opt')).forEach(function(b){ b.classList.toggle('selected', b.getAttribute('data-act')==='chip:payment:'+v); });
+  var walletEl = document.getElementById('sec-wallet-note'); if(walletEl) walletEl.hidden = v!=='個人錢包';
+}
+function payDefaultOf(opts){ return (!uiOn('payment') && state.uiPayDefault==='card' && opts.indexOf('信用卡')>=0) ? '信用卡' : opts[0]; }
+function incomePayHtml(key, def, existing, meterLike, fareType){
   function off(k, html){ return uiOn(k) ? html : '<div hidden>'+html+'</div>'; }
   var opts = def.paymentOptions, h = '';
-  var payDefault = (!uiOn('payment') && state.uiPayDefault==='card' && opts.indexOf('信用卡')>=0) ? '信用卡' : opts[0];
+  var payDefault = payDefaultOf(opts);
   var curPayment = (existing&&existing.payment)||payDefault;
+  // 預估車資／據點叫車: none picked until the driver taps one (an entry being edited shows what it has)
+  if(payChoiceNeeded(key, fareType) && uiOn('payment')) curPayment = (existing&&existing.payment) || '';
   // a 預約單 whose payment its fleet does not take: 綁定支付 entered earlier is that fleet's card payment, else 現金
   if(key==='reservation' && opts.indexOf(curPayment)<0) curPayment = (curPayment==='綁定支付' && opts.indexOf('信用卡')>=0) ? '信用卡' : opts[0];
   // a paper enterprise slip is cashed at the fleet's office, not paid with the fleet's transfer (not for 預約單)
@@ -9561,7 +9681,8 @@ function incomePayHtml(key, def, existing, meterLike){
     '<label id="sec-paper-slip" style="display:flex;gap:8px;align-items:center;margin-top:8px;font-size:13px;cursor:pointer"'+(curPayment==='企業簽單'?'':' hidden')+'><input type="checkbox" id="f-paper-slip" style="width:18px;height:18px"'+(existing&&existing.paperSlip?' checked':'')+'>📄 紙本簽單(要拿回車隊換現金,不算進撥款)</label>' : '';
   var walletRow = opts.indexOf('個人錢包')>=0 ?
     '<div id="sec-wallet-note" style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5"'+(curPayment==='個人錢包'?'':' hidden')+'>個人錢包=乘客用大都會的個人錢包/乘車金付款,手續費跟信用卡一樣。乘客儲值多送的點數是平台補貼,車資照 App 上顯示的金額打。</div>' : '';
-  h += off('payment', '<div class="form-row" id="sec-meterExtra"'+(meterLike?'':' hidden')+'><label>付款方式</label>'+chipRowHtml('payment', opts, curPayment)+paperRow+walletRow+'</div>');
+  h += off('payment', '<div class="form-row" id="sec-meterExtra"'+(meterLike?'':' hidden')+'><label>付款方式</label>'+chipRowHtml('payment', opts, curPayment)+
+    '<div id="pay-need" role="alert" style="font-size:12px;color:var(--expense);margin-top:4px" hidden>請先點選付款方式,才能算出實收</div>'+paperRow+walletRow+'</div>');
   if(def.enterpriseDiscountOptions){
     // a record saved with an option no longer offered (92折 before 2026.11.22.10) shows it as "(舊)" so it stays as it was
     var edOpts = def.enterpriseDiscountOptions.slice(), edCur = (existing&&existing.enterpriseDiscount)||edOpts[0], edLab = null;
@@ -9681,6 +9802,12 @@ function saveIncome(key, editId){
   // checked before anything is written, so a wrong number leaves the record as it was
   var tripKmEl = document.getElementById('f-trip-km'), tripKmTxt = tripKmEl ? tripKmEl.value.trim() : '', tripKmVal = parseFloat(tripKmTxt);
   if(tripKmTxt!=='' && !(tripKmVal>0 && tripKmVal<=TRIP_KM_MAX)){ alert('這趟公里數請填 0.1～'+TRIP_KM_MAX+' 公里,或空白不填。'); return; }
+  // 小版本 C2: 預估車資／據點叫車 needs the payment tapped (nothing is picked for the driver)
+  if(def.paymentOptions && def.fareTypeOptions && uiOn('payment') && payChoiceNeeded(key, grab('chip-fareType')) && !grab('chip-payment')){
+    var needEl = document.getElementById('pay-need');
+    if(needEl){ needEl.hidden = false; try{ needEl.scrollIntoView({block:'center'}); }catch(e){} } else alert('請選付款方式。');
+    return;
+  }
   if(!existing){
     // a double tap on 儲存 or the same fare entered twice shows up as an identical record moments apart
     var dupAgo = Date.now() - DUP_WINDOW_MS;
@@ -9707,8 +9834,8 @@ function saveIncome(key, editId){
   if(def.discountOptions){ rec.discountTier = grab('chip-discountTier'); rec.discountFinal = true; }
   markFeeRules(rec, key, existing);
   if(def.dispatchOptions && grab('chip-dispatchPct')){ rec.dispatchPct = parseFloat(grab('chip-dispatchPct')); rec.discountTier = undefined; }
-  var meterLike = !def.fareTypeOptions || rec.fareType==='跳表' || rec.fareType==='固定價';
-  if(def.paymentOptions && meterLike) rec.payment = grab('chip-payment'); else if(def.paymentOptions) rec.payment = undefined;
+  var meterLike = payRowShown(key, rec.fareType, !!def.fareTypeOptions);
+  if(def.paymentOptions && meterLike) rec.payment = grab('chip-payment') || payDefaultOf(def.paymentOptions); else if(def.paymentOptions) rec.payment = undefined;
   if(def.enterpriseDiscountOptions && rec.payment==='企業簽單') rec.enterpriseDiscount = grab('chip-enterpriseDiscount'); else if(def.enterpriseDiscountOptions || def.subPlatformOptions) rec.enterpriseDiscount = undefined;
   var paperEl = document.getElementById('f-paper-slip');
   if(rec.payment!=='企業簽單'){ rec.paperSlip = undefined; rec.paperCashed = undefined; }
@@ -10026,7 +10153,7 @@ function applyLayoutWidth(){
 }
 var layoutResizeTimer = null;
 // the keyboard only changes the height, so typing never triggers this; turning or splitting the screen does
-window.addEventListener('resize', function(){ clearTimeout(layoutResizeTimer); layoutResizeTimer = setTimeout(function(){ if(applyLayoutWidth()){ renderAll(); syncSystemBars(); } else fitCalendar(); }, 150); });
+window.addEventListener('resize', function(){ clearTimeout(layoutResizeTimer); layoutResizeTimer = setTimeout(function(){ if(applyLayoutWidth()){ renderAll(); syncSystemBars(); } else { fitCalendar(); fitRoadNews(); } }, 150); });
 // iPhone home-screen app: after the keyboard goes away iOS sometimes leaves the page scrolled up and keyboard-short,
 // so the tab bar floats mid-screen over blank space until the driver scrolls by hand (or reopens the app). When the
 // keyboard closes or the app comes back to the front, scroll the page back ourselves: a scroll is what makes iOS
@@ -10097,7 +10224,7 @@ function uberCutHintHtml(){
   if(state.uberCutHint || !state.onboarded || !uberShown() || dayCutoffHour()===UBER_DAY_CUTOFF || shiftOpenAny() || cutCrossHintHtml()) return '';
   var b = 'flex:1;padding:9px 6px;border-radius:10px;border:1px solid var(--border);background:var(--surface-sunken);color:var(--text);font-weight:700;font-size:13px;cursor:pointer;font-family:inherit';
   return '<div class="card" id="uberCutHint" style="margin-bottom:12px;padding:12px 14px"><div style="font-size:14px;font-weight:700;margin-bottom:6px">🚗 跑 Uber 的提醒</div>'+
-    '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;margin-bottom:10px">Uber 一天的車資結算是<b style="color:var(--text)">凌晨 04:00 到隔天 03:59</b>。記帳本現在是 '+pad(dayCutoffHour())+':00 換日,所以半夜跑的單,記帳本和 Uber App 的「每日收入」會算在不同天。想對得起來,可以把營業日分界改成凌晨 04:00(只影響之後記的帳)。</div>'+
+    '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;margin-bottom:10px">Uber 一天的車資結算是<b style="color:var(--text)">凌晨 04:00 到隔天 03:59</b>。記帳本現在是 '+pad(dayCutoffHour())+':00 換日,所以半夜跑的單,記帳本和 Uber App 的「每日收入」會算在不同天。想讓兩邊算在同一天,可以把營業日分界改成凌晨 04:00(只影響之後記的帳)。</div>'+
     '<div style="display:flex;gap:8px"><button data-act="uber-cut:set" style="'+b+';border-color:var(--accent-strong);background:var(--accent-soft)">改成凌晨 04:00</button><button data-act="uber-cut:keep" style="'+b+'">維持 '+pad(dayCutoffHour())+':00</button></div>'+
     '<div style="font-size:11.5px;color:var(--text-muted);margin-top:8px">之後可以在 ⚙️「基本設定」→「我的營業日分界時間」改</div></div>';
 }
@@ -10527,7 +10654,7 @@ var HELP = [
   ]],
   ['上班與工時', [
     ['上下班打卡、休息', '記帳頁「今日行車」按上班打卡 / 下班打卡,休息按休息開始 / 結束。忘了打下班卡,下次打開會問你。', 'shift'],
-    ['跑過半夜(營業日分界)', '新安裝預設午夜 00:00 換日(照日曆算)。常跑過半夜的,到 ⚙️「基本設定」→「我的營業日分界時間」往後調(最晚到早上 09:00),那個時間以前記的帳都算前一天,凌晨時記帳頁上方會提醒。上班中跨過換日時間不用重新打卡:下班打卡一直在、休息提醒照常,工時在換日那一刻分成兩天(前一天算到換日時間,之後算新的一天,跟車資分天一樣),打卡卡片和今日跑車報告會寫哪一段算在哪天;上班中不能改換日時間。上班超過一整天沒按下班打卡,會請你補登下班時間(先填這一班最後一筆活動的時間)。Uber 一天的車資結算是凌晨 04:00 到隔天 03:59,想跟 Uber App 的每日收入對得起來就選凌晨 04:00。'],
+    ['跑過半夜(營業日分界)', '新安裝預設午夜 00:00 換日(照日曆算)。常跑過半夜的,到 ⚙️「基本設定」→「我的營業日分界時間」往後調(最晚到早上 09:00),那個時間以前記的帳都算前一天,凌晨時記帳頁上方會提醒。上班中跨過換日時間不用重新打卡:下班打卡一直在、休息提醒照常,工時在換日那一刻分成兩天(前一天算到換日時間,之後算新的一天,跟車資分天一樣),打卡卡片和今日跑車報告會寫哪一段算在哪天;上班中不能改換日時間。上班超過一整天沒按下班打卡,會請你補登下班時間(先填這一班最後一筆活動的時間)。Uber 一天的車資結算是凌晨 04:00 到隔天 03:59,想跟 Uber App 的每日收入算在同一天就選凌晨 04:00。'],
     ['目前時薪', '今日行車顯示今日實收 ÷ 已跑工時,上班滿 30 分鐘才顯示。', 'liveRate'],
     ['今日跑車報告', '下班打卡後跳出:實收、平均時薪、趟數,跟前 7 個營業日比較,還有「今天時薪走勢」小圖(累積平均時薪怎麼變化),可以順便備份。按「📤 分享今日戰績」可以把趟數、工時、時薪走勢做成一張圖傳 LINE、限動(以前的日子到「歷史」點那一天,按「看這天的報告」或「分享這天戰績」);預設不顯示金額,要露金額自己打開,車牌、地點永遠不會出現在圖上。', 'dayReport'],
     ['休息提醒', '連續開車太久(預設 2 小時)、今天上班太久(預設 12 小時)時提醒你,只是提醒,不會幫你按休息。時間在功能開關下面改。記帳本要打開著才會跳出來。', 'restRemind'],
@@ -11534,12 +11661,12 @@ function openSettingsModal(){
 
   var cutoffNow = dayCutoffHour(), cutLocked = shiftOpenAny();
   h += '<div class="form-row" style="margin-top:6px"><label>我的營業日分界時間(日報、分析用;跑過午夜時,這個時間以前都算前一天。新安裝預設午夜 00:00,照日曆算;常跑過半夜的可以往後調。平台撥款另外依各平台結算時間計算,不受影響)</label>'+
-    (uberShown() ? '<div style="font-size:11.5px;color:var(--text-muted);margin:-2px 0 6px;line-height:1.6">🚗 跑 Uber 的提醒:Uber 一天的車資結算是凌晨 04:00 到隔天 03:59。想跟 Uber App 的每日收入對得起來,選「凌晨 04:00」。</div>' : '')+'<select id="f-day-cutoff"'+(cutLocked?' disabled':'')+'>'+
+    (uberShown() ? '<div style="font-size:11.5px;color:var(--text-muted);margin:-2px 0 6px;line-height:1.6">🚗 跑 Uber 的提醒:Uber 一天的車資結算是凌晨 04:00 到隔天 03:59。想跟 Uber App 的每日收入算在同一天,選「凌晨 04:00」。</div>' : '')+'<select id="f-day-cutoff"'+(cutLocked?' disabled':'')+'>'+
     Array.apply(null, Array(DAY_CUTOFF_MAX+1)).map(function(x, hh){ return '<option value="'+hh+'"'+(hh===cutoffNow?' selected':'')+'>'+cutoffLabel(hh)+'</option>'; }).join('')+
     '</select>'+(cutLocked ? '<div id="f-day-cutoff-lock" style="font-size:11.5px;color:var(--text-muted);margin-top:4px">上班中不能改,下班打卡後再改</div>' : '')+'</div>';
   S.basic += h; h = '';
   h += '<div class="form-row" style="margin-top:6px"><label>進階:記錄接單時間</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-track-accept" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.trackAccept?' checked':'')+'>打開後,接到單先按「📲 接到單了」,客人上車再按「上車」。被乘客或自己取消的單也能記下來(含取消費),分析頁會把空檔分成等單和前往接客兩段。<br>不想多按可以關掉:記帳照常;被取消的單改成事後補記,前往接客的時間會算在等單裡。</label></div>';
-  if(HOT_URL) h += '<div class="form-row"><label>分享上車熱區(車友熱區)</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-share-hot" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.shareHot===true?' checked':'')+'><span>分享你的上車熱區,就能在分析頁看「車友熱區」。只送約 1 公里一格的區域、日期、時段、趟數,<b>不送精確位置、金額、平台</b>;3 位以上車友都上過車的地方才會顯示。取消勾選會一併刪除你分享過的資料。</span></label></div>';
+  if(HOT_URL) h += '<div class="form-row"><label>分享上車熱區(車友熱區)</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-share-hot" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.shareHot===true?' checked':'')+'><span>分享你的上車熱區,就能在分析頁看「車友熱區」。只送約 1 公里一格的區域、日期、時段、趟數,<b>不送精確位置、金額、平台</b>;'+HOT_MIN_DRIVERS+' 位以上車友都上過車的地方才會顯示。取消勾選會一併刪除你分享過的資料。</span></label></div>';
   if(HOT_URL && (state.hotDelPending||[]).length) h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-6px 0 12px;line-height:1.6">⏳ 已停止分享。之前分享的資料還在等網路刪除,連上網後會自動再送,不用重新打開分享。</div>';
   h += '<div class="form-row"><label>不具名使用人數統計</label><label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;font-weight:400;color:var(--text-muted);line-height:1.6"><input type="checkbox" id="f-stat-on" style="width:18px;height:18px;flex:none;margin-top:2px"'+(state.statOptOut?'':' checked')+'><span>參與不具名統計,幫製作者知道有多少司機在用。每天只送一次:隨機編號、日期、版本、簡單/完整模式、手機系統、是否從主畫面打開、你在路況卡「我主要跑」勾的城市(不是定位)、是否訂閱 VIP。<b>不含任何金額、平台、精確位置或個人資料。</b></span></label></div>';
   S.privacy = h; h = '';
@@ -11588,12 +11715,14 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.24.4';
+var APP_VERSION = '2026.11.24.8';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.24.8', '🚐 YOXI 的預估車資、據點叫車,大都會的預估車資,記帳時要選付款方式(現金、信用卡…),刷卡的手續費才算得對;以前記的這些單照現金算,不會變。另外:這個月才開始記帳的,月底預測改從開始記帳那天起算;年度報表的手續費不再算進自己吸收的優惠券'],
+  ['2026.11.24.7', '🔧 修正:截圖辨識遇到日期看不清楚時,不會再判成還沒到的那一週'],
   ['2026.11.24.4', '🚐 YOXI 手續費照 YOXI 客服確認的算法修正:綁定信用卡付款不管跳表、預估車資還是據點叫車,都是 10%＋2%;企業簽單的折扣和 10% 都從原價扣(9 折實收 80%、95 折 85%)。以前記的單也一起重算,所以這些 YOXI 單的實收會比以前少一點;已對帳的 YOXI 撥款如果預估變了,會用灰字說明,不是錢少拿了'],
   ['2026.11.24.4', '📊 淨利更合理:固定成本只算你開始記帳以後、到今天為止的日子,開始記帳前的月份和還沒到的日子不再扣,本年和全部期間的淨利會一樣;經營摘要不再拿只記了幾天的月份當比較基準。另外分析功能優化:兩個「每公里成本」改了好認的名字、平均每日工時只除有打卡的天', '', {tab:'analytics', find:'效率指標'}],
   ['2026.11.24.3', '🛣️ 測試版:路況快報的「國道」分頁移到中間(即時、國道、施工),比施工常用、比較好點', 'beta', {tab:'entry', find:'路況快報'}],
@@ -11660,7 +11789,7 @@ var WHATS_NEW = [
   ['2026.11.18.2', '⌨️ iPhone 網頁版:選好車隊、支出項目後,車資／金額欄會直接跳出數字鍵盤;收起鍵盤後,會自動把畫面捲回原位,下面的按鈕列不再卡在畫面中間'],
   ['2026.11.18.1', '⏱️ 今日跑車報告、日曆、分析頁的「時薪」改叫「平均時薪」(實收 ÷ 工時,含空車、等單);按「上廁所 +1」後,休息提醒會重新計時;營業日分界最晚可以選到早上 09:00'],
   ['2026.11.14.2', '🛡️ 備份功能優化:還原進行的那幾秒會先暫停操作並提示,避免剛記的帳在還原時漏掉;雲端同步更穩定'],
-  ['2026.11.13.8', '🌙 新安裝的營業日分界預設改成午夜 00:00(照日曆算),已經在用的不會變。跑 Uber 的車友:Uber 一天的車資結算是凌晨 04:00 到隔天 03:59,想跟 Uber App 的每日收入對得起來,到 ⚙️「基本設定」→「我的營業日分界時間」選凌晨 04:00'],
+  ['2026.11.13.8', '🌙 新安裝的營業日分界預設改成午夜 00:00(照日曆算),已經在用的不會變。跑 Uber 的車友:Uber 一天的車資結算是凌晨 04:00 到隔天 03:59,想跟 Uber App 的每日收入算在同一天,到 ⚙️「基本設定」→「我的營業日分界時間」選凌晨 04:00'],
   ['2026.11.13.4', '📅 歷史頁的日曆可以切換顯示「結餘／工時／時薪」,一眼看出哪幾天跑很久卻賺不多'],
   ['2026.11.13.4', '📄 企業簽單可以勾「紙本簽單」:不算進車隊撥款,改列在撥款頁「待兌現」,拿去車隊換到現金再按「已兌現」(用不到可以在 ⚙️ 功能開關關掉)'],
   ['2026.11.13.1', '⚡ 修正:分析頁電動車的「每度電可跑」重複顯示;「平均每度電價」改成只算有填度數的充電,不再偏高'],
@@ -11847,14 +11976,14 @@ function aboutHtml(){
   function para(title, body){ return '<div style="margin-bottom:12px"><div style="font-weight:700;font-size:13px;margin-bottom:3px">'+title+'</div><div style="font-size:12.5px;color:var(--text-muted);line-height:1.65">'+body+'</div></div>'; }
   var h = '<div class="card" style="margin-top:18px;padding:14px 16px"><div style="font-size:15px;font-weight:700;margin-bottom:12px">關於跑車人生</div>';
   // B3-10: once VIP is sold the ledger itself stays free (the website shows the same line: it sells nothing, but the 👑 previews are there)
-  h += para('🆓 免費使用', VIP_GATE ? ABOUT_FREE_VIP : '本記帳本完全免費,不需註冊帳號。');
+  h += para('🆓 免費使用', VIP_GATE ? (isNativeApp() ? ABOUT_FREE_VIP : ABOUT_FREE_VIP_WEB) : '本記帳本完全免費,不需註冊帳號。');
   h += para('🔤 字型與圖示', '金額數字使用 Space Grotesk 字型(Florian Karsten 設計,SIL Open Font License 1.1 開源授權);平台、支出項目的彩色圖示使用 Microsoft Fluent Emoji(© Microsoft Corporation,MIT 授權)。都已內建在記帳本裡,不用另外下載。');
   h += '<details class="lic" style="margin:-6px 0 12px"><summary tabindex="0" style="'+link+';cursor:pointer;font-size:12.5px">📜 第三方授權全文</summary>'+THIRD_PARTY_LICENSES.map(function(x){ return '<div style="font-weight:700;font-size:12.5px;margin:10px 0 4px">'+esc(x[0])+'</div>'+'<pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;line-height:1.5;color:var(--text-muted);background:rgba(127,127,127,.10);padding:8px 10px;border-radius:8px;margin:0;font-family:ui-monospace,Menlo,Consolas,monospace">'+esc(x[1])+'</pre>'; }).join('')+'</details>';
   h += para('🔒 你的帳由你掌握', '帳本預設存在你的手機,我們不預設取得;選擇分享車友熱區時,才會送出約 1 公里的格點、時段和趟數;備份檔和雲端同步放在哪裡由你選擇(雲端同步存在你自己的 Google 帳號)。<br>為了保護你的資料,建議手機設定螢幕鎖,並定期備份。');
   h += para('📊 不具名使用人數統計', '為了知道有多少司機在用,記帳本每天會送出一次不具名資料:一組隨機編號、日期、版本、簡單/完整模式、手機系統(iPhone/安卓)、是否從主畫面打開、你在路況卡「我主要跑」勾的城市(不是定位)、是否訂閱 VIP。<br>不包含任何金額、平台、精確位置或個人資料,製作者也無法從編號知道你是誰。不想參與,可以在上面「不具名使用人數統計」取消勾選。');
   h += para('📄 隱私權政策', '完整說明記帳本會處理哪些資料、存在哪裡、保存多久:<br><a style="'+link+'" target="_blank" rel="noopener" href="https://app.realway.com.tw/privacy.html">查看隱私權政策 ›</a>');
   h += rvAboutHtml(para, link);
-  h += para('📍 車友熱區', '同意分享的人,記帳本每天會送出前一天的「約 1 公里一格的上車區域、時段、趟數」,不含精確位置、金額、平台。至少 3 位車友都上過車的地方才會顯示給有分享的人看,看不到任何人的個人紀錄。可以隨時在上面取消分享。');
+  h += para('📍 車友熱區', '同意分享的人,記帳本每天會送出前一天的「約 1 公里一格的上車區域、時段、趟數」,不含精確位置、金額、平台。至少 '+HOT_MIN_DRIVERS+' 位車友都上過車的地方才會顯示給有分享的人看,看不到任何人的個人紀錄。可以隨時在上面取消分享。');
   // the mail opens with the version and phone type filled in, nothing from the ledger
   var mailto = 'mailto:support@realway.com.tw?subject='+encodeURIComponent('跑車人生 建議與問題回報')+
     '&body='+encodeURIComponent('記帳本版本:'+APP_VERSION+'\n手機:'+phoneDesc()+'\n\n請描述問題或建議:\n');
@@ -11965,17 +12094,57 @@ function liveStateNote(src){
   if(!on.length) return '';
   return '⚠️ '+hereName()+'現在'+on.join('、')+',還原後會變成'+src+'裡的狀態('+what.join('、')+'以'+src+'為準)。\n\n';
 }
+/* C1-02 (Welson 11/24: warn, never merge — a merge cannot tell one fare entered on both sides from two fares): the
+   entries this phone holds that the ledger about to replace it lacks. They would live on only in the copy kept before
+   the restore. 收入, 支出 and 取消單, matched by id (no id: when and which day, as payoutRecKey). The live state (上班、
+   載客、接單) is liveStateNote's. One pass each way with an object as the set: 30,000 entries stay well under 100 ms. */
+function ledgerItemKey(x, tsKey){ return String(x.id || ((+x[tsKey]||+x.ts||0)+'|'+(x.date||''))); }
+function missingFromIncoming(cur, inc){
+  var out = {n:0, recs:0, exps:0, cxs:0, last:null};
+  function scan(kind, curList, incList, tsKey){
+    var have = Object.create(null);
+    (Array.isArray(incList) ? incList : []).forEach(function(x){ if(x && typeof x==='object') have[ledgerItemKey(x, tsKey)] = 1; });
+    (Array.isArray(curList) ? curList : []).forEach(function(x){
+      if(!x || typeof x!=='object' || have[ledgerItemKey(x, tsKey)]) return;
+      out[kind]++; out.n++;
+      var k = (x.date||'')+' '+String(+x[tsKey]||+x.ts||0).padStart(15, '0');
+      if(!out.last || k>out.last.k) out.last = {k:k, date:x.date||'', kind:kind, amt:kind==='exps' ? (+x.amount||0) : (+x.revenue||0)};
+    });
+  }
+  scan('recs', cur.records, inc.records, 'ts');
+  scan('exps', cur.expenses, inc.expenses, 'ts');
+  scan('cxs', cur.cancels, inc.cancels, 'cancelAt');
+  return out;
+}
+// the one wording for all three ways in (src: 備份檔 / 雲端備份 / 這份); '' when nothing would be lost
+function missingNote(m, src){
+  if(!m || !m.n) return '';
+  var parts = [];
+  if(m.recs) parts.push('收入 '+m.recs+' 筆');
+  if(m.exps) parts.push('支出 '+m.exps+' 筆');
+  if(m.cxs) parts.push('取消 '+m.cxs+' 筆');
+  var L = m.last, last = '';
+  if(L && L.date) last = ';最近一筆 '+mdStr(L.date)+' '+(L.kind==='exps' ? '支出 '+fmtMoney(L.amt) : L.kind==='cxs' ? '取消單' : fmtMoney(L.amt));
+  return '⚠️ '+hereName()+'有 '+m.n+' 筆'+src+'裡沒有的紀錄('+parts.join('、')+last+'),還原後會不見,只會留在「還原前保留的帳」。建議先把這幾筆記下來,還原後再補記。\n\n';
+}
 function doCloudRestore(i){
   var v = lastCloudVersions[i]; if(!v) return;
   var newer = lastCloudVersions.some(function(x){ return !x.legacy && +x.time > +v.time; });
   if(!confirm(readOnlyReplaceNote()+liveStateNote('雲端備份')+'確定要用 '+fmtTs(v.time)+' 的雲端備份(收入 '+v.income+' 筆、支出 '+v.expense+' 筆)覆蓋'+hereName()+'目前的所有資料嗎?'+
       (newer ? '\n\n這不是雲端最新的那份。還原後'+hereName()+'下次同步前,如果雲端上有別台送的較新備份,會先問你,不會直接蓋掉。' : '')+
       (cloudBehind() ? '\n\n⚠️ '+hereName()+'上次確認雲端存好之後記的帳還沒上雲端,還原後會被取代(還原前會先在'+hereName()+'另外保留一份,可以用「復原」拿回;建議先按 💾 存成備份檔)。' : ''))) return;
-  var el = document.getElementById('restoreList');
+  var el = document.getElementById('restoreList'), listHtml = el ? el.innerHTML : null;
   if(el) el.textContent = '下載備份中…';
   cloudGet({action:'get', time:v.time}).then(function(res){
     if(!res || !res.ok || !res.state) throw new Error('empty');
     var parsed = unpackState(JSON.parse(res.state));
+    // C1-02: now that the backup is here, what this phone holds that it lacks; asked once more, only when something would be lost
+    var miss = missingFromIncoming(state, parsed);
+    if(miss.n && !confirm(missingNote(miss, '這份雲端備份')+'還要用這份雲端備份取代嗎?')){
+      var elBack = document.getElementById('restoreList');
+      if(elBack && listHtml!=null) elBack.innerHTML = listHtml;
+      return;
+    }
     // this device now builds on the backup the driver chose — not on newer ones it merely saw in the list.
     // Its ledger now is that backup, so it counts as backed up: sending the same ledger again would only add a
     // copy and make the other device ask "whose is this?" on its next sync. A later change is sent as usual.
@@ -12459,6 +12628,8 @@ function undoRestore(arg){
   undoQueue(function(){ return undoRead(e.file); }).then(function(o){
     var parsed;
     try{ if(+o.at!==+e.at) throw 0; parsed = unpackState(JSON.parse(o.data)); }catch(x){ cannot(); return; }
+    var miss = missingFromIncoming(state, parsed);   // C1-02
+    if(miss.n && !confirm(missingNote(miss, '這份')+'還要換回這份嗎?')) return;
     replaceLedger(parsed, '復原', function(){ return '已經復原。'; });
   }, cannot);
 }
@@ -12479,8 +12650,11 @@ function doImportData(){
   if(prob){ alert('這份資料不能還原:'+prob+'。\n\n目前的帳沒有任何改變。'); return; }
   var inFile = ledgerSummary(parsed), now = ledgerSummary(state);
   var older = now.to && inFile.to < now.to;
+  // C1-02: the entries this phone has that the file lacks say it better than the last day does; the old line stays for
+  // the case they don't cover (nothing missing, the file simply ends earlier)
+  var miss = missingFromIncoming(state, parsed);
   if(!confirm(readOnlyReplaceNote()+'請確認要還原的資料:\n\n📄 備份檔:'+summaryLine(inFile)+'\n   '+summaryLast(inFile)+'\n📱 目前手機:'+summaryLine(now)+'\n\n跟存備份時顯示的不一樣,請按「取消」,回去找正確的檔案。\n\n'+
-    (older ? '⚠️ 備份檔比目前的資料舊,'+inFile.to+' 以後記的帳會不見!\n\n' : '')+liveStateNote('備份檔')+
+    (miss.n ? missingNote(miss, '備份檔') : older ? '⚠️ 備份檔比目前的資料舊,'+inFile.to+' 以後記的帳會不見!\n\n' : '')+liveStateNote('備份檔')+
     '確定要用備份檔取代目前的資料嗎?(目前的資料會先另外保留一份,還原錯了可以復原)\n\n熱區分享、統計、雲端同步等這支手機的設定不會被備份檔改掉。')) return;
   replaceLedger(parsed, '匯入還原', function(){ return '資料已還原。\n\n搬進來的帳:'+summaryLine(inFile)+'\n'+summaryLast(inFile)+'\n請跟存備份時畫面上顯示的對照,一樣表示初步核對通過;不一樣先不要記帳,寫信給我們。\n\n如果選錯檔案,到 ⚙️ →「匯入還原」,最下面「還原前保留的帳」按「↩️ 換回這份」(最近 3 份都留著)。'; });
 }
@@ -13409,6 +13583,8 @@ document.addEventListener('click', function(e){
   // straight to the file picker (still inside the tap, which the picker requires); the restore sheet stays behind it
   else if(cmd==='open-import-pick'){ openImportModal(); var pickEl = document.getElementById('importFile'); if(pickEl) pickEl.click(); }
   else if(cmd==='move-notice-later'){ state.moveNoticeHideUntil = Date.now()+30*86400000; saveQuiet(); renderAll(); showToast('好的,30 天後再提醒'); }
+  else if(cmd==='move-done'){ moveDone(); }
+  else if(cmd==='move-undo'){ moveUndo(); }
   else if(cmd==='move-from-web'){
     var mh = '<div class="modal-title">用備份檔把帳搬過來<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
     mh += '<div style="font-size:13.5px;line-height:1.8">'+
@@ -13529,19 +13705,25 @@ document.addEventListener('click', function(e){
       var meterEl = document.getElementById('sec-meterExtra');
       var estEl = document.getElementById('sec-estimateExtra');
       var stationEl = document.getElementById('sec-stationFee');
-      var meterLike = (value==='跳表' || value==='固定價');
+      var choose = payChoiceNeeded(currentIncomeModalKey, value);
+      var meterLike = (value==='跳表' || value==='固定價') || choose;
       var estLike = (value==='預估車資');
       var stationLike = (value==='據點叫車');
       if(meterEl) meterEl.hidden = !meterLike;
       if(estEl) estEl.hidden = !estLike;
       if(stationEl) stationEl.hidden = !stationLike;
+      payChipOnFareType(choose);
+      var payNow = (document.getElementById('chip-payment')||{}).value;
       var discEl0 = document.getElementById('sec-yoxi-enterprise-discount');
-      if(discEl0 && !meterLike) discEl0.hidden = true;
+      if(discEl0) discEl0.hidden = !meterLike || payNow!=='企業簽單';
+      var paperEl0 = document.getElementById('sec-paper-slip');
+      if(paperEl0) paperEl0.hidden = payNow!=='企業簽單';
     }
     if(groupId==='campType'){
       CAMP_TYPES.forEach(function(x){ var sec = document.getElementById('camp-sec-'+x[0]); if(sec) sec.hidden = x[1]!==value; });
     }
     if(groupId==='payment'){
+      var needEl = document.getElementById('pay-need'); if(needEl) needEl.hidden = true;
       var discEl = document.getElementById('sec-yoxi-enterprise-discount');
       if(discEl) discEl.hidden = (value!=='企業簽單');
       var paperEl = document.getElementById('sec-paper-slip');
