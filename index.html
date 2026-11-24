@@ -1530,7 +1530,7 @@ function findMissingKmDate(){
   if(!uiOn('km')) return null;
   var today = todayStr(), limit = addDays(today,-7), cands = {};
   state.records.forEach(function(r){ if(r.date<today && r.date>=limit) cands[r.date]=true; });
-  Object.keys(state.dailyMeta).forEach(function(d){ if(d<today && d>=limit && state.dailyMeta[d].workedMs>0) cands[d]=true; });
+  Object.keys(state.dailyMeta).forEach(function(d){ if(d<today && d>=limit && (+state.dailyMeta[d].workedMs||0)>=MIN_SHIFT_MS) cands[d]=true; });   // RR-06
   var dates = Object.keys(cands).filter(function(d){
     var m = state.dailyMeta[d];
     return !m || (m.km==null && !m.kmSkipped);
@@ -1805,28 +1805,25 @@ function metroDiscount(gross, tier){
   d = Math.floor(d/5 + 1e-9)*5;
   return tier==='婦派' ? d : Math.min(d, 300);
 }
+// YOXI (Welson + YOXI 北區官方客服 11/24; earlier entries are recomputed too, rawNet is never stored):
+// the same rules for 跳表, 預估車資, 據點叫車 and records with no 計價方式 —
+//   現金 10%; 信用卡 (綁定付款, 即時派遣 included) 10% + 2%;
+//   企業簽單 is not a card payment: the discount and the 10% both come off the original fare
+//   ("1000 − 1000×(10%+10%) = 800"), so 9折 pays 80%, not 0.9×0.9 = 81%.
+// 據點叫車 then pays its 據點服務費 on top. Rates are read from the record's own fee snapshot.
 function yoxiNet(r, gross, fees){
-  {
-    var yoxiBase = fees.yoxiCash!=null?fees.yoxiCash:10;
-    var yoxiCreditExtra = fees.yoxiCreditExtra!=null?fees.yoxiCreditExtra:2;
-    if(r.fareType==='據點叫車'){
-      var netStation = gross*(1-yoxiBase/100) - (+r.stationFee||0);
-      return netStation>0?netStation:0;
-    }
-    if(r.fareType==='跳表'){
-      if(r.payment==='企業簽單'){
-        // 92折 was an option until 2026.11.22.10 (replaced by 9折); records that carry it keep computing the same
-        var discMap = {'原價':1,'95折':0.95,'9折':0.9,'92折':0.92,'85折':0.85};
-        var mult = discMap[r.enterpriseDiscount]!=null ? discMap[r.enterpriseDiscount] : 1;
-        return gross*mult*(1-yoxiBase/100);
-      }
-      if(r.payment==='信用卡'){
-        return gross*(1-(yoxiBase+yoxiCreditExtra)/100);
-      }
-      return gross*(1-yoxiBase/100);
-    }
-    return gross*(1-yoxiBase/100);
+  var yoxiBase = fees.yoxiCash!=null?fees.yoxiCash:10;
+  var yoxiCreditExtra = fees.yoxiCreditExtra!=null?fees.yoxiCreditExtra:2;
+  var pct = yoxiBase;
+  if(r.payment==='信用卡') pct += yoxiCreditExtra;
+  else if(r.payment==='企業簽單'){
+    // 92折 was an option until 2026.11.22.10 (replaced by 9折); records that carry it keep it (82% from 11/24)
+    var discMap = {'原價':0,'95折':5,'9折':10,'92折':8,'85折':15};
+    pct += discMap[r.enterpriseDiscount]!=null ? discMap[r.enterpriseDiscount] : 0;
   }
+  var net = gross*(1-pct/100);
+  if(r.fareType==='據點叫車') net -= (+r.stationFee||0);
+  return net>0?net:0;
 }
 function computeGrossRevenue(r){ return grossBase(r) + (+r.tripBonus||0); }
 // 每趟公里數: what the fleet's app showed for this trip, typed in by the driver (a field that is off until turned on).
@@ -2354,7 +2351,7 @@ function dataFirstDate(){
   function consider(d){ if(d && (!first || d<first)) first=d; }
   state.records.forEach(function(r){ consider(r.date); });
   state.expenses.forEach(function(e){ consider(e.date); });
-  Object.keys(state.dailyMeta).forEach(function(d){ var m=state.dailyMeta[d]; if(m.km!=null || m.workedMs>0) consider(d); });
+  Object.keys(state.dailyMeta).forEach(function(d){ var m=state.dailyMeta[d]; if(m.km!=null || (+m.workedMs||0)>=MIN_SHIFT_MS) consider(d); });   // RR-06
   return first;
 }
 function inRange(dateStr, from, to){ return dateStr>=from && dateStr<=to; }
@@ -2405,6 +2402,25 @@ function fixedTotalForRange(from,to){
     total += monthTotal * (overlapDays / mDays);
   });
   return total;
+}
+// 淨利 takes fixed costs only for the days that were kept in the ledger and have already passed (Welson 11/24):
+// from the later of the range start and the first record, to the earlier of the range end and today. Months before
+// the driver started, and days still to come, earn nothing here, so charging them would only press 淨利 down
+// (本年 had read $67,266 against 全部 $265,716). Older entries added later move the start back by themselves.
+// 月底預測 (dispForecast) still takes the whole month: it estimates the whole month.
+function fixedSpan(from, to){
+  var first = dataFirstDate(), today = todayStr();
+  var a = (first && first>from) ? first : from, b = to<today ? to : today;
+  return {from:a, to:b, none:!first || a>b, startCut:a!==from, endCut:b!==to};
+}
+function fixedTotalKept(from, to){ var s = fixedSpan(from, to); return s.none ? 0 : fixedTotalForRange(s.from, s.to); }
+// the label of a 淨利 whose fixed costs were cut to fixedSpan (only when there are fixed costs at all)
+function profitLabel(from, to, fix){
+  var s = fixedSpan(from, to);
+  if(s.none || !(fix>0) || (!s.startCut && !s.endCut)) return '淨利';
+  var md = function(d){ return (+d.slice(5,7))+'/'+(+d.slice(8,10)); };
+  if(s.startCut && s.endCut) return '淨利(固定成本從 '+md(s.from)+' 算到今天)';
+  return s.startCut ? '淨利(固定成本從 '+md(s.from)+' 起算)' : '淨利(固定成本算到今天)';
 }
 function totalKmInRange(from,to){
   var t=0;
@@ -2478,16 +2494,22 @@ function totalBreakHoursInRange(from,to){
   });
   return t;
 }
+// RR-06: a clock-in of a few seconds or minutes (上班 then 下班 right away, a test) is not a day out on the road: no
+// 營業天數, no 補填里程, not the first day kept. A day with a fare always counts, and so does a shift still running.
+var MIN_SHIFT_MS = 5*60000;
+function shiftDay(m){ return !!m && ((+m.workedMs||0)>=MIN_SHIFT_MS || !!m.activeShiftStart); }
 function workingDayListInRange(from,to){
   var days = {};
   state.records.forEach(function(r){ if(inRange(r.date,from,to)) days[r.date]=true; });
   Object.keys(state.dailyMeta).forEach(function(d){
-    if(inRange(d,from,to)){
-      var m = state.dailyMeta[d];
-      if((m.workedMs && m.workedMs>0) || m.activeShiftStart) days[d]=true;
-    }
+    if(inRange(d,from,to) && shiftDay(state.dailyMeta[d])) days[d]=true;
   });
   return Object.keys(days).sort();
+}
+// RR-08: the days with clock-in hours (平均每日工時 / 休息 divide by these, not by days with fares only)
+function hourDayCount(days){
+  var today = todayStr();
+  return days.filter(function(d){ return dayHoursOf(state.dailyMeta[d], d, today)*3600000>=MIN_SHIFT_MS; }).length;
 }
 function workingDaysInRange(from,to){ return workingDayListInRange(from,to).length; }
 // Only working days on/after the first day the counter was used count, so days before the feature existed don't read as "0 次"
@@ -2957,13 +2979,16 @@ function payoutCheck(b){
   at = +at;
   var o = {now:now, at:at, act:act, diff:null};
   if(!p.recSig) o.kind = 'old';
-  else if(p.recSig===b.recSig){ o.kind = 'algo'; o.diff = act-at; }
+  // same trips, the estimate moved (a fee rule fixed or changed): compared with the estimate at confirmation, except
+  // when the new estimate is what came in to the dollar — the old gap was the app's own mistake (YOXI 2%, 11/24)
+  else if(p.recSig===b.recSig){ o.kind = 'algo'; o.fit = Math.abs(act - now)<1; o.diff = o.fit ? 0 : act-at; }
   else o.kind = (p.from && p.from===b.from && p.to===b.to) ? 'edited' : 'moved';
   return o;
 }
 function payoutCheckNote(c, b){
   if(!c || c.kind==='same') return '';
   var p = b.payout;
+  if(c.kind==='algo' && c.fit) return '確認時預估 '+fmtMoney(c.at)+',手續費算法更新後預估變成 '+fmtMoney(c.now)+',跟你當時實收一樣。';
   if(c.kind==='algo') return '確認時預估 '+fmtMoney(c.at)+',後來預估變成 '+fmtMoney(c.now)+'(手續費算法更新或這批的紀錄改過);你當時實收 '+fmtMoney(c.act)+',差額照確認時的預估算。';
   if(c.kind==='moved') return '這筆是撥款規則改之前確認的(當時預估 '+fmtMoney(c.at)+'、實收 '+fmtMoney(c.act)+(p.from?(',當時是 '+shortDate(p.from)+(p.to&&p.to!==p.from?('–'+shortDate(p.to)):'')+' 的單'):'')+'),現在這個日期的單不一樣了。';
   if(c.kind==='edited') return '確認之後這批的紀錄有新增或刪除(當時 '+(p.trips!=null?p.trips+' 趟、':'')+'預估 '+fmtMoney(c.at)+'、實收 '+fmtMoney(c.act)+';現在 '+b.trips+' 趟、預估 '+fmtMoney(c.now)+')。';
@@ -4849,11 +4874,13 @@ function periodMetrics(from,to,f){
   if(f){ var fa = anMetrics(from, to, f); return {net:fa.net, profit:null, trips:fa.trips, hourly:fa.hourly, perKm:fa.perKm}; }
   var recs = recordsInRange(from,to);
   var net = sumNetIncome(recs).total;
-  var exp = sumExpense(expensesInRange(from,to))+fixedTotalForRange(from,to)-tollRefundInRange(from,to);
+  var exp = sumExpense(expensesInRange(from,to))+fixedTotalKept(from,to)-tollRefundInRange(from,to);
   var P = periodRate(from,to);
   var km = totalKmInRange(from,to);
   return {
     net:net, profit:net-exp,
+    // no income and no hours: nothing to compare 淨利 with (RR-01; it read 由虧轉盈 against a year not yet kept)
+    empty: net===0 && !(totalHoursInRange(from,to)>0),
     trips:recs.filter(function(r){ return !platformDef(r.platform).tipOnly; }).length,
     hourly: P.rate, perKm: km>0?net/km:null, rateP: P
   };
@@ -4874,9 +4901,10 @@ function recentDaysAverage(day){
 // how this period moved against the one it is compared with. A percentage only means something between two positive
 // numbers; across a loss or from zero it would read as nonsense (−$308 → $2,455 showed "▲ 896.2%"), so those cases are
 // said in words with the amount of change. Only the wording changes here, the numbers themselves are computed as before.
-function compareDelta(x, y, fmt, label){
+function compareDelta(x, y, fmt, label, noBase){
   var up = 'var(--income)', down = 'var(--expense)', flat = 'var(--text-muted)';
   if(x==null || y==null) return {t:'—', c:flat};
+  if(noBase) return {t:'無可比基準', c:flat};
   if(x===y) return {t:'持平', c:flat};
   if(y===0) return {t:'無可比基準', c:flat};
   if(y<0 && x>=0) return {t:'由虧轉盈', s:'比'+label+'多 '+fmt(x-y), c:up};
@@ -4896,15 +4924,14 @@ function comparisonHtml(range, f){
     if(!avg) return '';
     b = avg.m; cr.label = '前 '+avg.days.length+' 個工作日平均'; cr.prev = {from:avg.days[0], to:avg.days[avg.days.length-1]};
   } else b = periodMetrics(cr.prev.from, cr.prev.to, f);
-  function row(name, x, y, fmt){
-    var d = compareDelta(x, y, fmt, cr.label);
+  function row(name, x, y, fmt, noBase){
+    var d = compareDelta(x, y, fmt, cr.label, noBase);
     return '<div class="list-item"><div class="li-body"><div class="li-title">'+name+'</div><div class="li-sub">'+cr.label+' '+(y!=null?fmt(y):'—')+'</div></div><div style="text-align:right"><div class="num" style="font-weight:700">'+(x!=null?fmt(x):'—')+'</div><div class="num" style="font-size:12px;font-weight:700;color:'+d.c+'">'+d.t+'</div>'+(d.s?'<div class="num" style="font-size:11.5px;color:'+d.c+'">'+d.s+'</div>':'')+'</div></div>';
   }
   var h = '<div class="section"><div class="section-title">與'+cr.label+'比較('+shortRange(cr.cur)+' vs '+shortRange(cr.prev)+')</div><div class="card">';
   h += row('實收', a.net, b.net, fmtMoney);
-  // fixed costs here are counted for the days in each range (so a month in progress compares fairly), unlike the
-  // period card above, which counts the whole month
-  if(!f) h += row(range.to>todayStr() ? '淨利(固定成本攤到今天)' : '淨利(固定成本按天攤)', a.profit, b.profit, fmtMoney);
+  // fixed costs for the days kept and passed in each range (fixedSpan), the same 淨利 as the card above
+  if(!f) h += row(profitLabel(cr.cur.from, cr.cur.to, fixedTotalKept(cr.cur.from, cr.cur.to)), a.profit, b.profit, fmtMoney, !!b.empty);
   h += row('趟數', a.trips, b.trips, function(v){ return v+' 趟'; });
   h += row(f && !anDayOnly(f) ? '含空檔時薪' : '平均時薪', a.hourly, b.hourly, fmtMoney);
   if(!f || anDayOnly(f)) h += row('每公里實收', a.perKm, b.perKm, fmtMoney2);
@@ -5653,18 +5680,18 @@ function renderAnalytics(){
   var feeTotal = gross.total-net.total-recs.reduce(function(a,r){ return a + (r.couponType==='absorb' ? (+r.coupon||0) : 0); }, 0);
   var tollRef = tollRefundInRange(range.from, range.to);
   var varExp = sumExpense(exps) - tollRef;
-  var fixExp = fixedTotalForRange(range.from, range.to);
+  var fixExp = fixedTotalKept(range.from, range.to);   // only the days kept and passed (fixedSpan)
   var totalExp = varExp+fixExp;
   var profit = net.total-totalExp;
   var km = totalKmInRange(range.from, range.to);
   var hours = totalHoursInRange(range.from, range.to);
   var breakHours = totalBreakHoursInRange(range.from, range.to);
   var fuel = fuelStatsInRange(range.from, range.to);
-  var workDays = workingDaysInRange(range.from, range.to);
+  var workList = workingDayListInRange(range.from, range.to), workDays = workList.length, hourDays = hourDayCount(workList);
   if(F){
     if(fm.dayOnly){
       km = fm.km; hours = fm.hours; breakHours = fm.brk;
-      workDays = workingDayListInRange(range.from, range.to).filter(function(d){ return anDayOk(F, d); }).length;
+      workList = workList.filter(function(d){ return anDayOk(F, d); }); workDays = workList.length; hourDays = hourDayCount(workList);
     } else {
       var fDays = {}; recs.forEach(function(r){ fDays[r.date] = true; });
       workDays = Object.keys(fDays).length;
@@ -5723,9 +5750,8 @@ function renderAnalytics(){
   } else {
   h += '<div class="section"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
   h += '<div class="stat-tile"><div class="lbl">總支出(含固定攤提)</div><div class="val expense num">'+fmtMoney(totalExp)+'</div></div>';
-  // while the period is still running this card already takes the whole period's fixed costs, so it differs from the
-  // comparison below (fixed costs up to today); the label says which one it is
-  var profitLbl = (range.to>todayStr() && fixExp>0) ? '淨利(扣'+({week:'整週',month:'整月',year:'整年'}[analyticsPeriod]||'整段')+'固定成本)' : '淨利';
+  // fixed costs from the first record (or the range start) up to today (or the range end); the label says when cut
+  var profitLbl = profitLabel(range.from, range.to, fixExp);
   h += '<div class="stat-tile"><div class="lbl">'+profitLbl+'</div><div class="val num">'+fmtMoney(profit)+'</div></div>';
   h += '</div>';
   if(tollRef>0){
@@ -5742,8 +5768,10 @@ function renderAnalytics(){
   h += '<div class="section"><div class="section-title">本期概況</div><div class="card"><div class="summary-row" style="grid-template-columns:1fr 1fr">';
   h += '<div class="stat-tile"><div class="lbl">'+(wholeDays?'營業天數':'有符合紀錄的天數')+'</div><div class="val num">'+workDays+' 天</div></div>';
   h += '<div class="stat-tile"><div class="lbl">平均日實收</div><div class="val income num">'+(workDays>0?fmtMoney(net.total/workDays):'—')+'</div></div>';
-  if(uiShow('shift') && wholeDays) h += '<div class="stat-tile"><div class="lbl">平均每日工時</div><div class="val num">'+(workDays>0?'<span class="nw">'+fmtNum(hours/workDays,2)+' 小時</span>':'—')+'</div></div>';
-  if(uiShow('shift') && wholeDays) h += '<div class="stat-tile"><div class="lbl">平均每日休息時間</div><div class="val num">'+(workDays>0?'<span class="nw">'+fmtNum(breakHours/workDays,2)+' 小時</span>':'—')+'</div></div>';
+  // RR-08: per day that has clock-in hours (a day with fares but no clock-in would pull the average down)
+  var hdNote = hourDays>0 && hourDays<workDays ? '<div style="font-size:10.5px;color:var(--text-muted);margin-top:2px">有打卡的 '+hourDays+' 天平均</div>' : '';
+  if(uiShow('shift') && wholeDays) h += '<div class="stat-tile"><div class="lbl">平均每日工時</div><div class="val num">'+(hourDays>0?'<span class="nw">'+fmtNum(hours/hourDays,2)+' 小時</span>':'—')+'</div>'+hdNote+'</div>';
+  if(uiShow('shift') && wholeDays) h += '<div class="stat-tile"><div class="lbl">平均每日休息時間</div><div class="val num">'+(hourDays>0?'<span class="nw">'+fmtNum(breakHours/hourDays,2)+' 小時</span>':'—')+'</div>'+hdNote+'</div>';
   var campRecs = recs.filter(function(r){ return r.tripBonus>0 || (r.platform==='bonus' && r.campaignId); });
   if(campRecs.length){
     var campAmt = campRecs.reduce(function(a,r){ return a + (r.platform==='bonus' ? (+r.revenue||0) : (+r.tripBonus||0)); }, 0);
@@ -5769,9 +5797,9 @@ function renderAnalytics(){
   var effRate = F ? fm.rateP : periodRate(range.from, range.to);
   h += '<div class="stat-tile"><div class="lbl">平均時薪(已扣休息)</div><div class="val num">'+rateText(effRate.rate)+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">總工時</div><div class="val num"><span class="nw">'+fmtNum(hours,2)+' 小時</span></div></div>';
-  // per km: the fixed costs up to today, as the km are (a month still running does not carry the whole month's yet)
-  var kmFixTo = range.to>todayStr() ? todayStr() : range.to, kmExp = varExp + fixedTotalForRange(range.from, kmFixTo);
-  if(!F) h += '<div class="stat-tile"><div class="lbl">每公里成本</div><div class="val expense num">'+(km>0?fmtMoney2(kmExp/km):'—')+'</div>'+(km>0 && kmFixTo<range.to && fixExp>0 ? '<div class="km-fix-note" style="font-size:10.5px;color:var(--text-muted);margin-top:2px">固定成本算到今天</div>' : '')+'</div>';
+  // per km: the same fixed costs as 淨利 (fixedSpan: kept and passed days only)
+  var kmFixTo = fixedSpan(range.from, range.to).to, kmExp = varExp + fixExp;
+  if(!F) h += '<div class="stat-tile"><div class="lbl">每公里花費(含固定成本)</div><div class="val expense num">'+(km>0?fmtMoney2(kmExp/km):'—')+'</div>'+(km>0 && kmFixTo<range.to && fixExp>0 ? '<div class="km-fix-note" style="font-size:10.5px;color:var(--text-muted);margin-top:2px">固定成本算到今天</div>' : '')+'</div>';
   h += '<div class="stat-tile"><div class="lbl">每公里實收</div><div class="val income num">'+(km>0?fmtMoney2(net.total/km):'—')+'</div></div>';
   h += '<div class="stat-tile"><div class="lbl">總里程</div><div class="val num"><span class="nw">'+fmtNum(km,1)+' km</span></div></div>';
   if(!F){
@@ -5779,7 +5807,7 @@ function renderAnalytics(){
   if(fuel.cost>0) h += '<div class="stat-tile"><div class="lbl">每公里油錢</div><div class="val expense num">'+(km>0?fmtMoney2(fuel.cost/km):'—')+'</div></div>';
   var chg = chargeStatsInRange(range.from, range.to);
   if(chg.cost>0) h += '<div class="stat-tile"><div class="lbl">每公里電費</div><div class="val expense num">'+(km>0?fmtMoney2(chg.cost/km):'—')+'</div></div>';
-  if(vcOn()){ var vpk = vcPeriodPerKm(range.from, range.to, km); if(vpk!=null) h += '<div class="stat-tile"><div class="lbl">每公里總成本(估)</div><div class="val expense num">'+fmtMoney2(vpk)+'</div></div>'; }
+  if(vcOn()){ var vpk = vcPeriodPerKm(range.from, range.to, km); if(vpk!=null) h += '<div class="stat-tile"><div class="lbl">車子每公里成本(估)</div><div class="val expense num">'+fmtMoney2(vpk)+'</div></div>'; }
   if(chg.kwh>0){
     h += '<div class="stat-tile"><div class="lbl">每度電可跑</div><div class="val num">'+(km>0?'<span class="nw">'+fmtNum(km/chg.kwh,2)+' km</span>':'—')+'</div></div>';
     h += '<div class="stat-tile"><div class="lbl">平均每度電價</div><div class="val num">'+fmtMoney2(chg.costKwh/chg.kwh)+'</div></div>';
@@ -6607,8 +6635,9 @@ function summaryStats(from, to){
   return {net:m.net, profit:m.profit, exp:m.net-m.profit, trips:m.trips, hours:hours, days:days.length, best:best,
     gross:sumIncome(recordsInRange(from, to)).total, rate: P.hours>=1 ? P.net/P.hours : null, rateP:P};
 }
-// enough hours to stand for "how this driver usually does"
-function rateOf(st){ return st && st.hours>=5 ? st.rate : null; }
+// enough to stand for "how this driver usually does": 3 business days and 20 hours (RR-03; it was 5 hours)
+var SUM_BASE_MIN_DAYS = 3, SUM_BASE_MIN_H = 20;
+function rateOf(st){ return st && st.days>=SUM_BASE_MIN_DAYS && st.hours>=SUM_BASE_MIN_H ? st.rate : null; }
 function buildSummary(p){
   var s = summaryStats(p.from, p.to);
   if(!(s.net>0)) return null;
@@ -6621,13 +6650,21 @@ function buildSummary(p){
     var b3 = monthOf(p.from, 3), p1 = monthOf(p.from, 1), l = monthOf(p.from, 12);
     base = summaryStats(b3.from, addDays(p.from, -1)); prev = summaryStats(p1.from, p1.to); ly = summaryStats(l.from, l.to);
   }
+  // RR-03: a period that begins before the first day kept is not complete (a driver who started on 9/21 has 9 days in
+  // "the 3 months before" October, and a September of 9 days against a whole October read +166%)
+  var first = dataFirstDate(), baseFrom = p.kind==='week' ? addDays(p.from, -28) : monthOf(p.from, 3).from;
+  var prevFrom = p.kind==='week' ? addDays(p.from, -7) : monthOf(p.from, 1).from;
+  var lyFrom = p.kind==='week' ? addDays(p.from, -364) : monthOf(p.from, 12).from;
+  var baseCut = !!first && baseFrom<first, prevCut = !!first && prevFrom<first, lyCut = !!first && lyFrom<first;
   var tg = state.targets||{}, target = p.kind==='week' ? (+tg.weekly||0) : (+tg.monthly||0);
   var verdict = null, br = rateOf(base);
   if(s.rate!=null && br){
     var diff = s.rate/br - 1;
     verdict = {diff:diff, mood: diff>=0.05 ? 'good' : diff<=-0.05 ? 'low' : 'same'};
   }
-  return {p:p, s:s, base:base, prev:prev, ly:ly, target:target, verdict:verdict, baseLabel: p.kind==='week' ? '前 4 週平均' : '前 3 個月平均'};
+  var baseLabel = p.kind==='week' ? '前 4 週平均' : '前 3 個月平均';
+  if(baseCut) baseLabel = '之前平均('+mdStr(first)+' 起 '+base.days+' 天)';
+  return {p:p, s:s, base:base, prev:prev, ly:ly, target:target, verdict:verdict, baseLabel:baseLabel, baseCut:baseCut, prevCut:prevCut, lyCut:lyCut, first:first};
 }
 function pctTxt(diff){ var v = Math.round(diff*100); return (v>0?'+':'')+v+'%'; }
 function deltaSpan(cur, base){
@@ -6636,7 +6673,7 @@ function deltaSpan(cur, base){
   return ' <span style="color:'+c+';font-weight:700">'+pctTxt(d)+'</span>';
 }
 function verdictLine(S){
-  if(!S.verdict) return '<div style="color:var(--text-muted)">前面的工時紀錄還不夠,下次就能跟你自己的平常水準比較。</div>';
+  if(!S.verdict) return '<div style="color:var(--text-muted)">前面的紀錄還不夠,下次再比(要有 '+SUM_BASE_MIN_DAYS+' 個營業日、'+SUM_BASE_MIN_H+' 小時以上的打卡紀錄)。</div>';
   var v = S.verdict, abs = Math.abs(Math.round(v.diff*100));
   if(v.mood==='good') return '<div style="color:var(--income);font-weight:700">👍 時薪比你'+S.baseLabel+'高 '+abs+'%</div>';
   if(v.mood==='low') return '<div style="color:var(--expense);font-weight:700">🤔 時薪比你'+S.baseLabel+'低 '+abs+'%</div>';
@@ -6653,10 +6690,13 @@ function summaryHtml(S){
   if(s.rate!=null) h += rateMissNoteHtml(s.rateP, 'font-size:12px;color:var(--text-muted);line-height:1.6;margin:-6px 0 10px');
   h += '<div class="card" style="padding:12px 14px;margin-bottom:12px;font-size:14px;line-height:1.6">'+verdictLine(S)+'</div>';
   var lines = '';
-  var br = rateOf(S.base), lr = rateOf(S.ly);
+  var br = rateOf(S.base), lr = S.lyCut ? null : rateOf(S.ly);   // 去年同期 before the first day kept: not shown
   if(s.rate!=null && br) lines += row('時薪 vs '+S.baseLabel, fmtMoney(s.rate)+' / '+fmtMoney(br)+deltaSpan(s.rate, br));
   if(s.rate!=null && lr) lines += row('時薪 vs 去年同期', fmtMoney(s.rate)+' / '+fmtMoney(lr)+deltaSpan(s.rate, lr));
-  if(S.prev.net>0) lines += row('實收 vs '+(p.kind==='week'?'前一週':'前一個月'), fmtMoney(s.net)+' / '+fmtMoney(S.prev.net)+deltaSpan(s.net, S.prev.net));
+  var prevName = p.kind==='week' ? '前一週' : '前一個月';
+  // a part period is not compared in totals (RR-03); one with nothing in it is not mentioned, as before
+  if(S.prev.net>0 && S.prevCut) lines += row('實收 vs '+prevName, '<span style="color:var(--text-muted)">'+(p.kind==='week' ? '上週' : '上個月')+'從 '+mdStr(S.first)+' 才開始記帳,'+(p.kind==='week' ? '下週' : '下個月')+'起就能比</span>');
+  else if(S.prev.net>0) lines += row('實收 vs '+prevName, fmtMoney(s.net)+' / '+fmtMoney(S.prev.net)+deltaSpan(s.net, S.prev.net));
   if(S.target>0) lines += row((p.kind==='week'?'每週':'每月')+'目標', Math.round(s.net/S.target*100)+'%('+fmtMoney(s.net)+' / '+fmtMoney(S.target)+')');
   lines += row('淨利(扣支出與固定成本)', '<span style="color:'+(s.profit>=0?'var(--income)':'var(--expense)')+'">'+fmtMoney(s.profit)+'</span>');
   if(s.trips) lines += row('趟數', s.trips+' 趟');
@@ -6701,7 +6741,8 @@ function summaryHomeHtml(){
   }
   var S = buildSummary(pick);
   if(!S){ return ''; }
-  var sub = S.s.rate!=null ? '時薪 '+fmtMoney(S.s.rate)+(S.verdict ? (S.verdict.mood==='good' ? ' 👍 比平常高 '+Math.abs(Math.round(S.verdict.diff*100))+'%' : S.verdict.mood==='low' ? ' 🤔 比平常低 '+Math.abs(Math.round(S.verdict.diff*100))+'%' : ' 👌 跟平常差不多') : '') : '實收 '+fmtMoney(S.s.net);
+  var usual = S.baseCut ? '之前平均' : '平常';   // RR-03: the base began before the first day kept
+  var sub = S.s.rate!=null ? '時薪 '+fmtMoney(S.s.rate)+(S.verdict ? (S.verdict.mood==='good' ? ' 👍 比'+usual+'高 '+Math.abs(Math.round(S.verdict.diff*100))+'%' : S.verdict.mood==='low' ? ' 🤔 比'+usual+'低 '+Math.abs(Math.round(S.verdict.diff*100))+'%' : ' 👌 跟'+usual+'差不多') : '') : '實收 '+fmtMoney(S.s.net);
   if(dispOn()){ var dm = monthRange(new Date(t+'T00:00:00')), dc = dispCalc(dm.from, dm.to); if(dc) sub += '<br>本月可支配所得(估) '+fmtMoney(dc.disp); }
   return '<div class="card sum-home"><div class="sh-txt"><b>📊 '+name+'出爐了</b><div style="font-size:12.5px;color:var(--text-muted)">'+sub+'</div></div>'+
     '<div class="sh-btns"><button class="btn btn-primary" style="flex:none" data-act="open-summary-home:'+pick.kind+'">看摘要</button><button class="btn btn-ghost" style="flex:none;padding:6px 10px" data-act="summary-dismiss:'+pick.kind+'" aria-label="關閉">✕</button></div></div>';
@@ -6734,11 +6775,12 @@ function dispCalc(from, to, bare){
   var t = todayStr(), end = to>t ? t : to;
   if(end<from) return null;
   var net = sumNetIncome(recordsInRange(from, end)).total, exps = expensesInRange(from, end), tollRef = tollRefundInRange(from, end);
-  var varExp = sumExpense(exps) - tollRef, fixed = fixedTotalForRange(from, end), km = totalKmInRange(from, end);
+  // fixed costs and 車貸 from the first record on (fixedSpan, as 淨利), up to today
+  var fs = fixedSpan(from, end), varExp = sumExpense(exps) - tollRef, fixed = fs.none ? 0 : fixedTotalForRange(fs.from, fs.to), km = totalKmInRange(from, end);
   // bare: no reserves (回本 counts what was really earned); 車貸 from ② only when no 固定成本 already has it
-  var loan = vcAvailable() ? vcLoanForRange(from, end) : 0;
+  var loan = vcAvailable() && !fs.none ? vcLoanForRange(fs.from, fs.to) : 0;
   var R = dispRes(), rates = vcRates(), rs = bare ? {maint:0, repl:0, tax:0} : dispReserves(R, net, km, rates);
-  return {from:from, to:end, running:end<to, net:net, varExp:varExp, tollRef:tollRef, expCount:exps.length, fixed:fixed, km:km, loan:loan,
+  return {from:from, to:end, running:end<to, fixFrom:fs.none ? null : fs.from, net:net, varExp:varExp, tollRef:tollRef, expCount:exps.length, fixed:fixed, km:km, loan:loan,
     R:R, rates:rates, maint:rs.maint, repl:rs.repl, tax:rs.tax, disp:net-varExp-fixed-loan-rs.maint-rs.repl-rs.tax};
 }
 var DISP_FORECAST_FROM_DAY = 4;  // 規格: not in the first 3 days of the month, the average says too little yet
@@ -6786,7 +6828,11 @@ function dispCardHtml(range, kind){
   h += '<div class="num" style="font-size:26px;font-weight:800;margin:2px 0 8px;color:'+(c.disp>=0?'var(--income)':'var(--expense)')+'">'+fmtMoney(c.disp)+'</div>';
   h += row('實收(扣完平台手續費,含小費)', fmtMoney(c.net));
   h += row('已記的支出'+(c.expCount?'('+c.expCount+' 筆)':''), minus(c.varExp), c.tollRef>0 ? '已扣掉平台退的過路費 '+fmtMoney(c.tollRef) : '');
-  h += row('固定成本(依天數分攤)', minus(c.fixed), c.running ? '算到今天的天數,整個月的在下面月底預測' : '');
+  // RR-07: only the month card has a 月底預測 below it
+  var fixSub = [];
+  if(c.fixFrom && c.fixFrom>c.from) fixSub.push('從 '+mdStr(c.fixFrom)+' 開始記帳算起');
+  if(c.running) fixSub.push(kind==='month' ? '算到今天的天數,整個月的在下面月底預測' : '算到今天的天數');
+  h += row('固定成本(依天數分攤)', minus(c.fixed), fixSub.join(','));
   if(c.loan>0) h += row('車貸(🚗 車輛成本填的,依天數分攤)', minus(c.loan), '固定成本裡沒有車貸,所以在這裡扣');
   if(c.R.maintOn) h += row('保養預留', minus(c.maint), c.rates.maint>0 ? '每公里 '+fmtMoney2(c.rates.maint)+(c.rates.maintSrc==='data' ? '(車輛成本:近 12 個月保養維修 ÷ 里程)' : '(你填的)')+' × '+fmtNum(c.km,1)+' 公里' : '還沒有每公里金額');
   if(c.R.replOn && c.rates.repl>0) h += row('換車預留', minus(c.repl), '每公里折舊 '+fmtMoney2(c.rates.repl)+' × '+fmtNum(c.km,1)+' 公里');
@@ -7276,7 +7322,8 @@ function reportHeat(from, to){
 function reportPayouts(from, to){
   return payoutBatches().filter(function(b){ return b.payout && b.payDate && inRange(b.payDate, from, to); }).map(function(b){
     var c = payoutCheck(b);
-    return {key:b.platform, label:platformDef(b.platform).label, date:b.payDate, exp:c.at, act:c.act, diff:c.act-c.at, changed:c.kind!=='same' && c.kind!=='algo'};
+    // the new estimate matching what came in (payoutCheck fit) counts as matched, against that estimate
+    return {key:b.platform, label:platformDef(b.platform).label, date:b.payDate, exp:c.fit ? c.now : c.at, act:c.act, diff:c.fit ? 0 : c.act-c.at, changed:c.kind!=='same' && c.kind!=='algo'};
   }).filter(function(x){ return x.exp>0 || x.act>0; }).sort(function(a, z){ return a.date<z.date ? -1 : (a.date>z.date ? 1 : 0); });
 }
 function buildReport(p){
@@ -7288,6 +7335,8 @@ function buildReport(p){
   var pv = reportPrev(p, to), R = {p:p, to:to, partial:to!==p.to, recs:recs, s:summaryStats(p.from, to), prev:summaryStats(pv.from, pv.to)};
   R.titleFull = p.title + (R.partial ? '(到 '+mdStr(to)+')' : '');
   R.hasPrev = R.prev.net>0 || R.prev.trips>0;
+  // RR-03: the period before began ahead of the first day kept, so its totals are only part of it (not compared)
+  R.prevFirst = dataFirstDate(); R.prevCut = R.hasPrev && !!R.prevFirst && pv.from<R.prevFirst;
   var g = sumIncome(recs);
   R.gross = g.total;
   R.fee = g.total - R.s.net - recs.reduce(function(a, r){ return a + (r.couponType==='absorb' ? (+r.coupon||0) : 0); }, 0);
@@ -7301,7 +7350,7 @@ function buildReport(p){
   exps.forEach(function(e){ var k = catInfo(e.category).key; cm[k] = (cm[k]||0) + (+e.amount||0); });
   R.cats = Object.keys(cm).map(function(k){ var c = catInfo(k); return {key:k, label:c.label, icon:c.icon, amt:cm[k]}; }).filter(function(x){ return x.amt>0; }).sort(function(a, z){ return z.amt-a.amt; });
   R.varGross = sumExpense(exps); R.etag = cm.toll||0;
-  R.toll = tollRefundInRange(p.from, to); R.fixExp = fixedTotalForRange(p.from, to);
+  R.toll = tollRefundInRange(p.from, to); R.fixExp = fixedTotalKept(p.from, to); R.fixFrom = fixedSpan(p.from, to).from;   // as 淨利 (fixedSpan)
   R.prevVar = sumExpense(expensesInRange(pv.from, pv.to));
   R.heat = reportHeat(p.from, to);
   R.pay = reportPayouts(p.from, to);
@@ -7327,7 +7376,7 @@ function reportObservations(R){
   if(R.gross>0 && R.fee>0) o.push('平台手續費共 '+rN(R.fee)+' 元,佔總車資 '+(R.fee/R.gross*100).toFixed(1)+'%。');
   if(R.varGross>0){
     var d = R.prevVar>0 ? (R.varGross-R.prevVar)/R.prevVar*100 : null, big = R.cats[0];
-    if(R.hasPrev && d!=null && Math.abs(d)>=5) o.push('變動支出比'+pw+(d>0?'多':'少')+' '+Math.abs(d).toFixed(0)+'%'+(big ? ',最大的一項是'+big.label+'('+rN(big.amt)+' 元)' : '')+'。');
+    if(R.hasPrev && !R.prevCut && d!=null && Math.abs(d)>=5) o.push('變動支出比'+pw+(d>0?'多':'少')+' '+Math.abs(d).toFixed(0)+'%'+(big ? ',最大的一項是'+big.label+'('+rN(big.amt)+' 元)' : '')+'。');
     else if(big) o.push('支出最大的一項是'+big.label+'('+rN(big.amt)+' 元),佔變動支出 '+Math.round(big.amt/R.varGross*100)+'%。');
   }
   if(s.hours>0 && s.days>0) o.push('營業 '+s.days+' 天,平均每個營業日上班 '+fmtNum(s.hours/s.days,1)+' 小時。');
@@ -7352,6 +7401,7 @@ function rptBubble(icon, title, sub, style){
 function rptVerdict(R){
   var s = R.s, v = R.prev, w = R.p.word, pw = R.p.prevWord;
   if(!R.hasPrev) return {ic:'🌟', t:w+'的成績單', s:pw+'沒有記帳,下一份報告就能跟自己比。'};
+  if(R.prevCut) return {ic:'🌟', t:w+'的成績單', s:pw+'從 '+mdStr(R.prevFirst)+' 才開始記帳,'+R.p.next+'起就能比。'};
   var items = [['實收', s.net, v.net], ['淨利', s.profit, v.profit], ['時薪', s.rate, v.rate], ['趟數', s.trips, v.trips]].filter(function(x){ return x[1]!=null && x[2]!=null && x[2]>0; });
   var up = items.filter(function(x){ return x[1]>x[2]*1.005; }).map(function(x){ return x[0]; });
   var down = items.filter(function(x){ return x[1]<x[2]*0.995; }).map(function(x){ return x[0]; });
@@ -7384,16 +7434,22 @@ function rptHighlights(R){
     return '<div class="rp-card rp-mc" style="background:'+bg+';border-color:'+bd+'"><div class="rp-lab">'+rIc(icon)+' '+label+'</div><div class="rp-v"'+(color?' style="color:'+color+'"':'')+'>'+val+' <small>'+unit+'</small></div><div class="rp-cmp">'+cmp+'</div></div>';
   };
   var pc = R.hasPrev ? v : {}, cards = [];
-  cards.push(mc('💰', '實收(含小費)', rN(s.net), '元', rptChange(s.net, R.hasPrev?pc.net:null, pw), '#FFF3E0', '#F2D3A6'));
-  cards.push(mc('🚕', '趟數', rN(s.trips), '趟', rptChange(s.trips, R.hasPrev?pc.trips:null, pw), '#E5F1E0', '#C9DFBF'));
+  // RR-03: against a part period the totals are not compared; 時薪 still is, naming the days it has (enough of them)
+  var cutTxt = '<span class="rp-flat">'+pw+'從 '+(R.prevCut ? mdStr(R.prevFirst) : '')+' 才開始記帳,'+R.p.next+'起就能比</span>';
+  var chg = function(cur, old, kind){ return R.prevCut ? cutTxt : rptChange(cur, old, pw, kind); };
+  cards.push(mc('💰', '實收(含小費)', rN(s.net), '元', chg(s.net, R.hasPrev?pc.net:null), '#FFF3E0', '#F2D3A6'));
+  cards.push(mc('🚕', '趟數', rN(s.trips), '趟', chg(s.trips, R.hasPrev?pc.trips:null), '#E5F1E0', '#C9DFBF'));
   // hours are only there for drivers who punch in and out
   if(s.hours>0){
-    cards.push(mc('⏰', '工作時數', fmtNum(s.hours,1), '小時', rptChange(s.hours, (R.hasPrev && pc.hours>0)?pc.hours:null, pw, 'neutral'), '#E5F1E0', '#C9DFBF'));
-    cards.push(mc('📈', '時薪(含空檔)', s.rate!=null?rN(s.rate):'—', '元', rptChange(s.rate, R.hasPrev?pc.rate:null, pw), '#FFF3E0', '#F2D3A6'));
+    cards.push(mc('⏰', '工作時數', fmtNum(s.hours,1), '小時', chg(s.hours, (R.hasPrev && pc.hours>0)?pc.hours:null, 'neutral'), '#E5F1E0', '#C9DFBF'));
+    var rateCmp = !R.prevCut ? rptChange(s.rate, R.hasPrev?pc.rate:null, pw)
+      : rateOf(v)!=null ? rptChange(s.rate, rateOf(v), pw+'('+mdStr(R.prevFirst)+' 起 '+v.days+' 天)')
+      : '<span class="rp-flat">'+pw+'的紀錄還不夠,下次再比</span>';
+    cards.push(mc('📈', '時薪(含空檔)', s.rate!=null?rN(s.rate):'—', '元', rateCmp, '#FFF3E0', '#F2D3A6'));
   }
   var h = rptBubble(vd.ic, vd.t, vd.s, 'background:#fff;border:1.3pt solid #EBDDC8;margin-bottom:6mm');
   h += '<div class="rp-grid2">'+cards.join('')+'</div>';
-  h += '<div style="margin-top:5mm">'+mc('💵', '淨利(扣掉所有成本,實際留下的錢)', rN(s.profit), '元', rptChange(s.profit, R.hasPrev?pc.profit:null, pw), '#fff', '#EBDDC8', s.profit>=0?'#2E7D4F':'#C0412E')+'</div>';
+  h += '<div style="margin-top:5mm">'+mc('💵', '淨利(扣掉所有成本,實際留下的錢)', rN(s.profit), '元', chg(s.profit, R.hasPrev?pc.profit:null), '#fff', '#EBDDC8', s.profit>=0?'#2E7D4F':'#C0412E')+'</div>';
   var tail = [];
   if(s.trips>0) tail.push('平均每趟實收 '+rN(s.net/s.trips)+' 元');
   if(s.days>0) tail.push('營業 '+s.days+' 天,平均一天實收 '+rN(s.net/s.days)+' 元');
@@ -7427,7 +7483,7 @@ function rptMoney(R){
     if(R.fixExp>0) parts.push('固定 '+rN(R.fixExp)+' 元');
     h += '<div class="rp-card" style="margin-top:5mm"><div class="rp-h3">'+rIc('🧾')+' 支出('+parts.join('＋')+')</div>'+
       (R.cats.length ? bars(cut(R.cats, 7, function(x){ return x.amt; }, '其他項目', '📝'), function(x){ return x.amt; }, function(){ return '#D9A77A'; }) : '<div class="rp-fine">這段期間沒有記變動支出。</div>')+
-      (R.fixExp>0 ? '<div class="rp-fine" style="margin-top:2mm">固定成本(靠行費、保險這類)照這段期間的天數攤提。</div>' : '')+'</div>';
+      (R.fixExp>0 ? '<div class="rp-fine" style="margin-top:2mm">固定成本(靠行費、保險這類)照這段期間的天數攤提'+(R.fixFrom>R.p.from ? ',從 '+mdStr(R.fixFrom)+' 開始記帳算起' : '')+'。</div>' : '')+'</div>';
   }
   if(R.toll>0) h += rptBubble('🛣', '過路費有退回來', R.etag>0 ? 'E-Tag 支出 '+rN(R.etag)+' 元,平台退了 '+rN(R.toll)+' 元,實際只花 '+rN(R.etag-R.toll)+' 元。' : '平台退了過路費 '+rN(R.toll)+' 元,已經算進淨利。', 'background:#E5F1E0;margin-top:5mm');
   return h;
@@ -9171,8 +9227,9 @@ function yearReportData(year){
     var g = sumIncome(recs), nt = sumNetIncome(recs);
     var byCat = {}; allCats().forEach(function(c){ byCat[c.key]=0; });
     exps.forEach(function(e){ byCat[e.category] = (byCat[e.category]||0) + (+e.amount||0); });
-    var fix = fixedTotalForRange(from,to), tollR = tollRefundInRange(from,to);
-    rows.push({month:year+'-'+pad(mo), trips:recs.filter(function(r){ return !platformDef(r.platform).tipOnly; }).length,
+    // fixed costs as 淨利 (fixedSpan): a month before the first record (or still to come) has none and no 淨利 (blank in the CSV)
+    var fix = fixedTotalKept(from,to), tollR = tollRefundInRange(from,to), off = fixedSpan(from,to).none;
+    rows.push({month:year+'-'+pad(mo), off:off, trips:recs.filter(function(r){ return !platformDef(r.platform).tipOnly; }).length,
       gross:g.rev, tip:g.tip, fee:g.total-nt.total, net:nt.total, byCat:byCat, varExp:sumExpense(exps), toll:tollR, fixed:fix,
       profit:nt.total-sumExpense(exps)+tollR-fix, km:totalKmInRange(from,to), hours:totalHoursInRange(from,to), days:workingDaysInRange(from,to)});
   }
@@ -9199,9 +9256,9 @@ function yearReportCsv(year){
   var lines = [head];
   var tot = null;
   d.rows.forEach(function(r){
-    var line = [r.month, r.days, r.trips, r2(r.gross), r2(r.tip), r2(r.fee), r2(r.net)].concat(allCats().map(function(c){ return r2(r.byCat[c.key]||0); })).concat([r2(r.varExp), r2(r.toll), r2(r.fixed), r2(r.profit), +r.km.toFixed(1), +r.hours.toFixed(2)]);
+    var line = [r.month, r.days, r.trips, r2(r.gross), r2(r.tip), r2(r.fee), r2(r.net)].concat(allCats().map(function(c){ return r2(r.byCat[c.key]||0); })).concat([r2(r.varExp), r2(r.toll), r.off?'':r2(r.fixed), r.off?'':r2(r.profit), +r.km.toFixed(1), +r.hours.toFixed(2)]);
     lines.push(line);
-    tot = tot ? tot.map(function(v,i){ return i===0?v:+(v+line[i]).toFixed(2); }) : ['全年合計'].concat(line.slice(1));
+    tot = tot ? tot.map(function(v,i){ return i===0?v:+(v+(+line[i]||0)).toFixed(2); }) : ['全年合計'].concat(line.slice(1).map(function(v){ return +v||0; }));
   });
   lines.push(tot);
   lines.push([]);
@@ -9240,7 +9297,8 @@ function openYearReportModal(year){
     h += '<div style="font-size:11px;color:var(--text-muted);margin:-6px 0 12px;line-height:1.5">報稅季可以拿這份明細,對照財政部所得資料或平台給的扣繳憑單。要不要申報、怎麼申報,以國稅局資料為準。</div>';
   }
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="year-report-csv:'+year+'">下載 / 分享報表檔(CSV)</button></div>';
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">表格有每個月的車資、手續費、實收、各類支出、固定成本、淨利、里程、工時,最後是各平台全年合計。可用 Excel、Numbers 或 Google 試算表打開。右邊數字是當月淨利。</div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">表格有每個月的車資、手續費、實收、各類支出、固定成本、淨利、里程、工時,最後是各平台全年合計。可用 Excel、Numbers 或 Google 試算表打開。右邊數字是當月淨利。'+
+    (first && first.slice(0,4)===String(year) && first.slice(5)!=='01-01' ? '固定成本從 '+mdStr(first)+' 開始記帳算起,之前的月份淨利留白。' : '')+'</div>';
   openModal(h);
 }
 
@@ -11530,12 +11588,14 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.24.3';
+var APP_VERSION = '2026.11.24.4';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.24.4', '🚐 YOXI 手續費照 YOXI 客服確認的算法修正:綁定信用卡付款不管跳表、預估車資還是據點叫車,都是 10%＋2%;企業簽單的折扣和 10% 都從原價扣(9 折實收 80%、95 折 85%)。以前記的單也一起重算,所以這些 YOXI 單的實收會比以前少一點;已對帳的 YOXI 撥款如果預估變了,會用灰字說明,不是錢少拿了'],
+  ['2026.11.24.4', '📊 淨利更合理:固定成本只算你開始記帳以後、到今天為止的日子,開始記帳前的月份和還沒到的日子不再扣,本年和全部期間的淨利會一樣;經營摘要不再拿只記了幾天的月份當比較基準。另外分析功能優化:兩個「每公里成本」改了好認的名字、平均每日工時只除有打卡的天', '', {tab:'analytics', find:'效率指標'}],
   ['2026.11.24.3', '🛣️ 測試版:路況快報的「國道」分頁移到中間(即時、國道、施工),比施工常用、比較好點', 'beta', {tab:'entry', find:'路況快報'}],
   ['2026.11.24.3', '📅 記預約單時,「屬於哪個平台」移到金額上面,並記住上次選的平台。另外優化:篩選時段的含空檔時薪也扣掉打卡休息;還要跑多久、車隊比較在資料不夠時會說還缺什麼、怎麼補;歷史頁看以前的日子,報告和分享圖改寫「這天」;已對帳的撥款後來因為撥款規則或手續費更新、預估變了,改用灰字說明、可以一鍵套用到正確的那批,不再冒出紅字差額'],
   ['2026.11.24.2', '🛣️ 測試版:路況快報多一個「國道」分頁:你選的城市裡現在時速 60 以下的國道路段,最慢的排前面,點一段看地圖路況;雪隧也搬到這一頁最上面。不想看可以在 ⚙️ 關掉「顯示國道分頁」', 'beta', {tab:'entry', find:'路況快報'}],
