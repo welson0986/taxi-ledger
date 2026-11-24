@@ -554,6 +554,7 @@ function twHm(ms) { return ms ? new Date(ms + 8 * HOUR).toISOString().slice(11, 
 // 只接受這些來源的網頁讀取：網站、舊網址、App（Android／iOS 的內建網頁）
 const ORIGINS = ['https://app.realway.com.tw', 'https://welson0986.github.io', 'https://localhost', 'capacitor://localhost', 'http://localhost'];
 const REG_MAX_AGE = 12 * MIN;
+const HX_CITIES = ['tpe', 'ntpc', 'ila'];   // 雪隧卡片給這三個城市（北宜往返）
 
 // ---------- 快取：這台伺服器的記憶體＋Cloudflare 快取（只給備援的警廣用）----------
 const mem = new Map(), inflight = new Map();
@@ -666,6 +667,14 @@ export async function onRequest(context) {
     if (!o.c) { delete o.c; const pc = placeCity(o, sel); if (pc) o.pc = pc; }
     return o;
   });
+  // 雪隧（坪林—頭城）：選了台北、新北或宜蘭才給；只讀北區裡 Worker 算好的（這裡不抓高公局）。
+  // 北區讀不到（Worker 停了）→ ok:false；北區裡沒有 hx（Worker 還是舊版或 HX_OFF）→ 不給，App 就不顯示卡片
+  let hx;
+  if (sel.some(k => HX_CITIES.indexOf(k) >= 0)) {
+    const n = got[REGION_OF.ila];
+    if (!n) hx = env.ROADS_KV ? { ok: false } : undefined;
+    else if (n.hx) hx = n.hx.d ? { ok: !!n.hx.ok, at: n.hx.d.at, S: n.hx.d.S, N: n.hx.d.N } : { ok: false };
+  }
   const tdxOk = tdxOn && tdx.length > 0 && tdx.every(g => g.ok);
   const bad = tdx.find(g => !g.ok || g.err);
   const ats = tdx.filter(g => g.ok && g.at).map(g => g.at);
@@ -676,6 +685,7 @@ export async function onRequest(context) {
       pbs,
       tdx: { on: tdxOn, ok: tdxOk, part: tdxOn && !tdxOk && tdx.some(g => g.ok), at: ats.length ? Math.max(...ats) : null, err: bad ? errText(bad.err || 'fail') : null, stale: tdx.some(g => g.stale) }
     },
-    items: out
+    items: out,
+    hx
   });
 }

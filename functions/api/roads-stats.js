@@ -906,6 +906,15 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&a
 const ago = (ms, now) => ms ? Math.round((now - ms) / 60000) + ' 分鐘前' : '從來沒有';
 
 const pct = x => x == null ? '—' : Math.round(x * 100) + '%';
+// 雪隧（高公局 VD＋路段旅行時間，每 3 分鐘；不吃 TDX 點數）
+function hxHtml(x, now) {
+  if (!x) return '';
+  const d = x.d || {}, row = (name, o) => o ? '<tr><td>' + name + '</td><td>' + (o.L == null ? '—' : o.L) + '／' + (o.R == null ? '—' : o.R) + '</td><td>' + o.n + '／' + o.of + (o.n < o.of * 0.6 ? ' <span class="bad">不到 6 成</span>' : '') + '</td><td>' + (o.vl + o.vr) + '</td><td>' + (o.tt ? Math.round(o.tt / 60) + ' 分（' + o.v + ' km/h）' : '—') + '</td></tr>' : '';
+  let h = '<h2>🏔️ 雪隧（坪林—頭城，高公局交通資料庫）</h2><p>最後成功：<b>' + twHm(x.okAt) + '</b>（' + ago(x.okAt, now) + '）　這一輪：' + (x.ok ? '<span class="ok">成功</span>' + (x.err ? '（部分失敗 ' + esc(x.err) + '）' : '') : '<span class="bad">失敗 ' + esc(x.err) + '</span>') +
+    '　連續失敗 ' + (x.fails || 0) + '　資料時間 ' + twHm(d.at) + (x.info ? '　讀了約 ' + Math.round(x.info.chars / 1024) + ' K 字、找到 ' + x.info.found + '／44 組' : '') + '</p>';
+  h += '<table><tr><th>方向</th><th>左／右線 km/h</th><th>可用偵測器</th><th>這分鐘車數</th><th>整段</th></tr>' + row('往宜蘭（南下）', d.S) + row('往台北（北上）', d.N) + '</table>';
+  return h + '<p class="muted">停用：Cloudflare 後台 paoche-roads-worker 設變數 HX_OFF=1（App 就不顯示雪隧卡片）。</p>';
+}
 function geoHtml(g, now) {
   if (!g) return '';
   const t = g.today, l = g.last;
@@ -939,6 +948,7 @@ function page(snap, now, geo) {
   }
   if (!snap.tdxOn) h += '<tr><td colspan="6" class="bad">' + (snap.mode && snap.mode !== 'nokey' ? 'TDX 目前沒抓：' + (MODE_NAMES[snap.mode] || '') : 'Worker 沒有設定 TDX 金鑰，只抓警廣') + '</td></tr>';
   h += '</table>';
+  h += hxHtml(snap.hx, now);
   if (snap.v === 2) h += cityHtml(snap) + tdxHtml(snap);
 
   h += '<h2>每天</h2><table><tr><th>日期</th><th>會推幾批</th><th>候選件數</th><th>最密集 10 分鐘</th><th>重複件（警廣＋TDX 同一件）</th><th>推了之後被排除（1 小時內）</th><th>來源失敗次數</th><th>排程／App 備援 跑幾輪</th></tr>';
@@ -988,7 +998,7 @@ export async function onRequest(context) {
     const src = {};
     for (const k in snap.src) { const s = snap.src[k]; src[k] = { ok: s.ok, at: s.at, okAt: s.okAt, err: s.err, fails: s.fails, p: s.p || null, n: s.items ? s.items.length : 0 }; }
     const tdx = snap.tdx ? { mon: snap.tdx.mon, points: +tdxPoints(snap.tdx).toFixed(2), today: +tdxPoints(snap.tdx.day).toFixed(2), calls: snap.tdx.calls, bytes: snap.tdx.bytes, ep: snap.tdx.ep, prev: snap.tdx.prev || null } : null;
-    return new Response(JSON.stringify({ v: snap.v, at: snap.at, last: snap.last || null, runs: snap.runs, writes: snap.w, tdxOn: snap.tdxOn, mode: snap.mode || null, budget: snap.budget || null, tdx, src, days: (snap.sim && snap.sim.days) || {}, geo }), { status: 200, headers: Object.assign({ 'Content-Type': 'application/json; charset=utf-8' }, HEAD) });
+    return new Response(JSON.stringify({ v: snap.v, at: snap.at, last: snap.last || null, runs: snap.runs, writes: snap.w, tdxOn: snap.tdxOn, mode: snap.mode || null, budget: snap.budget || null, tdx, src, hx: snap.hx || null, days: (snap.sim && snap.sim.days) || {}, geo }), { status: 200, headers: Object.assign({ 'Content-Type': 'application/json; charset=utf-8' }, HEAD) });
   }
   return new Response(page(snap, now, geo), { status: 200, headers: Object.assign({ 'Content-Type': 'text/html; charset=utf-8' }, HEAD) });
 }
