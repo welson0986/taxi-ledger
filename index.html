@@ -7604,7 +7604,7 @@ function friendHotHtml(){
       '<div class="li-sub" style="color:'+(mine[c.k]?'var(--income)':'var(--text-muted)')+'">'+(mine[c.k] ? '你在這裡:'+mine[c.k].n+' 趟'+(mine[c.k].fareN?' · 平均實收 '+fmtMoney(mine[c.k].fare/mine[c.k].fareN):'') : '你還沒在這裡載過客')+'</div></div>'+
       '<a class="li-amt" style="color:var(--accent);font-size:13px;text-decoration:none;flex:none" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query='+lat+','+lng+'">看地圖 ›</a></div>';
   }).join('');
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">範圍:你最常上車的地方方圓 '+j.radius+' 公里。只顯示 '+j.min+' 位以上車友都上過車的地點(約 1 公里一格),資料延遲 '+j.delay+' 天,看不到任何人的個人紀錄。依「幾位車友」排名。</div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">範圍:你最常上車的地方方圓 '+j.radius+' 公里。只顯示 '+j.min+' 位以上車友都上過車的地點(約 1 公里一格),資料延遲 '+j.delay+' 天,看不到任何人的個人紀錄。依「幾位車友」排名。地名資料 © OpenStreetMap contributors。</div>';
   return h;
 }
 function openShareHotAsk(){
@@ -7642,43 +7642,59 @@ function inNowWindow(ts, w){
 }
 function nowWindowLabel(w){ var a = (w.h+23)%24, b = (w.h+2)%24; return '星期'+WEEKDAY_TW[w.wd]+' '+a+'–'+(b===0?24:b)+' 點'; }
 function hourSlot(ts){ var hh = new Date(ts).getHours(); return hh<6 ? 'late' : (hh<18 ? 'day' : 'eve'); }
-/* area names from OpenStreetMap, looked up once per 1 km cell and kept in the ledger */
-var placeQueue = [], placeBusy = false, placeTried = {};
-function placeLabel(a){
-  if(!a) return '';
-  var dist = a.suburb || a.city_district || a.district || a.town || a.city || '';
-  if(a.village) return (dist+' '+a.village+(a.road?' · '+a.road:'')).trim();
-  if(a.road) return (dist+' '+a.road+'一帶').trim();
-  return (dist+' '+(a.neighbourhood||a.quarter||'')).trim();
-}
-function queuePlaceLookup(key, lat, lng){
+/* Area names (© OpenStreetMap contributors). The phone never talks to OpenStreetMap: it asks our own relay (/api/geo) for the
+   1 km cell keys, in one batch. The relay answers from a cache shared by every driver; cells it does not know yet are looked up
+   later by one scheduled worker (at most 1 request a second, with our own User-Agent) and answered on a later ask. The relay can
+   be switched off remotely ({off:true}): then names are simply not shown and nothing is asked again for 6 hours (no fallback to OSM).
+   Only the cell keys (about 1 km, two decimals) leave the phone, never positions, the ledger or a device id. */
+var GEO_URL = 'https://app.realway.com.tw/api/geo';
+var GEO_KEY_RE = /^-?\d{1,3}\.\d{2},-?\d{1,3}\.\d{2}$/;
+var placeQueue = [], placeBusy = false, placeTried = {}, placeTimer = null, placeOffAt = 0, placeRetry = {};
+function queuePlaceLookup(key){
+  if(!GEO_KEY_RE.test(String(key)) || Date.now()-placeOffAt < 6*3600000) return;
   if(placeTried[key] && Date.now()-placeTried[key] < 60000) return;
   placeTried[key] = Date.now();
-  placeQueue.push({key:key, lat:lat, lng:lng});
+  placeQueue.push({key:key});
   runPlaceQueue();
 }
 function runPlaceQueue(){
-  if(placeBusy || !placeQueue.length || typeof fetch!=='function') return;
-  placeBusy = true;
-  var job = placeQueue.shift();
-  fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=17&accept-language=zh-TW&lat='+job.lat+'&lon='+job.lng)
-    .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
-    .then(function(j){
-      var name = placeLabel(j && j.address);
-      if(name){
-        state.hotspotPlaces = state.hotspotPlaces || {};
-        state.hotspotPlaces[job.key] = name;
-        save();
-        if(currentTab==='analytics') renderAll();
-      }
-    }, function(){})
-    .then(function(){ setTimeout(function(){ placeBusy = false; runPlaceQueue(); }, 1100); });  // OSM asks for at most one lookup per second
+  if(placeBusy || placeTimer || !placeQueue.length || typeof fetch!=='function') return;
+  placeTimer = setTimeout(function(){   // wait a moment so the keys of one screen go out as one request
+    placeTimer = null;
+    if(placeBusy || !placeQueue.length) return;
+    placeBusy = true;
+    var keys = placeQueue.splice(0, 20).map(function(j){ return j.key; });
+    fetch(GEO_URL+'?k='+encodeURIComponent(keys.join('|')).replace(/%2C/g, ','), {cache:'no-store', credentials:'omit', referrerPolicy:'no-referrer'})
+      .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
+      .then(function(j){
+        if(!j) return;
+        if(j.off){ placeOffAt = Date.now(); placeQueue = []; return; }   // switched off remotely: quiet, names stay blank
+        var names = j.names || {}, got = false;
+        keys.forEach(function(k){
+          var n = names[k];
+          if(typeof n==='string' && n && n.length<=80){
+            state.hotspotPlaces = state.hotspotPlaces || {};
+            state.hotspotPlaces[k] = n; got = true;
+          }
+        });
+        (j.none||[]).forEach(function(k){ placeTried[k] = Date.now()+6*3600000; });   // looked up, no name there: do not ask again for a while
+        var wait = (j.wait||[]).filter(function(k){ return keys.indexOf(k)>=0 && (placeRetry[k]||0)<4; });
+        if(wait.length) setTimeout(function(){   // the relay looks new cells up within a few minutes: ask again (4 times at most)
+          wait.forEach(function(k){ placeRetry[k] = (placeRetry[k]||0)+1; delete placeTried[k]; if(!(state.hotspotPlaces||{})[k]) queuePlaceLookup(k); });
+        }, 90000);
+        if(got){
+          save();
+          if(currentTab==='analytics') renderAll();
+        }
+      }, function(){})
+      .then(function(){ placeBusy = false; runPlaceQueue(); });
+  }, 400);
 }
 function hotspotName(key, lat, lng){
   var own = (state.hotspotNames||{})[key]; if(own) return own;
   var auto = (state.hotspotPlaces||{})[key]; if(auto) return auto;
   var g = String(key).split(',');
-  queuePlaceLookup(key, g[0], g[1]);
+  queuePlaceLookup(key);
   return '';
 }
 function hotspotHtml(days, dayKeys){
@@ -7711,7 +7727,7 @@ function hotspotHtml(days, dayKeys){
       ' <a data-act="hot-rename:'+c.key+'" style="cursor:pointer;font-size:12px;text-decoration:none" aria-label="幫熱區取名">✏️</a></div><div class="li-sub">'+c.n+' 趟 · 平均載客 '+fmtNum(c.min/c.n,1)+' 分'+(c.fareN?' · 平均實收 '+fmtMoney(c.fare/c.fareN):'')+'</div></div>'+
       '<a class="li-amt" style="color:var(--accent);font-size:13px;text-decoration:none;flex:none" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query='+lat+','+lng+'">看地圖 ›</a></div>';
   }).join('');
-  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">以上車位置約 1 公里見方分區統計,時段依上車時間。地名資料 © OpenStreetMap 貢獻者(查詢時只送出 1 公里格子的格點座標,查過就記住);點 ✏️ 可以自己取名,例如「大巨蛋散場」。點「看地圖」會用 Google 地圖打開那一區的中心點。</div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">以上車位置約 1 公里見方分區統計,時段依上車時間。地名資料 © OpenStreetMap contributors(由跑車人生伺服器代為查詢,只送出 1 公里格子的格點座標、不送實際位置;查過就記住);點 ✏️ 可以自己取名,例如「大巨蛋散場」。點「看地圖」會用 Google 地圖打開那一區的中心點。</div>';
   h += '</div></div>';
   return h;
 }
@@ -8305,6 +8321,7 @@ function rnBodyHtml(){
   var stale = [['pbs','警廣'],['tdx','交通部 TDX']].filter(function(x){ return src[x[0]] && src[x[0]].ok && src[x[0]].stale && src[x[0]].at; });
   if(!rnErr && stale.length) h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:6px">'+stale.map(function(x){ return x[1]+'暫時讀不到最新的,先顯示 '+hhmm(src[x[0]].at)+' 的'; }).join(';')+'。</div>';
   h += '<div class="segmented" style="margin-bottom:8px"><button class="'+(rnTab==='live'?'active':'')+'" data-act="rn-tab:live">即時路況('+v.live.length+')</button><button class="'+(rnTab==='work'?'active':'')+'" data-act="rn-tab:work">🚧 施工('+v.work.length+')</button></div>';
+  if(rnTab==='live') h += rnHxHtml(rnData.hx, now, keys);
   if(!list.length) h += '<div style="'+NOTE+'">'+(rnTab==='work' ? '最近 7 天沒有'+esc(rnCityNames(keys))+'的施工消息。' : '目前沒有收到通報（不代表道路通暢）')+'</div>';
   h += list.map(function(e){ return rnItemHtml(e, now, keys); }).join('');
   h += '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:10px">'+(rnTab==='work'
@@ -8315,12 +8332,64 @@ function rnBodyHtml(){
     '<br>標「位置不確定」的是來源沒有給準確位置的通報(多半是國道、省道),沒有地圖可看'+(pushLive() ? ',也不會發通知' : '')+'。</div>';
   return h;
 }
+/* ---------- 🏔️ 雪隧(坪林—頭城)：docs/評估_雪隧左右車道時速_2026-11-24.md ----------
+   Only for drivers whose 我主要跑 has 台北/新北/宜蘭. Two lines per direction: ① 約幾分 · 順暢/車多/塞 (the official
+   坪林交控—頭城 section) ② 左/右線 km/h + one plain phrase (22 detectors, weighted by cars). Describes, never tells the driver
+   to switch: 雪隧全線禁止變換車道, so this is for choosing a lane before going in, while parked. No push, no location. */
+var RN_HX_CITIES = ['tpe','ntpc','ila'];
+var RN_HX_DIFF = 5, RN_HX_JAM = 40, RN_HX_SMOOTH = 80, RN_HX_SHARE = 0.6, RN_HX_FEW = 22, RN_HX_OLD = 10*60000, RN_HX_GONE = 20*60000;
+function rnHxShow(keys){ return keys.some(function(k){ return RN_HX_CITIES.indexOf(k)>=0; }); }
+function rnHxNum(x){ x = Number(x); return isFinite(x) && x>=0 ? Math.round(x) : null; }
+// a server reply is data, not markup: keep only numbers
+function rnHxClean(j){
+  if(!j || typeof j!=='object') return null;
+  var out = {ok:!!j.ok, at:rnHxNum(j.at)};
+  ['S','N'].forEach(function(d){
+    var o = j[d];
+    if(o && typeof o==='object') out[d] = {L:rnHxNum(o.L), R:rnHxNum(o.R), vl:rnHxNum(o.vl)||0, vr:rnHxNum(o.vr)||0, n:rnHxNum(o.n)||0, of:rnHxNum(o.of)||0, tt:rnHxNum(o.tt), v:rnHxNum(o.v)};
+  });
+  return out;
+}
+function rnHxLevel(v){ return v==null ? '' : v>=RN_HX_SMOOTH ? '順暢' : v>=RN_HX_JAM ? '車多' : '塞'; }
+function rnHxMins(tt){ var h = Math.round(tt/30)/2; return '約 '+Math.floor(h)+' 分'+(h%1 ? '半' : ''); }
+// the phrase after 左/右 (the one line the driver reads)
+function rnHxSay(o){
+  if(!o.of || o.n < o.of*RN_HX_SHARE) return '資料不足';
+  if(o.L==null && o.R==null) return '車很少';
+  if(o.L==null || o.R==null) return '';
+  if(o.L<RN_HX_JAM && o.R<RN_HX_JAM) return '兩線都塞';
+  if(o.L<RN_HX_JAM) return '左線塞';
+  if(o.R<RN_HX_JAM) return '右線塞';
+  if(o.vl+o.vr < RN_HX_FEW) return '車很少';
+  if(Math.abs(o.L-o.R) < RN_HX_DIFF) return '差不多';
+  return o.R>o.L ? '右線較快' : '左線較快';
+}
+function rnHxRow(name, o){
+  var l1 = '', l2 = '', say = rnHxSay(o);
+  if(o.tt) l1 = rnHxMins(o.tt)+(o.v!=null ? ' · '+rnHxLevel(o.v) : '');
+  else if(o.L!=null || o.R!=null){ var a = [o.L,o.R].filter(function(x){ return x!=null; }); l1 = rnHxLevel(Math.round(a.reduce(function(s,x){ return s+x; },0)/a.length)); }
+  if(say==='資料不足') l2 = '左右線:偵測器資料不足';
+  else l2 = '左 '+(o.L==null ? '—' : o.L)+' · 右 '+(o.R==null ? '—' : o.R)+' km/h'+(say ? '　<b>'+say+'</b>' : '');
+  return '<div style="display:flex;gap:10px;margin-top:6px;font-size:13px;line-height:1.55"><div style="flex:none;width:46px;font-weight:700">'+name+'</div><div style="flex:1;min-width:0">'+
+    (l1 ? '<div>'+l1+'</div>' : '')+'<div>'+l2+'</div></div></div>';
+}
+function rnHxHtml(hx, now, keys){
+  if(!hx || !rnHxShow(keys)) return '';
+  var head = '<div style="display:flex;align-items:baseline;gap:8px"><b style="font-size:13.5px">🏔️ 雪隧(坪林—頭城)</b>';
+  var foot = '<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin-top:6px">隧道內全線禁止變換車道,請停車時查看、進隧道前選好。資料:交通部高速公路局「交通資料庫」,僅供參考,以現場標誌為準。</div>';
+  var box = '<div class="card" style="padding:10px 12px;margin:0 0 8px">';
+  var age = hx.at ? now - hx.at : Infinity;
+  if(!hx.S || !hx.N || age > RN_HX_GONE) return box+head+'</div><div style="font-size:12.5px;color:var(--text-muted);margin-top:4px">暫時讀不到雪隧資料。</div>'+foot+'</div>';
+  var old = age > RN_HX_OLD;
+  return box+head+'<span style="margin-left:auto;font-size:11.5px;color:var(--text-muted)">'+hhmm(hx.at)+' 的資料'+(old ? ' · 較舊' : '')+'</span></div>'+
+    '<div'+(old ? ' style="opacity:.55"' : '')+'>'+rnHxRow('往宜蘭', hx.S)+rnHxRow('往台北', hx.N)+'</div>'+foot+'</div>';
+}
 function rnSheetHtml(){
   var keys = trafficPicks();
   return '<div class="modal-title">🚦 路況快報<button class="close" style="margin-left:auto;margin-right:8px;font-size:18px" data-act="rn-set" aria-label="路況快報設定">⚙️</button><button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div><div id="rnSheet">'+
     '<div style="font-size:12.5px;color:var(--text-muted);margin:-4px 0 8px">城市:<b style="color:var(--text)">'+esc(rnCityNames(keys))+'</b>(照「常用路況地點」的我主要跑) · <a data-act="traffic-spots" style="color:var(--accent);cursor:pointer;font-weight:700">改城市</a></div>'+
     '<div id="rnBody">'+rnBodyHtml()+'</div>'+
-    '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:12px;border-top:1px solid var(--border);padding-top:8px">資料來源:警察廣播電臺即時路況、交通部運輸資料流通服務平臺(TDX);鄉鎮區位置:內政部國土測繪中心。<br>內容僅供參考,以現場狀況為準;開車時請勿操作。<br>只送出你選的城市,不送你的位置。'+(!pushLive() ? '打開才讀。' : isNativeApp() && rnPushPlugin() ? '重大路況通知要自己在 ⚙️ 打開(預設不收)。' : '打開才讀,網頁版沒有通知。')+'</div></div>';
+    '<div style="font-size:11px;color:var(--text-muted);line-height:1.65;margin-top:12px;border-top:1px solid var(--border);padding-top:8px">資料來源:警察廣播電臺即時路況、交通部運輸資料流通服務平臺(TDX)'+(rnHxShow(keys) ? ';雪隧:交通部高速公路局「交通資料庫」' : '')+';鄉鎮區位置:內政部國土測繪中心。<br>內容僅供參考,以現場狀況為準;開車時請勿操作。<br>只送出你選的城市,不送你的位置。'+(!pushLive() ? '打開才讀。' : isNativeApp() && rnPushPlugin() ? '重大路況通知要自己在 ⚙️ 打開(預設不收)。' : '打開才讀,網頁版沒有通知。')+'</div></div>';
 }
 function rnRefresh(){ var b = document.getElementById('rnBody'); if(b) b.innerHTML = rnBodyHtml(); rnSumRefresh(); }
 function rnLoad(force){
@@ -8340,7 +8409,7 @@ function rnLoad(force){
     if(gen!==rnGen) return;
     if(!j || !j.ok || !(j.items instanceof Array)) return fail();
     clearTimeout(rnTimer);
-    rnData = {at:Date.now(), cities:keys, src:j.src||{}, items:j.items};
+    rnData = {at:Date.now(), cities:keys, src:j.src||{}, items:j.items, hx:rnHxClean(j.hx)};
     rnBusy = false; rnErr = ''; rnRefresh();
     if(document.getElementById('rnSheet')) rnMarkSeen();   // what the driver has now seen, for 「上次查看後新增」
   }).catch(fail);
@@ -10145,7 +10214,7 @@ var HELP = [
     ['📍 下車地統計', '分析頁「上車熱區」下面:最近 90 天(可改 30 天、180 天、1 年)你最常在哪裡下車(前 10 名),每一區下車後平均多久才接到下一單;「死區提醒」列下車後等單明顯比你平均久的地方(平均空檔是你平均的 1.5 倍以上,同一區至少 3 次才列,最多 5 區)。空檔是估算:下車到按「接到單了」(沒按就到下一趟上車),每天最後一趟、下班前最後一趟、休息中都不算。要按上車／下車並允許定位才有資料,只在手機上算。', 'dropStat', 'vip', 'launch'],
     ['👥 車友熱區', '同意分享上車熱區才能看附近車友都在哪裡上車,每個地點也會顯示你自己在那裡載過幾趟、平均實收多少;只分享約 1 公里一格,不含精確位置、金額;取消分享會刪除你分享過的資料。'],
     ['即時路況', '記帳頁「看即時路況」開 Google 地圖;常用地點可以新增、排序。停車或紅燈時再看。', 'traffic'],
-    ['🚦 官方路況快報', '記帳頁的「🚦 路況快報」(可以在 ⚙️ 記帳首頁排列單獨排順序、單獨開關;不開「看即時路況」也能用):依「常用路況地點」勾的我主要跑城市(快報裡的「改城市」也能改),列出警察廣播電臺和交通部 TDX 公布的事故、壅塞、封路、交通管制;施工另外放在「🚧 施工」。點一則開 Google 地圖路況。只送出城市、不送位置。右上角 ⚙️:重大路況通知(安卓測試版,預設不收;上班打卡中才通知,無聲)、記帳頁摘要(重大、事故各幾則)、不打擾時段、暫停 1 小時。停車或紅燈時再看。', 'roadNews', 'vip', 'launch']
+    ['🚦 官方路況快報', '記帳頁的「🚦 路況快報」(可以在 ⚙️ 記帳首頁排列單獨排順序、單獨開關;不開「看即時路況」也能用):依「常用路況地點」勾的我主要跑城市(快報裡的「改城市」也能改),列出警察廣播電臺和交通部 TDX 公布的事故、壅塞、封路、交通管制;施工另外放在「🚧 施工」。點一則開 Google 地圖路況。選了台北、新北或宜蘭時,最上面有「🏔️ 雪隧」:坪林—頭城往宜蘭、往台北各要幾分鐘、順不順,左線、右線各多快(交通部高速公路局「交通資料庫」;隧道內禁止變換車道,進隧道前選好)。只送出城市、不送位置。右上角 ⚙️:重大路況通知(安卓測試版,預設不收;上班打卡中才通知,無聲)、記帳頁摘要(重大、事故各幾則)、不打擾時段、暫停 1 小時。停車或紅燈時再看。', 'roadNews', 'vip', 'launch']
   ]],
   ['分析', [
     ['看賺多少', '分析頁選本日 / 本週 / 本月 / 本年 / 自訂,看實收、淨利、時薪。'],
@@ -11186,12 +11255,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.23.7';
+var APP_VERSION = '2026.11.24.1';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.24.1', '🏔️ 測試版:路況快報選了台北、新北或宜蘭時,最上面多一張「雪隧」:坪林—頭城往宜蘭、往台北各要幾分鐘、順不順,左線、右線各多快。隧道內禁止變換車道,請停車時看、進隧道前選好', 'beta', {tab:'entry', find:'路況快報'}],
   ['2026.11.23.6', '🔠 字體選「超大」時,下方 5 個分頁都看得到;小手機上的日曆不再被切到一半(放不下金額時只顯示日期和顏色,金額看下方當天摘要)。另外系統除錯優化:匯入還原更安全、讀螢幕報讀更清楚'],
   ['2026.11.23.5', '🚕 載客效率:有打卡的日子,按了休息的時間不再算成等單和空檔,平均空檔更接近真正空等的時間', '', {tab:'analytics', find:'🚕 載客效率'}],
   ['2026.11.23.4', '📅 預約單會照各車隊的手續費算了(以前記的也一起重算,所以預約單的實收會比以前少一點);大都會多了「個人錢包」付款;0 月費方案的電子企業簽單不再多扣 6%;🏁 車隊比較把預約單算進那家車隊', '', {tab:'entry', find:'預約單'}],
