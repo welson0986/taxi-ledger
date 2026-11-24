@@ -314,6 +314,9 @@ function r5(n) { return n == null ? null : Math.round(n * 1e5) / 1e5; }
 // 只認「APP／系統／平台／資料＋測試」「測試資料／測試用／測試案件」或整段以「測試」開頭，一般施工、號誌維修不受影響
 const TEST_ITEM = /(APP|App|app|系統|平台|資料)\s*測試|測試\s*(資料|用|案件|事件|帳號)|^\s*測試/;
 function isTestItem(ar, tx) { return TEST_ITEM.test(String(ar || '')) || TEST_ITEM.test(String(tx || '')); }
+// 警廣的「停車場滿場通報」（11/24 紅米實測看到「長安國小地下停車場.已滿場」）：給開自用車找車位的人看的，不是路況，不給司機看
+const PARKING_FULL = /停車場.{0,30}(已|將)?滿(場|位)/;
+function isParkingFull(so, tx) { return /停車場滿場/.test(String(so || '')) || PARKING_FULL.test(String(tx || '')); }
 function freshItem(it, now) {
   if (it.end && it.end > now) return true;
   return now - it.m <= (it.ty === '道路施工' ? 8 * DAY : 2 * DAY);
@@ -341,7 +344,8 @@ function defaultPoints(result) {
   return out;
 }
 // pick＝'all'：全國都整理，每筆加上 cs（屬於哪些縣市），一個縣市都不屬於的不留（排程 Worker 用）
-function parsePbs(text, now, pick) {
+// mile（排程 Worker 才給，relay/lib/freeway.js milePoint）：國道通報有寫「在 N 公里」就照里程放位置，蓋掉警廣的點（11/24）
+function parsePbs(text, now, pick, mile) {
   const d = JSON.parse(text), list = [], res = (d && d.result) || [], dflt = defaultPoints(res), all = pick === 'all';
   res.forEach(x => {
     const m = twTime(x.modDttm) || twTime((x.happendate || '') + ' ' + (x.happentime || ''));
@@ -351,12 +355,16 @@ function parsePbs(text, now, pick) {
     const it = { id: 'p' + x.UID, s: 'pbs', ty, la: r5(num(x.y1)), lo: r5(num(x.x1)), m: m, c: cityOfName(x.areaNm) };
     // 位置不確定：座標不給 App（qa／qo 只給篩選看範圍，回給 App 前拿掉）
     if (dflt[ptKey(x.y1, x.x1)]) { it.uc = 1; it.qa = it.la; it.qo = it.lo; it.la = it.lo = null; const qc = DEFAULT_PT_CITY[ptKey(x.y1, x.x1)]; if (qc) it.qc = qc; }
+    if (mile && !it.c && String(x.areaNm || '').indexOf('國道') >= 0) {
+      const p = mile(x.areaNm, x.direction, x.comment);
+      if (p) { it.la = p[0]; it.lo = p[1]; it.mk = 1; delete it.uc; delete it.qa; delete it.qo; delete it.qc; }
+    }
     if (all) {
       // 全國：沒有縣市的先用原始文字分桶，一個縣市都不屬於就不用整理；整理後再分一次，兩次都有的才算（跟以前「Worker 用原始文字、網站用整理過的文字」各篩一次一樣）
       let cs0 = null;
       if (!it.c) { it.tx = String(x.comment || ''); it.so = String(x.srcdetail || ''); cs0 = cityList(it); if (!cs0.length) return; }
       it.ar = cleanText(x.areaNm).slice(0, 60); it.tx = cleanText(x.comment); it.so = cleanText(x.srcdetail).slice(0, 40); it.di = cleanText(x.direction).slice(0, 10);
-      if (isTestItem(it.ar, it.tx)) return;
+      if (isTestItem(it.ar, it.tx) || isParkingFull(it.so, it.tx)) return;
       it.cs = cs0 ? cityList(it).filter(k => cs0.indexOf(k) >= 0) : cityList(it);
       if (it.cs.length) list.push(it);
       return;
@@ -365,7 +373,7 @@ function parsePbs(text, now, pick) {
     // 沒有縣市的先用原始文字判斷要不要（認地名不需要整理過的文字），不要的就不用整理
     if (pick && !it.c) { it.tx = String(x.comment || ''); it.so = String(x.srcdetail || ''); if (!pick(it)) return; }
     it.ar = cleanText(x.areaNm).slice(0, 60); it.tx = cleanText(x.comment); it.so = cleanText(x.srcdetail).slice(0, 40); it.di = cleanText(x.direction).slice(0, 10);
-    if (isTestItem(it.ar, it.tx)) return;
+    if (isTestItem(it.ar, it.tx) || isParkingFull(it.so, it.tx)) return;
     list.push(it);
   });
   return keepNewest(list);

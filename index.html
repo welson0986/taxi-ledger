@@ -2932,6 +2932,43 @@ function payoutBatchOf(r){
   var mon = weekMonday(sd);
   return {id:pk+'|wk'+mon, payDate:null, weekFrom:mon};
 }
+/* 2026.11.24.3 (RR-02): a payout confirmation is tied to its batch only by "platform|pay day". When the pay-day rules,
+   the driver's ⚙️ settings, the holiday table or the settle-day cut change, the same id can hold other trips, so the
+   confirmation also keeps which trips it was (a short fingerprint of their ids, not the ids: the file stays small). */
+function payoutRecKey(r){ return String(r.id || ((r.ts||0)+'|'+(r.date||''))); }
+function payoutSig(keys){
+  // two small rolling hashes (kept under 2^31 so plain ES5 math stays exact)
+  var s = keys.slice().sort().join(','), h1 = 7, h2 = 5381;
+  for(var i=0;i<s.length;i++){ var c = s.charCodeAt(i); h1 = (h1*31 + c) % 2147483629; h2 = (h2*33 + c) % 2147483587; }
+  return keys.length+'-'+h1.toString(36)+'.'+h2.toString(36);
+}
+/* how a confirmed batch compares now. kind:
+   same   = the estimate has not changed since it was confirmed: the difference is real (red when off)
+   algo   = the same trips, but the estimate moved (fee rules updated, a trip edited, toll or wallet changed):
+            compare with the estimate the driver saw when confirming
+   moved  = other trips sit under this pay day now (the pay-day rules or settings changed)
+   edited = the same days, but trips were added or removed after confirming
+   old    = confirmed before we kept the trips, and the estimate moved: we can't tell which of the above
+   Never moves or deletes the driver's confirmation; they decide (「重新對帳」). */
+function payoutCheck(b){
+  var p = b && b.payout; if(!p) return null;
+  var now = Math.round(bankExpected(b)), act = +p.amount||0, at = p.expectedAtSave;
+  if(at==null || isNaN(+at) || Math.abs(now - (+at))<1) return {kind:'same', now:now, at:now, act:act, diff:act-now};
+  at = +at;
+  var o = {now:now, at:at, act:act, diff:null};
+  if(!p.recSig) o.kind = 'old';
+  else if(p.recSig===b.recSig){ o.kind = 'algo'; o.diff = act-at; }
+  else o.kind = (p.from && p.from===b.from && p.to===b.to) ? 'edited' : 'moved';
+  return o;
+}
+function payoutCheckNote(c, b){
+  if(!c || c.kind==='same') return '';
+  var p = b.payout;
+  if(c.kind==='algo') return '確認時預估 '+fmtMoney(c.at)+',後來預估變成 '+fmtMoney(c.now)+'(手續費算法更新或這批的紀錄改過);你當時實收 '+fmtMoney(c.act)+',差額照確認時的預估算。';
+  if(c.kind==='moved') return '這筆是撥款規則改之前確認的(當時預估 '+fmtMoney(c.at)+'、實收 '+fmtMoney(c.act)+(p.from?(',當時是 '+shortDate(p.from)+(p.to&&p.to!==p.from?('–'+shortDate(p.to)):'')+' 的單'):'')+'),現在這個日期的單不一樣了。';
+  if(c.kind==='edited') return '確認之後這批的紀錄有新增或刪除(當時 '+(p.trips!=null?p.trips+' 趟、':'')+'預估 '+fmtMoney(c.at)+'、實收 '+fmtMoney(c.act)+';現在 '+b.trips+' 趟、預估 '+fmtMoney(c.now)+')。';
+  return '這筆確認之後,撥款規則或手續費算法改過(當時預估 '+fmtMoney(c.at)+'、實收 '+fmtMoney(c.act)+',現在預估 '+fmtMoney(c.now)+')。';
+}
 var payoutMemo = null;
 function payoutLedger(){
   // also redone every 10 minutes: what is due depends on the clock
@@ -2961,8 +2998,9 @@ function payoutLedgerCompute(){
       var b = payoutBatchOf(r); if(!b) return;
       var ded = Math.min(owed, f.noncash);
       owed -= ded;
-      if(!map[b.id]) map[b.id] = {id:b.id, platform:pk, payDate:b.payDate, weekFrom:b.weekFrom||null, expected:0, trips:0, from:x.sd, to:x.sd, earned:0, cashFees:0};
+      if(!map[b.id]) map[b.id] = {id:b.id, platform:pk, payDate:b.payDate, weekFrom:b.weekFrom||null, expected:0, trips:0, from:x.sd, to:x.sd, earned:0, cashFees:0, recKeys:[]};
       var m = map[b.id];
+      m.recKeys.push(payoutRecKey(r));
       m.earned += f.noncash; m.cashFees += ded; m.expected += f.noncash-ded;
       if(r.platform==='bonus') m.bonus = (m.bonus||0) + f.noncash; else if(r.platform==='cancelfee') m.cancelFee = (m.cancelFee||0) + f.noncash; else m.trips++;
       if(x.sd<m.from) m.from=x.sd;
@@ -2984,9 +3022,90 @@ function payoutLedgerCompute(){
   });
   var paid = {};
   (state.payouts||[]).forEach(function(p){ paid[p.batch] = p; });
-  var batches = Object.keys(map).map(function(k){ var b=map[k]; b.payout = paid[k]||null; return b; });
+  var batches = Object.keys(map).map(function(k){ var b=map[k]; b.recSig = payoutSig(b.recKeys); delete b.recKeys; b.payout = paid[k]||null; return b; });
   var wallet = metroWalletSim(batches);
-  return {batches:batches, owed:owedByPlatform, wallet:wallet};
+  // confirmations whose pay day has no trips any more (the pay-day rules changed): kept, listed on their own
+  var orphans = (state.payouts||[]).filter(function(p){ return p && p.batch && !map[p.batch]; });
+  var moves = payoutMoveSuggest(batches, orphans);
+  batches.forEach(function(b){ if(b.payout && moves[b.id]) b.moveTo = moves[b.id]; });
+  return {batches:batches, owed:owedByPlatform, wallet:wallet, orphans:orphans, moves:moves};
+}
+function batchDateOf(id){ var d = String(id||'').split('|')[1] || ''; return d.indexOf('wk')===0 ? d.slice(2) : d; }
+function payoutPlatOf(p){ return p.platform || String(p.batch||'').split('|')[0]; }
+/* where the trips of a confirmation that lost them went (RR-02): an open batch of the same platform with the same
+   fingerprint (sure: the same trips, only the pay day moved), or, for a confirmation saved before fingerprints, the one
+   open batch within a week whose estimate is exactly what the driver saw then (a guess, said as one). Two lookalikes:
+   no guess. Only suggested; the driver taps to apply it. Returns {from batch id: {to, how, amount, at}}, and marks
+   the target batch b.suggest. */
+function payoutMoveSuggest(batches, orphans){
+  var open = batches.filter(function(b){ return !b.payout; }), taken = {}, out = {};
+  var want = orphans.slice();
+  batches.forEach(function(b){ var c = payoutCheck(b); if(c && (c.kind==='moved' || c.kind==='old')) want.push(b.payout); });
+  want.forEach(function(p){
+    var pl = payoutPlatOf(p), hit = null, how = null;
+    if(p.recSig){
+      hit = open.filter(function(b){ return !taken[b.id] && b.platform===pl && b.recSig===p.recSig; })[0] || null; how = 'sig';
+    } else if(p.expectedAtSave!=null && !isNaN(+p.expectedAtSave)){
+      var pd = new Date(batchDateOf(p.batch)+'T00:00:00').getTime();
+      var c = isNaN(pd) ? [] : open.filter(function(b){
+        var bd = new Date((b.payDate||b.weekFrom)+'T00:00:00').getTime();
+        return !taken[b.id] && b.platform===pl && Math.abs(bd-pd)<=7*86400000 && Math.abs(Math.round(bankExpected(b)) - (+p.expectedAtSave))<1;
+      });
+      if(c.length===1){ hit = c[0]; how = 'guess'; }
+    }
+    if(!hit) return;
+    taken[hit.id] = true;
+    out[p.batch] = {to:hit.id, how:how, amount:+p.amount||0, at:p.expectedAtSave!=null ? +p.expectedAtSave : null};
+    hit.suggest = {from:p.batch, how:how, amount:+p.amount||0};
+  });
+  return out;
+}
+// the driver applies a confirmation to another batch: the same amount, note and estimate-at-save move with it
+function movePayout(arg){
+  var parts = String(arg||'').split('=>'), from = parts[0], to = parts[1];
+  var p = (state.payouts||[]).filter(function(x){ return x.batch===from; })[0];
+  var b = payoutBatches().filter(function(x){ return x.id===to; })[0];
+  if(!p || !b) return;
+  if(b.payout){ alert('那一批已經對過帳了,要先取消那一筆的對帳。'); return; }
+  p.batch = to; p.platform = b.platform;
+  // a toll total typed for the old batch goes with its trips
+  var tr = state.tollRefunds || {};
+  if(tr[from] && !tr[to]){ state.tollRefunds = Object.assign({}, tr); state.tollRefunds[to] = Object.assign({}, tr[from], {date:b.to}); delete state.tollRefunds[from]; }
+  save(); closeModal(); renderAll(); notifySync(false);
+  showToast('✓ 原本 '+shortDate(batchDateOf(from))+' 的對帳已套用到 '+batchTitle(b), 2600);
+}
+function openPayoutMoveModal(from){
+  var p = (state.payouts||[]).filter(function(x){ return x.batch===from; })[0]; if(!p) return;
+  var pl = payoutPlatOf(p), pd = new Date(batchDateOf(from)+'T00:00:00').getTime();
+  var list = payoutBatches().filter(function(b){ return !b.payout && b.platform===pl && b.id!==from; }).map(function(b){
+    var bd = new Date((b.payDate||b.weekFrom)+'T00:00:00').getTime(); return {b:b, gap:isNaN(pd) ? 0 : Math.abs(bd-pd)};
+  }).sort(function(a, z){ return a.gap-z.gap; }).slice(0, 8);
+  var h = '<div class="modal-title">對到別的批次<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">'+esc(platformDef(pl).label)+' 原本 '+shortDate(batchDateOf(from))+' 的對帳(實收 '+fmtMoney(+p.amount||0)+(p.expectedAtSave!=null?('、當時預估 '+fmtMoney(+p.expectedAtSave)):'')+')要算哪一批?下面是同一個平台還沒對帳的批次,離原本日期近的在前面。</div>';
+  if(!list.length) h += '<div class="card"><div class="empty-state"><div class="t">沒有還沒對帳的批次</div></div></div>';
+  else h += '<div class="card">'+list.map(function(x){
+    var b = x.b;
+    return '<div class="list-item" data-act="move-payout:'+esc(from)+'=>'+esc(b.id)+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+esc(batchTitle(b))+'</div><div class="li-sub">'+b.trips+' 趟 · '+shortDate(b.from)+(b.to!==b.from?('–'+shortDate(b.to)):'')+'</div></div><div class="li-amt num">'+fmtMoney(bankExpected(b))+'</div></div>';
+  }).join('')+'</div>';
+  openModal(h);
+}
+function payoutMoveText(mv){
+  var lbl = shortDate(batchDateOf(mv.to));
+  return mv.how==='sig' ? '這些單現在在 '+lbl+' 那批。' : '可能是 '+lbl+' 那批(現在預估一樣是 '+fmtMoney(mv.at)+')。';
+}
+function payoutMoveBtn(from, mv){
+  return '<button class="btn btn-primary" style="margin:6px 6px 0 0;padding:4px 10px;font-size:12px" data-act="move-payout:'+esc(from)+'=>'+esc(mv.to)+'">套用到 '+shortDate(batchDateOf(mv.to))+'</button>';
+}
+function orphanPayoutRowHtml(p, mv){
+  var pl = payoutPlatOf(p), d = batchDateOf(p.batch);
+  var sub = '實收 '+fmtMoney(+p.amount||0)+(p.expectedAtSave!=null?(' · 當時預估 '+fmtMoney(+p.expectedAtSave)):'')+
+    (p.from?(' · 當時是 '+shortDate(p.from)+(p.to&&p.to!==p.from?('–'+shortDate(p.to)):'')+' 的單'):'')+(p.note?(' · '+esc(p.note)):'');
+  return '<div class="list-item"><div class="li-body"><div class="li-title">'+esc(platformDef(pl).label)+' · 原本 '+(d?shortDate(d):'')+' 撥款</div><div class="li-sub">'+sub+'</div>'+
+    '<div style="font-size:11.5px;color:var(--text-muted);margin-top:3px;line-height:1.5">撥款規則或設定改過,這天現在沒有單。'+(mv?payoutMoveText(mv):'')+'</div>'+
+    '<div>'+(mv?payoutMoveBtn(p.batch, mv):'')+
+    '<button class="btn btn-ghost" style="margin:6px 6px 0 0;padding:4px 10px;font-size:12px" data-act="pick-payout-batch:'+esc(p.batch)+'">對到別的批次</button>'+
+    '<button class="btn btn-ghost" style="margin:6px 0 0 0;padding:4px 10px;font-size:12px" data-act="del-orphan-payout:'+esc(p.batch)+'">刪除</button></div></div>'+
+    '<div style="text-align:right;flex:none"><div class="num" style="font-weight:700">'+fmtMoney(+p.amount||0)+'</div></div></div>';
 }
 function payoutBatches(){ return payoutLedger().batches; }
 function paperSlipPending(){ return state.records.filter(function(r){ return r.paperSlip && !r.paperCashed; }).sort(function(a,b){ return a.date<b.date?-1:(a.date>b.date?1:0); }); }
@@ -3253,18 +3372,26 @@ function batchTitle(b){
 // what should reach the bank: the platform's payout less any part that first refills the 大都會 wallet
 function bankExpected(b){ return Math.max(0, b.expected - (b.walletTopUp>0.5 ? b.walletTopUp : 0)); }
 function batchRowHtml(b, growing){
-  var diffHtml = '';
-  if(b.payout){
-    var diff = (+b.payout.amount||0) - Math.round(bankExpected(b));
-    diffHtml = '<div class="num" style="font-size:12px;color:'+(Math.abs(diff)<1?'var(--income)':'var(--expense)')+'">'+(Math.abs(diff)<1?'✓ 金額相符':('差 '+(diff>0?'+':'')+fmtMoney(diff)))+'</div>';
+  var diffHtml = '', chk = payoutCheck(b), noteHtml = '';
+  if(chk){
+    var diff = chk.diff;
+    if(diff==null) diffHtml = '<div style="font-size:11.5px;color:var(--text-muted)">預估已變</div>';
+    else diffHtml = '<div class="num" style="font-size:12px;color:'+(Math.abs(diff)<1?'var(--income)':'var(--expense)')+'">'+(Math.abs(diff)<1?'✓ 金額相符':('差 '+(diff>0?'+':'')+fmtMoney(diff)))+'</div>';
+    if(chk.kind!=='same') noteHtml = '<div style="font-size:11.5px;color:var(--text-muted);margin-top:3px;line-height:1.5">'+payoutCheckNote(chk, b)+(b.moveTo?payoutMoveText(b.moveTo):'')+'</div>'+
+      (chk.diff==null?'<div>'+(b.moveTo?payoutMoveBtn(b.id, b.moveTo):'')+'<button class="btn btn-ghost" style="margin-top:6px;padding:4px 10px;font-size:12px" data-act="open-payout:'+b.id+'">重新對帳</button></div>':'');
+  } else if(b.suggest){
+    // the trips of a confirmation that lost its pay day (or the one it most likely was) sit here now
+    var sg = b.suggest, sgd = shortDate(batchDateOf(sg.from));
+    noteHtml = '<div style="font-size:11.5px;color:var(--text-muted);margin-top:3px;line-height:1.5">'+(sg.how==='sig' ? ('這些單你在 '+sgd+' 那批確認過(實收 '+fmtMoney(sg.amount)+'),撥款日後來改了。') : ('可能是你 '+sgd+' 那批確認的那筆(實收 '+fmtMoney(sg.amount)+',當時預估跟這批現在一樣)。'))+'</div>'+
+      '<div><button class="btn btn-primary" style="margin-top:6px;padding:4px 10px;font-size:12px" data-act="move-payout:'+esc(sg.from)+'=>'+esc(b.id)+'">套用這筆確認</button></div>';
   }
   var sub = b.trips+' 趟'+(b.bonus?' + 活動獎勵 '+fmtMoney(b.bonus):'')+(b.cancelFee?' + 取消費 '+fmtMoney(b.cancelFee):'')+' · '+shortDate(b.from)+(b.to!==b.from?('–'+shortDate(b.to)):'')+(b.cashFees>0?(' · 扣累積現金單手續費 '+fmtMoney(b.cashFees)):'')+(b.toll>0?(' · 含過路費退款 '+fmtMoney(b.toll)):'');
   if(growing) sub += ' · 還在累計中';
   if(b.walletTopUp>0.5) sub += ' · 平台撥款 '+fmtMoney(b.expected)+',先補進大都會錢包 '+fmtMoney(b.walletTopUp);
   var bk = bankOf(b.platform); if(bk) sub += ' · 🏦 匯入 '+esc(bk);
-  return '<div class="list-item" data-act="open-payout:'+b.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+esc(batchTitle(b))+'</div><div class="li-sub">'+sub+'</div></div>'+
+  return '<div class="list-item" data-act="open-payout:'+b.id+'" style="cursor:pointer"><div class="li-body"><div class="li-title">'+esc(batchTitle(b))+'</div><div class="li-sub">'+sub+'</div>'+noteHtml+'</div>'+
     '<div style="text-align:right;flex:none"><div class="num" style="font-weight:700">'+(b.payout?fmtMoney(b.payout.amount):fmtMoney(bankExpected(b)))+'</div>'+
-    (b.payout?('<div style="font-size:11px;color:var(--text-muted)">預計 '+fmtMoney(bankExpected(b))+'</div>'):(b.walletTopUp>0.5?'<div style="font-size:11px;color:var(--text-muted)">匯到銀行</div>':''))+diffHtml+'</div></div>';
+    (b.payout?('<div style="font-size:11px;color:var(--text-muted)">'+(chk && chk.kind!=='same'?('確認時預估 '+fmtMoney(chk.at)):('預計 '+fmtMoney(bankExpected(b))))+'</div>'):(b.walletTopUp>0.5?'<div style="font-size:11px;color:var(--text-muted)">匯到銀行</div>':''))+diffHtml+'</div></div>';
 }
 function renderPayoutTab(){
   var today = todayStr();
@@ -3310,14 +3437,21 @@ function renderPayoutTab(){
   }).join('')+'</div></div>';
   if(unset.length) h += '<div class="section"><div class="section-title">撥款日還沒設定(先依週分組)</div><div class="card">'+unset.map(function(b){ return batchRowHtml(b, b.weekFrom===thisMon); }).join('')+'</div></div>';
   if(done.length) h += '<div class="section"><div class="section-title">已對帳</div><div class="card">'+done.slice(0,30).map(function(b){ return batchRowHtml(b); }).join('')+'</div></div>';
-  if(!all.length) h += '<div class="card"><div class="empty-state"><div class="ic">🏦</div><div class="t">還沒有需要平台撥款的記錄</div></div></div>';
+  var orphans = (ledger.orphans||[]).slice().sort(function(a, z){ return batchDateOf(a.batch)<batchDateOf(z.batch)?1:-1; });
+  if(orphans.length) h += '<div class="section"><div class="section-title">找不到對應批次的對帳</div>'+
+    '<div style="font-size:11.5px;color:var(--text-muted);margin:-2px 0 8px;line-height:1.6">撥款規則或撥款設定改過,這些對帳原本的撥款日現在沒有單。資料都還在,要套用到哪一批或刪除由你決定。</div>'+
+    '<div class="card">'+orphans.map(function(p){ return orphanPayoutRowHtml(p, (ledger.moves||{})[p.batch]); }).join('')+'</div></div>';
+  if(!all.length && !orphans.length) h +='<div class="card"><div class="empty-state"><div class="ic">🏦</div><div class="t">還沒有需要平台撥款的記錄</div></div></div>';
   return h;
 }
 function openPayoutModal(batchId){
   var b = payoutBatches().filter(function(x){ return x.id===batchId; })[0];
   if(!b) return;
-  var p = b.payout;
+  var p = b.payout, chk = payoutCheck(b);
   var h = '<div class="modal-title">'+esc(batchTitle(b))+'<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  if(chk && chk.kind!=='same') h += '<div class="card" style="margin-bottom:12px;padding:10px 14px;font-size:12.5px;line-height:1.6;color:var(--text-muted)">'+payoutCheckNote(chk, b)+(b.moveTo?payoutMoveText(b.moveTo):'')+
+    (chk.diff==null?'<br>下面是<b>現在</b>這一批的預估。這筆確認沒有自動搬走:如果這筆錢其實是別天的撥款,按「套用到…」或「對到別的批次」;不要了按「取消對帳」;要照現在這批重新核對,改好金額後按「儲存」。'+
+      '<div>'+(b.moveTo?payoutMoveBtn(b.id, b.moveTo):'')+'<button class="btn btn-ghost" style="margin:6px 0 0 0;padding:4px 10px;font-size:12px" data-act="pick-payout-batch:'+esc(b.id)+'">對到別的批次</button></div>':'')+'</div>';
   h += '<div class="card" style="margin-bottom:12px">'+
     '<div class="list-item"><div class="li-body"><div class="li-title">非現金單實收(已扣自己的手續費,含小費)</div></div><div class="li-amt num">'+fmtMoney(b.earned)+'</div></div>'+
     (b.cashFees>0?'<div class="list-item"><div class="li-body"><div class="li-title">扣:之前累積的現金單手續費</div></div><div class="li-amt expense num">-'+fmtMoney(b.cashFees)+'</div></div>':'')+
@@ -3352,9 +3486,12 @@ function savePayout(batchId){
   }
   b = payoutBatches().filter(function(x){ return x.id===batchId; })[0];
   state.payouts = (state.payouts||[]).filter(function(p){ return p.batch!==batchId; });
-  state.payouts.push({id:uid(), batch:batchId, platform:b?b.platform:batchId.split('|')[0], amount:+amt,
+  var np = {id:uid(), batch:batchId, platform:b?b.platform:batchId.split('|')[0], amount:+amt,
     expectedAtSave:b?Math.round(bankExpected(b)):null, receivedDate:document.getElementById('f-payout-date').value||todayStr(),
-    note:(document.getElementById('f-payout-note').value||'').trim()});
+    note:(document.getElementById('f-payout-note').value||'').trim()};
+  // which trips this confirmation was about (RR-02): their settle days, count and a fingerprint of their ids
+  if(b){ np.from = b.from; np.to = b.to; np.trips = b.trips; np.recSig = b.recSig; }
+  state.payouts.push(np);
   save(); closeModal(); renderAll(); notifySync(false);
 }
 // 預約單 has no payout of its own any more: it is paid with the fleet it came through (payKey, 2026.11.23.4)
@@ -4105,7 +4242,7 @@ function saveAppName(){
 /* ---------- ENTRY TAB ---------- */
 // how long is still left to reach a target, at the hourly rate and fare per trip so far in the same period;
 // recomputed on every render, so a big fare raises the rate and shortens what is left
-function targetPaceHtml(left, from, to){
+function targetPaceHtml(left, from, to, quiet){
   if(!(left>0)) return '';
   // 平均時薪 as everywhere (periodRate: days with clock-in hours only); 還要跑幾趟 goes by every fare, 小費 box and
   // 活動獎勵 in (that money counts towards the target too), only a 取消費 is not a trip
@@ -4120,20 +4257,19 @@ function targetPaceHtml(left, from, to){
     trips = r2.filter(function(r){ return !platformDef(r.platform).tipOnly && r.platform!=='bonus'; }).length; src = '近 30 天';
   }
   var rate = P.rate, per = (trips > 0 && tripNet > 0) ? tripNet/trips : null;
-  if(!rate && !per) return '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px">記幾趟、打卡之後,這裡會算出還要跑多久</div>';
+  // quiet: the day's bar just above already shows this card, the month says one line
+  if(!rate && quiet) return '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px">⏱️ 還算不出要跑幾小時(看上面今日目標的說明)</div>';
+  if(!rate) return vipNeedCardHtml(vipNeed('目標還要跑多久', {hours:P.hours, trips:trips, per:per, src:src, left:left}));
   var parts = [];
-  if(rate) parts.push('約 <b><span class="nw">'+fmtNum(left/rate,1)+' 小時</span></b>');
+  parts.push('約 <b><span class="nw">'+fmtNum(left/rate,1)+' 小時</span></b>');
   if(per) parts.push('約 <b>'+Math.ceil(left/per)+' 趟</b>');
-  // 11/20: only 趟 and no 小時 — say why (no clock-in hours), with the switch when it is off
-  var why = rate ? '' : '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.6">💡 '+(uiOn('shift') ? '上下班打卡之後,也會算還要跑幾小時' :
-    '打開「上下班打卡」,也能算還要跑幾小時 <span data-act="need-on:shift" role="button" tabindex="0" style="cursor:pointer;color:var(--accent);font-weight:700;white-space:nowrap">打開 ›</span>')+'</div>';
-  return '<div style="font-size:12px;margin-top:4px;line-height:1.6">⏱️ 照'+(src||'目前')+'的'+(rate?('平均時薪 '+fmtMoney(rate)):'')+(rate&&per?'、':'')+(per?('每趟 '+fmtMoney(per)):'')+',還要跑'+parts.join('、')+why+'</div>';
+  return '<div style="font-size:12px;margin-top:4px;line-height:1.6">⏱️ 照'+(src||'目前')+'的'+(rate?('平均時薪 '+fmtMoney(rate)):'')+(rate&&per?'、':'')+(per?('每趟 '+fmtMoney(per)):'')+',還要跑'+parts.join('、')+'</div>';
 }
 // 「還要跑多久」 is VIP (VIP 2.0, 規格第 2 節); the bar and 還差多少 above it stay free. A driver without VIP gets one
 // 👑 line instead, once per screen (previewShown: it is already under the day's bar).
-function targetPaceSlot(left, from, to, previewShown){
+function targetPaceSlot(left, from, to, previewShown, needShown){
   if(!(left>0)) return '';
-  if(isVip()) return uiShow('targetCalc') ? targetPaceHtml(left, from, to) : '';
+  if(isVip()) return uiShow('targetCalc') ? targetPaceHtml(left, from, to, needShown) : '';
   return previewShown ? '' : '<div style="font-size:12px;margin-top:4px"><span data-act="pace-vip" style="cursor:pointer;color:var(--accent);font-weight:700">👑 想知道還要跑多久?</span>'+vipHaveHtml('目標還要跑多久')+'</div>';
 }
 function isFleetKey(key){ var def = platformDef(key); return !(def.tipOnly || def.bonus || key==='bonus' || NOT_A_FLEET.indexOf(key)>=0); }
@@ -4291,7 +4427,7 @@ function renderEntry(){
     B.target += '<div class="section"><div class="card"><div class="progress-wrap">'+
       '<div class="progress-lbl"><span class="p">本月目標 '+fmtMoney(mNet)+' / '+fmtMoney(monthlyTarget)+'</span><span class="v num">'+mPct+'%</span></div>'+
       '<div class="progress-bar"><div class="progress-fill" style="width:'+mPct+'%"></div></div>'+
-      '<div style="font-size:12px;color:var(--text-muted);margin-top:6px">'+(mLeft>0?('還差 '+fmtMoney(mLeft)):'🎉 本月目標達成')+'</div>'+targetPaceSlot(mLeft, mr.from, t, dailyTarget>0 && tLeft>0)+
+      '<div style="font-size:12px;color:var(--text-muted);margin-top:6px">'+(mLeft>0?('還差 '+fmtMoney(mLeft)):'🎉 本月目標達成')+'</div>'+targetPaceSlot(mLeft, mr.from, t, dailyTarget>0 && tLeft>0, typeof tCalc==='string' && tCalc.indexOf('vip-need')>=0)+
       '</div></div></div>';
   }
 
@@ -5035,7 +5171,7 @@ function fcCardHtml(range){
   var tab = function(k, t){ return '<button type="button" class="chip-opt'+(fcTab===k?' selected':'')+'" data-act="fc-tab:'+k+'" aria-pressed="'+(fcTab===k)+'">'+t+'</button>'; };
   var h = '<div class="section" id="fcCard"><div class="section-title"><span>🏁 我的車隊收益比較(估算)</span></div><div class="card" style="padding:12px 14px">';
   h += '<div class="chip-row" style="margin-bottom:10px">'+tab('real','📊 我的實際比較')+tab('whatif','🔄 換車隊試算')+'</div>';
-  if(!S.list.some(function(m){ return m.trips>0; })) h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6">這段期間還沒有收入紀錄。</div>';
+  if(!S.list.some(function(m){ return m.trips>0; })) h += vipNeedCardHtml(vipNeed('車隊收益比較:沒有收入', S));
   else h += fcTab==='whatif' ? fcWhatIfHtml(range, S) : fcRealHtml(S);
   return h+'</div></div>';
 }
@@ -5322,18 +5458,27 @@ function anTripOk(f, o, d){
 // The fares timed with 上車/下車 from..to in time order, each with its ride minutes and the empty minutes before it:
 // the time since the previous drop-off, whatever platform that one was and also across the change of day (over
 // EMPTY_GAP_CAP_MIN it was a break). After a break, and for the first fare of a shift, the approach counts instead
-// when 接到單了 was pressed.
+// when 接到單了 was pressed. On a business day with a usable clock-in log (punchSegs) the empty time is instead the
+// minutes inside its work periods since the previous drop-off (or since the clock-in), with no cap: 休息 and the time
+// after 下班 left out, as 載客效率 counts it since 2026.11.23.5 (VIP 實測 11/24 #3).
 function timedFares(from, to){
-  var days = timedTripsByDay(addDays(from, -1), to), all = [], out = [];
+  var days = timedTripsByDay(addDays(from, -1), to), all = [], out = [], segMemo = {};
+  function segsOf(d){ if(!(d in segMemo)) segMemo[d] = punchSegs(d); return segMemo[d]; }
   Object.keys(days).forEach(function(d){ days[d].forEach(function(o){ all.push({o:o, d:d}); }); });
   all.sort(function(a, b){ return a.o.pickup.ts-b.o.pickup.ts; });
   all.forEach(function(x, i){
     var o = x.o;
     if(x.d<from) return;
     var m = tripMin(o.pickup, o.dropoff); if(m<0) return;
-    var g = i>0 ? (o.pickup.ts - all[i-1].o.dropoff.ts)/60000 : -1;
-    if(g<0 || g>EMPTY_GAP_CAP_MIN) g = (o.accept && o.accept.ts<=o.pickup.ts) ? (o.pickup.ts - o.accept.ts)/60000 : 0;
-    if(g<0 || g>EMPTY_GAP_CAP_MIN) g = 0;
+    var segs = segsOf(x.d), g;
+    if(segs){
+      var a = i>0 ? Math.min(all[i-1].o.dropoff.ts, o.pickup.ts) : segs[0][0], iv = [[a, o.pickup.ts]];
+      g = o.pickup.ts > a ? ivSum(ivMinus(iv, ivMinus(iv, segs)))/60000 : 0;
+    } else {
+      g = i>0 ? (o.pickup.ts - all[i-1].o.dropoff.ts)/60000 : -1;
+      if(g<0 || g>EMPTY_GAP_CAP_MIN) g = (o.accept && o.accept.ts<=o.pickup.ts) ? (o.pickup.ts - o.accept.ts)/60000 : 0;
+      if(g<0 || g>EMPTY_GAP_CAP_MIN) g = 0;
+    }
     out.push({o:o, d:x.d, ride:m, gap:g});
   });
   return out;
@@ -5940,6 +6085,21 @@ var VIP_FEATURES = [
   ['📍', '下車地統計', '看客人常把你載去哪裡(下車熱區),以及在哪裡下車之後最久才接到下一單(死區)'],
   ['🚦', '官方路況快報', '依你主要跑的城市,列出警廣和交通部公布的事故、壅塞、封路、施工,點一下看地圖路況']
 ];
+// the paywall's big line per feature (待 Gemini／ChatGPT 比對後定稿: docs/提示詞_VIP付費畫面各功能標題_2026-11-24.md);
+// a feature not listed (可支配所得) and the ⚙️ VIP page keep VIP_HEAD_MAIN. At most 16 characters: one line on a phone.
+var VIP_HEAD_MAIN = '跑到月底,手上能留多少?';
+var VIP_HEAD = {
+  '官方路況快報':'哪裡塞車、哪裡出事,隨時查得到',
+  '人潮情報':'活動幾點散場先知道,卡位避塞都行',
+  '下車地統計':'客人常在哪下車、哪裡最容易空等',
+  '長期間分析':'一季到一年,賺多少花多少全看清',
+  '定期經營摘要':'每週每月自動整理,時薪升還是降',
+  'PDF 經營報告':'收支做成PDF,能存能印能分享',
+  '可保存的分析組合':'常看的時段平台,存起來一點就開',
+  '目標還要跑多久':'離目標還差幾小時、幾趟,幫你算',
+  '我的車隊收益比較':'同樣的單,換一家跑實拿差多少',
+  '車輛成本與保養預測':'每跑1公里花多少、何時該保養'
+};
 var VIP_PERIODS = {year:1, custom:1, all:1};
 function vipGated(){ return VIP_GATE || betaOn(); }
 // 上架開關 (2026-11-23, B3-01): the VIP features of the launch (原 1.0 五項＋原 2.0 前五項) and the free 每趟公里數 they use
@@ -6035,6 +6195,22 @@ function vipNeed(name, x){
     if(!trips || x.timedN>0) return null;
     return {miss:'每小時實收要知道每趟的上下車時間,這段期間 '+vipN(trips,'趟')+'都沒有按「上車」「下車」'+(uiOn('trips') ? '。' : '(「上車/下車按鈕」目前沒有打開)。'),
       fix:'載客時按記帳頁的「上車」「下車」。', gain:'各車隊每小時實收,以及各時段哪一家最好。', btns:vipNeedOnBtn('trips')};
+  }
+  if(name==='車隊收益比較:沒有收入'){
+    return {miss:'這段期間還沒有車隊的收入紀錄('+vipN(0,'趟')+'),沒有東西可以比。',
+      fix:'下車後在記帳頁點那一家車隊(Uber、台灣大車隊…)記這趟車資;或把分析頁上面的期間改成有記帳的那幾天。',
+      gain:'各車隊平均每趟、每小時、每公里實收,各時段哪一家最好,以及「換車隊試算」。', btns:[]};
+  }
+  // x: {hours (clock-in hours it went by), trips, per, left, src ('近 30 天' when today had too little)}; only while there is no hourly rate
+  if(name==='目標還要跑多久'){
+    var shOn = uiOn('shift'), where = x.src ? '今天和近 30 天' : '這段期間', mins = Math.round(x.hours*60);
+    var miss = !shOn ? '算還要跑幾小時要用你的平均時薪,「上下班打卡」目前沒有打開。'
+      : (mins>0 ? '平均時薪至少要打卡 '+vipN(Math.round(RATE_MIN_H*60),'分鐘')+'才算得準,'+where+'目前只有 '+vipN(mins,'分鐘')+'。'
+        : '算還要跑幾小時要用你的平均時薪,'+where+'還沒有上下班打卡的時數('+vipN(0,'小時')+')。');
+    if(!x.trips) miss += '也還沒有記車資('+vipN(0,'趟')+'),所以還算不出幾趟。';
+    else if(x.per) miss += '現在只能照每趟 '+fmtMoney(x.per)+' 估:還要跑約 <b>'+Math.ceil(x.left/x.per)+' 趟</b>。';
+    return {miss:miss, fix:(shOn ? '' : '打開「上下班打卡」,')+'開始跑時在記帳頁「今日行車」按「上班」,休息、下班也按一下;每趟記車資。',
+      gain:'照你自己的平均時薪和每趟實收,算出離目標還要跑幾小時、幾趟,每記一筆就更新。', btns:vipNeedOnBtn('shift')};
   }
   if(name==='車隊收益比較:公里'){
     return {miss:'這段期間的單都沒有里程(沒填每趟公里數,也沒有上下車位置)。',
@@ -6293,8 +6469,11 @@ function openVipIntro(feature, period){
   var h = '<div class="modal-title">👑 跑車人生 VIP<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div><div id="vipPaywall">';
   // 行銷文案 (比對_行銷文案_三家AI 第四節). Never 「最便宜」, another app's name, or 推播／通知; the website sells nothing,
   // so the lines on price and on subscribing are only where it can be bought.
-  h += '<div class="vip-head" style="margin:0 0 12px"><div style="font-size:20px;font-weight:800;line-height:1.4">跑到月底,手上能留多少?</div>'+
-    '<div style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-top:2px">扣掉跑車支出與固定成本,依目前紀錄估算月底能留多少。</div></div>';
+  // from a feature's 👑 its own line leads and the main line follows as the subtitle (VIP 實測 11/24 #4); from ⚙️ the main line
+  var vh = VIP_HEAD[feature];
+  h += '<div class="vip-head" style="margin:0 0 12px">'+(vh ?
+      '<div style="font-size:20px;font-weight:800;line-height:1.4">'+esc(vh)+'</div><div style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-top:2px">'+esc(VIP_HEAD_MAIN)+'</div>' :
+      '<div style="font-size:20px;font-weight:800;line-height:1.4">'+esc(VIP_HEAD_MAIN)+'</div><div style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-top:2px">扣掉跑車支出與固定成本,依目前紀錄估算月底能留多少。</div>')+'</div>';
   if(feature && !vip) h += '<div style="font-size:14px;line-height:1.7;margin-bottom:10px">「<b>'+esc(feature)+'</b>」是 VIP 功能。</div>';
   if(canBuy && !v.vip) h += '<div style="font-size:12.5px;line-height:1.6;margin-bottom:10px">記帳核心永久免費。VIP 提供進一步分析,想多了解自己的跑車收支,再訂閱就好。</div>';
   var note = '';
@@ -7091,10 +7270,13 @@ function reportHeat(from, to){
     bestBlock: br.length>=2 ? br[0].i : null, bestDays: bc.length>=3 ? bc.slice(0,2).map(function(x){ return x.i; }).sort() : []};
 }
 // payouts checked against the bank in this period (by the day they were due)
+// a confirmed batch is compared with the estimate the driver saw when confirming (payoutCheck, RR-02): the same trips
+// with a newer estimate still count (a gap then was a real one); only when the trips under that pay day changed
+// (moved / edited / old) it is marked changed and left out of "對不上"
 function reportPayouts(from, to){
   return payoutBatches().filter(function(b){ return b.payout && b.payDate && inRange(b.payDate, from, to); }).map(function(b){
-    var exp = Math.round(bankExpected(b)), act = +b.payout.amount||0;
-    return {key:b.platform, label:platformDef(b.platform).label, date:b.payDate, exp:exp, act:act, diff:act-exp};
+    var c = payoutCheck(b);
+    return {key:b.platform, label:platformDef(b.platform).label, date:b.payDate, exp:c.at, act:c.act, diff:c.act-c.at, changed:c.kind!=='same' && c.kind!=='algo'};
   }).filter(function(x){ return x.exp>0 || x.act>0; }).sort(function(a, z){ return a.date<z.date ? -1 : (a.date>z.date ? 1 : 0); });
 }
 function buildReport(p){
@@ -7149,8 +7331,9 @@ function reportObservations(R){
     else if(big) o.push('支出最大的一項是'+big.label+'('+rN(big.amt)+' 元),佔變動支出 '+Math.round(big.amt/R.varGross*100)+'%。');
   }
   if(s.hours>0 && s.days>0) o.push('營業 '+s.days+' 天,平均每個營業日上班 '+fmtNum(s.hours/s.days,1)+' 小時。');
-  var bad = R.pay.filter(function(x){ return Math.abs(x.diff)>=1; });
+  var bad = R.pay.filter(function(x){ return !x.changed && Math.abs(x.diff)>=1; }), chg = R.pay.filter(function(x){ return x.changed; }).length;
   if(bad.length) o.push('有 '+bad.length+' 筆撥款金額對不上,合計差 '+rN(Math.abs(bad.reduce(function(a, x){ return a+x.diff; }, 0)))+' 元,記得到平台明細核對。');
+  if(chg) o.push('有 '+chg+' 筆撥款確認之後,撥款規則改過或那批紀錄有增減,沒有算進對不上;可以到「撥款」頁重新對帳。');
   return o.slice(0, 7);
 }
 // "比上月 ↗ 多 9.4%・變好". kind: 'neutral' = more is neither better nor worse (hours)
@@ -7277,18 +7460,21 @@ function rptHeat(R){
   return h;
 }
 function rptPay(R){
-  var rows = R.pay, bad = rows.filter(function(x){ return Math.abs(x.diff)>=1; }), h = '<div class="rp-card"><table class="rp-pay">';
+  var rows = R.pay, bad = rows.filter(function(x){ return !x.changed && Math.abs(x.diff)>=1; }), h = '<div class="rp-card"><table class="rp-pay">';
+  var chg = rows.filter(function(x){ return x.changed; }).length, cmp = rows.length - chg;
   var res = function(d){ return Math.abs(d)<1 ? '<td class="rp-up">✓ 相符</td>' : '<td class="rp-down">'+(d>0?'多 ':'少 ')+rN(Math.abs(d))+' 元</td>'; };
+  var resChg = '<td style="color:#777">規則已更新</td>';
   if(rows.length<=18 && R.p.kind!=='year'){
     h += '<tr><th>平台</th><th>撥款日</th><th>預計</th><th>實際入帳</th><th>結果</th></tr>'+rows.map(function(x){
-      return '<tr><td>'+esc(x.label)+'</td><td>'+x.date.slice(5).replace('-','/')+'</td><td>'+rN(x.exp)+'</td><td>'+rN(x.act)+'</td>'+res(x.diff)+'</tr>';
+      return '<tr><td>'+esc(x.label)+'</td><td>'+x.date.slice(5).replace('-','/')+'</td><td>'+rN(x.exp)+'</td><td>'+rN(x.act)+'</td>'+(x.changed?resChg:res(x.diff))+'</tr>';
     }).join('');
   } else {
+    // the result column only adds up the batches whose estimate has not changed since they were confirmed
     var m = {}, list = [];
-    rows.forEach(function(x){ var o = m[x.key]; if(!o){ o = m[x.key] = {label:x.label, n:0, exp:0, act:0}; list.push(o); } o.n++; o.exp += x.exp; o.act += x.act; });
+    rows.forEach(function(x){ var o = m[x.key]; if(!o){ o = m[x.key] = {label:x.label, n:0, exp:0, act:0, d:0, cmp:0}; list.push(o); } o.n++; o.exp += x.exp; o.act += x.act; if(!x.changed){ o.d += x.diff; o.cmp++; } });
     list.sort(function(a, z){ return z.act-a.act; });
     h += '<tr><th>平台</th><th>筆數</th><th>預計</th><th>實際入帳</th><th>結果</th></tr>'+list.slice(0, 18).map(function(o){
-      return '<tr><td>'+esc(o.label)+'</td><td>'+o.n+' 筆</td><td>'+rN(o.exp)+'</td><td>'+rN(o.act)+'</td>'+res(o.act-o.exp)+'</tr>';
+      return '<tr><td>'+esc(o.label)+'</td><td>'+o.n+' 筆</td><td>'+rN(o.exp)+'</td><td>'+rN(o.act)+'</td>'+(o.cmp?res(o.d):resChg)+'</tr>';
     }).join('');
   }
   h += '</table></div>';
@@ -7296,8 +7482,10 @@ function rptPay(R){
     var f = bad[0];
     h += rptBubble('🔔', bad.length===1 ? '有一筆要確認' : '有 '+bad.length+' 筆要確認', f.date.slice(5).replace('-','/')+' '+esc(f.label)+' '+(f.diff>0?'多':'少')+'入帳 '+rN(Math.abs(f.diff))+' 元'+(bad.length>1 ? ',其他 '+(bad.length-1)+' 筆也對不上' : '')+'。可以到平台的收入明細看是不是過路費或獎勵還沒算進來。', 'background:#FCE3DC;margin-top:6mm');
   }
-  h += rptBubble('⭐', bad.length ? '其他都對上了' : '全部都對上了', rows.length+' 筆撥款有 '+(rows.length-bad.length)+' 筆金額相符。', 'background:#E5F1E0;margin-top:4mm');
-  h += '<div class="rp-fine" style="margin-top:3mm">只列這段期間到期、而且你已經在「撥款」頁核對過實際入帳的撥款。</div>';
+  if(cmp) h += rptBubble('⭐', bad.length ? '其他都對上了' : '全部都對上了', cmp+' 筆撥款有 '+(cmp-bad.length)+' 筆金額相符。', 'background:#E5F1E0;margin-top:4mm');
+  h += '<div class="rp-fine" style="margin-top:3mm">只列這段期間到期、而且你已經在「撥款」頁核對過實際入帳的撥款。'+
+    ' 「預計」是你確認時看到的金額(之後手續費算法更新也照這個比)。'+
+    (chg?(' 「規則已更新」的 '+chg+' 筆是確認之後撥款規則改過或那批紀錄有增減,沒有算進對不上;可以到「撥款」頁重新對帳。'):'')+'</div>';
   return h;
 }
 function rptObsPage(R){
@@ -8325,7 +8513,7 @@ function rnBodyHtml(){
   if(fwOn){
     // three tabs: shorter names so they fit a small phone and 超大字
     var fwN = rnData.fw.ok || rnData.fw.items ? String(rnFwList(rnData.fw).length) : '—';
-    h += '<div class="segmented" style="margin-bottom:8px"><button class="'+(rnTab==='live'?'active':'')+'" data-act="rn-tab:live">即時('+v.live.length+')</button><button class="'+(rnTab==='work'?'active':'')+'" data-act="rn-tab:work">🚧 施工('+v.work.length+')</button><button class="'+(rnTab==='fw'?'active':'')+'" data-act="rn-tab:fw">🛣️ 國道('+fwN+')</button></div>';
+    h += '<div class="segmented" style="margin-bottom:8px"><button class="'+(rnTab==='live'?'active':'')+'" data-act="rn-tab:live">即時('+v.live.length+')</button><button class="'+(rnTab==='fw'?'active':'')+'" data-act="rn-tab:fw">🛣️ 國道('+fwN+')</button><button class="'+(rnTab==='work'?'active':'')+'" data-act="rn-tab:work">🚧 施工('+v.work.length+')</button></div>';
   } else h += '<div class="segmented" style="margin-bottom:8px"><button class="'+(rnTab==='live'?'active':'')+'" data-act="rn-tab:live">即時路況('+v.live.length+')</button><button class="'+(rnTab==='work'?'active':'')+'" data-act="rn-tab:work">🚧 施工('+v.work.length+')</button></div>';
   // 雪隧 lives at the top of 🛣️ 國道 when that tab is there; otherwise at the top of 即時路況
   if(rnTab==='fw') return h + rnHxHtml(rnData.hx, now, keys) + rnFwBodyHtml(rnData.fw, now);
@@ -9200,7 +9388,7 @@ function chipRowHtml(groupId, options, selectedDefault, labels){
 }
 
 function buildIncomeForm(key, existing){
-  var def = incomeFormDef(key, (existing && existing.subPlatform) || (resSubOptions(null)[0]||[])[0]);
+  var def = incomeFormDef(key, (existing && existing.subPlatform) || resSubDefault());
   var h = '';
   // a switched-off field is either left out (saved value kept) or kept hidden with its default so fees still compute
   function off(k, html){ return uiOn(k) ? html : '<div hidden>'+html+'</div>'; }
@@ -9225,7 +9413,7 @@ function buildIncomeForm(key, existing){
   var estLike = curFareType==='預估車資';
   var stationLike = curFareType==='據點叫車';
   // 預約單: which fleet it came through comes first, its payment options follow that fleet (resPayRefresh redraws them)
-  if(def.subPlatformOptions) h += '<div class="form-row"><label>預約單屬於哪個平台</label><select id="f-subplatform">'+resSubOptions(existing).map(function(o){ return '<option value="'+esc(o[0])+'"'+(o[2]?' selected':'')+'>'+esc(o[1])+'</option>'; }).join('')+'</select></div>';
+  // (預約單's 「屬於哪個平台」 is on the form above the amount: resSubRowHtml in openIncomeModal)
   if(def.paymentOptions){
     var payH = incomePayHtml(key, def, existing, meterLike);
     h += def.subPlatformOptions ? '<div id="sec-res-pay">'+payH+'</div>' : payH;
@@ -9289,9 +9477,15 @@ function incomeFormDef(key, viaLabel){
 }
 // the fleets a 預約單 can come through: [value, text, selected]. BOLT is offered no more; an entry made with it (or a
 // name no longer offered) keeps it, marked 「(舊)」 like 92折.
+// a new 預約單 starts on the fleet picked last time (this phone only); an entry being edited keeps its own
+var RES_SUB_LS = 'taxi_res_sub_v1';
+function resSubLast(){ try{ return localStorage.getItem(RES_SUB_LS) || ''; }catch(e){ return ''; } }
+function resSubRemember(v){ try{ if(v) localStorage.setItem(RES_SUB_LS, v); }catch(e){} }
+function resSubDefault(){ var o = resSubOptions(null).filter(function(x){ return x[2]; })[0]; return o ? o[0] : undefined; }
 function resSubOptions(existing){
   var opts = platformDef('reservation').subPlatformOptions || [], cur = existing && existing.subPlatform;
-  var out = opts.map(function(o, i){ return [o, o, cur ? cur===o : i===0]; });
+  var last = cur ? '' : resSubLast(), first = opts.indexOf(last)>=0 ? last : opts[0];
+  var out = opts.map(function(o){ return [o, o, cur ? cur===o : o===first]; });
   if(cur && opts.indexOf(cur)<0) out.push([cur, cur+'(舊)', true]);
   return out;
 }
@@ -9319,6 +9513,10 @@ function incomePayHtml(key, def, existing, meterLike){
   return h;
 }
 // 預約單: the fleet picked changed, so its payment options do; a payment that fleet does not take goes back to 現金
+function resSubRowHtml(existing){
+  return '<div class="form-row"><label>預約單屬於哪個平台</label><select id="f-subplatform">'+resSubOptions(existing).map(function(o){ return '<option value="'+esc(o[0])+'"'+(o[2]?' selected':'')+'>'+esc(o[1])+'</option>'; }).join('')+'</select>'+
+    '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">先選平台,下面的金額照那家的算法填。會記住這次選的。</div></div>';
+}
 function resPayRefresh(){
   if(currentIncomeModalKey!=='reservation') return;
   var box = document.getElementById('sec-res-pay'), sel = document.getElementById('f-subplatform');
@@ -9355,7 +9553,8 @@ function openIncomeModal(key, editId){
   } else {
     // 記帳時填實收: an entry keeps how it was first made; a new one follows the platform's switch
     var netE = existing ? isNetMarked(existing) : netEntryOn(key);
-    var rl = revenueLabelOf(key, existing, netE, key==='reservation' ? resKeyOfLabel((existing && existing.subPlatform) || (resSubOptions(null)[0]||[])[0]) : null);
+    if(platformDef(key).subPlatformOptions) h += resSubRowHtml(existing);
+    var rl = revenueLabelOf(key, existing, netE, key==='reservation' ? resKeyOfLabel((existing && existing.subPlatform) || resSubDefault()) : null);
     h += '<div class="form-row"><label id="f-revenue-label">'+rl[0]+'</label><input class="num-input" id="f-revenue" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.revenue)||'')+'"><div id="f-revenue-hint">'+rl[1]+'</div></div>';
     if(uiOn('tip')) h += tipFieldHtml('小費(選填)', existing);
     if(((key==='uber' && !isYellowCab()) || key==='bolt') && uiOn('tripToll')){
@@ -9471,7 +9670,7 @@ function saveIncome(key, editId){
   // a field that is not on this form leaves the old value alone (LINE GO records from before the switch to %)
   var mm = grab('f-markup-multiplier'); if(mm!=null) rec.markupMultiplier = mm!=='' ? +mm : undefined;
   var mp = grab('f-markup-percent'); if(mp!=null) rec.markupPercent = mp!=='' ? +mp : undefined;
-  if(def.subPlatformOptions){ rec.subPlatform = grab('f-subplatform'); markResFee(rec, rec.subPlatform, resPrev); }
+  if(def.subPlatformOptions){ rec.subPlatform = grab('f-subplatform'); markResFee(rec, rec.subPlatform, resPrev); if(!existing) resSubRemember(rec.subPlatform); }
   if(def.bonus){
     var bpLabel = grab('chip-bonusPlat');
     var bp = visiblePlatforms().filter(function(x){ return x.label===bpLabel; })[0] || allPlatforms().filter(function(x){ return x.label===bpLabel; })[0];
@@ -10304,6 +10503,8 @@ var HELP = [
     ['撥款頁', '看各平台什麼時候匯多少錢給你;下面出現紅色數字 = 有還沒對帳的批次。', 'payoutTab'],
     ['撥款設定', '撥款頁「⚙️ 撥款設定」:每個平台設每週固定一天、跑完後 N 個工作天,或依星期對照。LINE GO 選收款帳戶。'],
     ['對帳', '錢入帳後點那一批,輸入實際金額。'],
+    ['對帳後預估變了', '已對帳的那一批後來預估不一樣(撥款規則、撥款設定或手續費算法更新,或那批紀錄有增減),會用灰字說明確認時預估多少、現在多少,不會亮紅字;單換了一批的會有「重新對帳」,要刪掉或重新輸入由你決定,不會自動搬走。找得到那些單現在在哪一批,會多一個「套用到…」一鍵搬過去;也可以「對到別的批次」自己選。'],
+    ['找不到對應批次的對帳', '撥款規則或撥款設定改過,原本的撥款日現在沒有單時,那筆對帳會列在撥款頁最下面:可以套用到建議的那一批、對到別的批次,或刪除。資料不會自己不見。'],
     ['📷 用截圖核對', '(Android App)撥款頁「📷 用截圖核對」:選 BOLT「收入明細 → 每週」或 Uber「行程費用」某一週的截圖,讀出金額、對應那一批撥款,跟帳本比對差多少,過路費一鍵填入。辨識在手機上完成,圖片不上傳;第一次使用要有網路下載中文辨識模型。'],
     ['過路費退款', '平台跟車資一起退的過路費(BOLT 明細的「收費公路」、Uber 的退款):點那一批填總額,或記車資時逐趟填。會加進預計撥款,分析頁拿來抵 E-Tag 支出。'],
     ['匯入哪個帳戶', '撥款設定每個平台可以填銀行名稱(不要填帳號),撥款頁會列出今明兩天哪個帳戶要入帳多少。'],
@@ -10488,8 +10689,8 @@ function dayLoadedKm(t, recs){
   // a number and its unit never split over two lines
   var nb = function(v, u){ return '<span class="num" style="white-space:nowrap">'+v+(u==='%' ? '' : '&nbsp;')+u+'</span>'; };
   var s = '載客里程 '+nb(fmtNum(sum, 1), '公里');
-  if(sum <= dayKm) s += ',佔今天里程 '+nb(Math.round(sum/dayKm*100), '%')+'(空車約 '+nb(fmtNum(dayKm-sum, 1), '公里')+')';
-  else s += '(比今天記的里程 '+nb(fmtNum(dayKm, 1), '公里')+'還多,今日里程可能少記了)';
+  if(sum <= dayKm) s += ',佔'+dayWordT(t)+'里程 '+nb(Math.round(sum/dayKm*100), '%')+'(空車約 '+nb(fmtNum(dayKm-sum, 1), '公里')+')';
+  else s += '(比'+dayWordT(t)+'記的里程 '+nb(fmtNum(dayKm, 1), '公里')+'還多,今日里程可能少記了)';
   var sub = [];
   if(kmN < trips) sub.push('只算有里程的 '+nb(kmN, '趟')+'(共 '+nb(trips, '趟')+')');
   if(real < kmN) sub.push((real ? '部分用直線距離估算' : '用上下車直線距離估算')+',實際開的路通常比較長');
@@ -10581,11 +10782,11 @@ function dayTrendHtml(t, rate7, n7){
   s += '</svg>';
   // read aloud: 元, not a $ sign
   var yuan = function(v){ return Math.round(v)+' 元'; }, endR = pts[last].rate;
-  var said = '今天時薪走勢:從 '+yuan(pts[0].rate)+'到 '+yuan(endR)+(hiI!==0 && hiI!==last ? ',最高 '+yuan(pts[hiI].rate) : '');
+  var said = dayWordT(t)+'時薪走勢:從 '+yuan(pts[0].rate)+'到 '+yuan(endR)+(hiI!==0 && hiI!==last ? ',最高 '+yuan(pts[hiI].rate) : '');
   if(rate7!=null){ var a = Math.round(endR), b = Math.round(rate7); said += a===b ? ',和'+baseW+' '+yuan(rate7)+'一樣' : (a>b ? ',高於' : ',低於')+baseW+' '+yuan(rate7); }
   var sw = function(st){ return '<span style="display:inline-block;width:16px;border-top:2px '+st+';vertical-align:middle;margin-right:4px"></span>'; };
   var h = '<div class="day-trend" style="margin:0 0 10px;padding:10px 12px 8px;border:1px solid var(--border);border-radius:12px">';
-  h += '<div style="font-size:12.5px;font-weight:600;margin-bottom:4px">📈 今天時薪走勢</div>';
+  h += '<div style="font-size:12.5px;font-weight:600;margin-bottom:4px">📈 '+dayWordT(t)+'時薪走勢</div>';
   h += '<div role="img" aria-label="'+esc(said)+'">'+s+'</div>';
   h += '<div aria-hidden="true" style="font-size:11px;color:var(--text-muted);line-height:1.7;margin-top:2px">'+sw('solid var(--accent)')+'到每個時間點為止的平均時薪'+(rate7!=null ? '<span style="white-space:nowrap;margin-left:10px">'+sw('dashed var(--text-muted)')+baseW+' <span class="num">'+fmtMoney(rate7)+'</span></span>' : '')+'</div>';
   // hours edited after the fact: say the line is an estimate (read aloud too, it changes what the numbers mean)
@@ -10618,7 +10819,8 @@ function openDayReport(t){
   h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">'+t+' · '+(nickName() ? esc(nickName())+',' : '')+'辛苦了!</div>';
   h += dayCarryLineHtml(t);
   h += '<div class="summary-row" style="grid-template-columns:1fr 1fr;margin-bottom:10px">';
-  h += tile('今日實收', fmtMoney(net), 'income') + tile('今日結餘(扣今日支出)', fmtMoney(net-exp));
+  var dw = shareDayWord(t), dt = dayWordT(t);
+  h += tile(dw+'實收', fmtMoney(net), 'income') + tile(dw+'結餘(扣'+dw+'支出)', fmtMoney(net-exp));
   h += tile('趟數', trips+' 趟') + tile('每趟平均', trips?fmtMoney(tripNet/trips):'—');
   h += tile('工時(已扣休息)', hours>0?'<span class="nw">'+fmtNum(hours,2)+' 小時</span>':'—') + tile('平均時薪', rate!=null?fmtMoney(rate):'—', 'income');
   var addOn = uiOn('addOn') ? recs.filter(function(r){ return r.addOn>0; }) : [];
@@ -10626,17 +10828,17 @@ function openDayReport(t){
   h += '</div>';
   if(rate!=null) h += dayTrendHtml(t, rate7, base7 ? base7.n : 0);
   var note = '';
-  if(rate==null) note = hours>0 ? '今天打卡的工時不到 30 分鐘,時薪先不算。' : '今天沒有完整的上下班打卡,時薪算不出來。';
+  if(rate==null) note = hours>0 ? dt+'打卡的工時不到 30 分鐘,時薪先不算。' : dt+'沒有完整的上下班打卡,時薪算不出來。';
   else if(rate7!=null){
     var diff = Math.round((rate-rate7)/rate7*100);
-    note = '前 '+base7.n+' 個營業日平均時薪 '+fmtMoney(rate7)+',今天'+(diff>=0?'高 ':'低 ')+Math.abs(diff)+'%'+(diff>=10?' 👍':'');
+    note = '前 '+base7.n+' 個營業日平均時薪 '+fmtMoney(rate7)+','+dt+(diff>=0?'高 ':'低 ')+Math.abs(diff)+'%'+(diff>=10?' 👍':'');
   }
   if(cxS.n) h += '<div style="font-size:12.5px;line-height:1.6;margin-bottom:8px">🚫 '+cancelSumText(cxS)+'</div>';
   var lk = dayLoadedKm(t, recs);
   if(lk) h += '<div style="font-size:12.5px;line-height:1.6;margin-bottom:8px">🛣️ '+lk+'</div>';
   if(note) h +='<div style="font-size:12.5px;line-height:1.6;margin-bottom:12px">'+note+'</div>';
   // a 活動獎勵 written on its own lifts 時薪 but is not in 每趟平均: one line says both
-  if(bonusNet>0) h += '<div class="day-bonus" style="font-size:12.5px;line-height:1.6;margin-bottom:12px">🎁 '+(rate!=null ? '今天的時薪含活動獎勵 '+fmtMoney(bonusNet)+'(不含的話是 '+fmtMoney((net-bonusNet)/hours)+');每趟平均沒算這筆' : '今天有活動獎勵 '+fmtMoney(bonusNet)+',算進實收,每趟平均沒算這筆')+'</div>';
+  if(bonusNet>0) h += '<div class="day-bonus" style="font-size:12.5px;line-height:1.6;margin-bottom:12px">🎁 '+(rate!=null ? dt+'的時薪含活動獎勵 '+fmtMoney(bonusNet)+'(不含的話是 '+fmtMoney((net-bonusNet)/hours)+');每趟平均沒算這筆' : dt+'有活動獎勵 '+fmtMoney(bonusNet)+',算進實收,每趟平均沒算這筆')+'</div>';
   if(trips) h += '<button class="btn btn-ghost" style="width:100%;margin-bottom:10px" data-act="share-day:'+t+'">📤 分享'+shareDayWord(t)+'戰績</button>';
   h += '<div class="btn-row"><button class="btn" data-act="close-modal">知道了</button><button class="btn btn-primary" data-act="quick-backup">💾 順便備份</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px">不想每天看到:⚙️ 功能開關關掉「今日跑車報告」</div>';
@@ -10744,7 +10946,7 @@ function rvAboutHtml(para, link){
   var h = para('⭐ 給我們評分', '覺得好用,或有想改進的地方,都歡迎到 '+w+' 給我們評分、留言:<br><span data-act="rate-app" role="button" tabindex="0" style="'+link+';cursor:pointer">到 '+w+' 評分 ›</span>');
   if(APP_CHANNEL==='beta'){
     var m = rvLoad();
-    h += '<div class="rv-test" style="font-size:11.5px;color:var(--text-muted);line-height:1.6;margin:-6px 0 12px">🧪 測試版:評分視窗已問 '+m.n+' 次'+(m.last ? '(上次 '+toDateStr(new Date(m.last))+')' : '')+(m.rated ? ',按過「到商店評分」' : '')+',有記帳的日子 '+rvLoggedDays()+' 天。 <span data-act="rv-reset" role="button" tabindex="0" style="'+link+';cursor:pointer">清除這支手機的評分紀錄</span></div>';
+    h += '<div class="rv-test" style="font-size:11.5px;color:var(--text-muted);line-height:1.6;margin:-6px 0 12px">🧪 測試版:評分視窗已問 '+m.n+' 次'+(m.last ? '(上次 '+toDateStr(new Date(m.last))+')' : '')+(m.rated ? ',按過「到商店評分」' : '')+',有記帳的日子 '+rvLoggedDays()+' 天。<button type="button" class="btn btn-ghost" data-act="rv-reset" style="display:block;width:auto;margin-top:6px;padding:8px 14px;font-size:12.5px">🧪 清除這支手機的評分紀錄</button></div>';
   }
   return h;
 }
@@ -10769,6 +10971,8 @@ var shareOpt = {money:false, plat:false, name:false}, shareCard = null, shareGen
 var SHARE_OPT_KEY = 'taxi_share_opt';
 // 今日 only for today's business day; an earlier day (opened from 歷史) says 這天 on its buttons and no 今日 on the picture
 function shareDayWord(t){ return t===todayStr() ? '今日' : '這天'; }
+// the same in running text: 今天 for today's business day, 這天 for a day opened from 歷史 (VIP 實測 11/24 #6)
+function dayWordT(t){ return t===todayStr() ? '今天' : '這天'; }
 function shareOptLoad(){
   try{ var v = JSON.parse(localStorage.getItem(SHARE_OPT_KEY)||'null'); return {money:!!(v && v.money===true), plat:!!(v && v.plat===true), name:!!(v && v.name===true)}; }
   catch(e){ return {money:false, plat:false, name:false}; }
@@ -10861,7 +11065,7 @@ function drawShareCard(cv, D, opt){
     B.push({h:tileH, draw:function(y){ tile(M, y, '趟數', [big(String(D.trips)), unit('趟')]); tile(M+tileW+24, y, '工時(已扣休息)', D.hours>0 ? hrsRuns() : [big('—')]); }});
     if(opt.money) B.push({h:tileH, draw:function(y){
       var mf = scFont(Math.round(bigPx*0.84), 700, true);
-      tile(M, y, '今日實收', [[fmtMoney(D.net), mf, SC_C.text]]);
+      tile(M, y, shareDayWord(D.t)+'實收', [[fmtMoney(D.net), mf, SC_C.text]]);
       tile(M+tileW+24, y, '平均時薪', [[D.rate!=null ? fmtMoney(D.rate) : '—', mf, SC_C.text]]);
     }});
     if(facts.length) B.push({h:28 + facts.length*rowH, draw:function(y){
@@ -10875,7 +11079,7 @@ function drawShareCard(cv, D, opt){
     }});
     if(platLines.length) B.push({h:84 + platLines.length*50, draw:function(y){
       card(M, y, CW, 84 + platLines.length*50);
-      T('今天跑的平台', M+32, y+52, scFont(30, 500), SC_C.muted);
+      T(dayWordT(D.t)+'跑的平台', M+32, y+52, scFont(30, 500), SC_C.muted);
       platLines.forEach(function(l, i){ T(l, M+32, y+52+52+i*50, scFont(36, 500), SC_C.text, 'left', platW); });
     }});
     var used = B.reduce(function(a, b){ return a+b.h; }, 0) + GAP*B.length;
@@ -10971,7 +11175,7 @@ function openShareDay(t){
   h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">下面就是分享出去的圖。</div>';
   h += '<div id="share-prev" data-day="'+t+'" style="text-align:center;min-height:120px"><div style="padding:40px 0;font-size:13px;color:var(--text-muted)">正在產生圖片…</div></div>';
   h += '<div style="margin-top:8px">';
-  h += '<label style="'+lbl+'"><input type="checkbox" id="f-share-money" style="'+cb+'"'+(shareOpt.money?' checked':'')+'>顯示金額(今日實收、平均時薪)</label>';
+  h += '<label style="'+lbl+'"><input type="checkbox" id="f-share-money" style="'+cb+'"'+(shareOpt.money?' checked':'')+'>顯示金額('+shareDayWord(t)+'實收、平均時薪)</label>';
   h += '<label style="'+lbl+'"><input type="checkbox" id="f-share-plat" style="'+cb+'"'+(shareOpt.plat?' checked':'')+'>顯示平台名稱</label>';
   var nk = nickName();
   if(nk) h += '<label style="'+lbl+'"><input type="checkbox" id="f-share-name" style="'+cb+'"'+(shareOpt.name?' checked':'')+'>顯示我的稱呼(「'+esc(nk)+'」)</label>';
@@ -11326,12 +11530,14 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.24.2';
+var APP_VERSION = '2026.11.24.3';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.24.3', '🛣️ 測試版:路況快報的「國道」分頁移到中間(即時、國道、施工),比施工常用、比較好點', 'beta', {tab:'entry', find:'路況快報'}],
+  ['2026.11.24.3', '📅 記預約單時,「屬於哪個平台」移到金額上面,並記住上次選的平台。另外優化:篩選時段的含空檔時薪也扣掉打卡休息;還要跑多久、車隊比較在資料不夠時會說還缺什麼、怎麼補;歷史頁看以前的日子,報告和分享圖改寫「這天」;已對帳的撥款後來因為撥款規則或手續費更新、預估變了,改用灰字說明、可以一鍵套用到正確的那批,不再冒出紅字差額'],
   ['2026.11.24.2', '🛣️ 測試版:路況快報多一個「國道」分頁:你選的城市裡現在時速 60 以下的國道路段,最慢的排前面,點一段看地圖路況;雪隧也搬到這一頁最上面。不想看可以在 ⚙️ 關掉「顯示國道分頁」', 'beta', {tab:'entry', find:'路況快報'}],
   ['2026.11.24.2', '🏔️ 測試版:雪隧平常收成一行(往宜蘭、往台北要幾分鐘、順不順),點一下才看左右線;「我主要跑」有宜蘭的預設打開。不常走雪隧的,路況快報 ⚙️ 可以關掉「顯示雪隧」', 'beta', {tab:'entry', find:'路況快報'}],
   ['2026.11.24.1', '🏔️ 測試版:路況快報選了台北、新北或宜蘭時,最上面多一張「雪隧」:坪林—頭城往宜蘭、往台北各要幾分鐘、順不順,左線、右線各多快。隧道內禁止變換車道,請停車時看、進隧道前選好', 'beta', {tab:'entry', find:'路況快報'}],
@@ -13082,6 +13288,9 @@ document.addEventListener('click', function(e){
   else if(cmd==='open-payout'){ openPayoutModal(arg); }
   else if(cmd==='save-payout'){ savePayout(arg); }
   else if(cmd==='del-payout'){ state.payouts=(state.payouts||[]).filter(function(p){ return p.batch!==arg; }); save(); closeModal(); renderAll(); }
+  else if(cmd==='del-orphan-payout'){ if(confirm('刪除這筆對帳紀錄?(只刪掉你輸入的實際入帳,收入紀錄不受影響)')){ state.payouts=(state.payouts||[]).filter(function(p){ return p.batch!==arg; }); save(); renderAll(); notifySync(false); } }
+  else if(cmd==='move-payout'){ movePayout(arg); }
+  else if(cmd==='pick-payout-batch'){ openPayoutMoveModal(arg); }
   else if(cmd==='open-payout-settings'){ openPayoutSettingsModal(); }
   else if(cmd==='open-metro-wallet'){ openMetroWalletModal(); }
   else if(cmd==='open-vehicle'){ openVehicleModal(); }
