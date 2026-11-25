@@ -5,6 +5,8 @@
 // 網址：https://app.realway.com.tw/api/roads-stats（只給 Welson 看）
 // 用瀏覽器打開會跳出帳號密碼框：帳號隨便填，密碼是 Cloudflare Secret「ROADS_STATS_KEY」。
 // 沒設定這個 Secret 時一律拒絕。加 ?format=json 回原始數字。
+// 防亂試（2026-11-25 定）：同一來源 10 分鐘內密碼錯 3 次 → 鎖 15 分鐘，鎖定期間連正確密碼也回 429；依來源分開算（KV ROADS_KV）。
+// 另外跟 /api/roads 同一套限速（Service binding RATE_LIMITER）。見 relay/lib/ratelimit.js。
 
 // ===== 路況共用程式（relay/lib/roads_core.js）=====
 // Pages 中繼（/api/roads、/api/roads-stats）和排程 Worker 都用這一份。
@@ -878,6 +880,93 @@ async function geoStats(kv, now) {
   };
 }
 
+// ===== 程式內限速＋統計頁密碼鎖定（relay/lib/ratelimit.js，2026-11-25）=====
+// 為什麼在程式裡做：realway.com.tw 的 DNS 在 GoDaddy，Cloudflare 帳號沒有 Zone，後台的速率限制規則設不了（決定不搬網域）。
+// 注意：被擋的請求還是算 1 次 Pages Functions 請求（程式已經被叫醒了）；這裡省的是後面的 KV 讀寫、熱區待查清單、OSM 每日額度。
+//
+// 一、限速（/api/roads、/api/geo、/api/roads-stats）：
+//   Pages Functions 不能直接用 Cloudflare 的「Rate Limiting」功能，所以透過 Service binding（變數名稱 RATE_LIMITER）
+//   去問另一支小 Worker paoche-ratelimit（relay/src/ratelimit.js），它用 Rate Limiting 計數：同一來源 10 秒超過 50 次 → 擋。
+//   每個網址各算各的；每個 Cloudflare 機房各自計算（官方說是近似值），擋「單一來源用程式狂打」夠用。
+//   一律「放行優先」：沒綁定、小 Worker 壞了、0.3 秒沒回 → 照常服務，路況不會因為限速停掉。
+//
+// 二、統計頁密碼鎖定（只有 /api/roads-stats）：同一來源 10 分鐘內密碼錯 3 次 → 鎖 15 分鐘（鎖定期間連正確密碼也回 429）。
+//   用 KV（ROADS_KV）記：只有「輸錯」才寫，鎖住後不再寫，所以一個來源每 15 分鐘最多寫 3 次。依來源分開算，別人亂試不會鎖到 Welson。
+//
+// 「來源」＝CF-Connecting-IP；IPv6 用前 64 位元（同一台手機會換後半段）。IP 不存原文：
+//   限速用一般雜湊；鎖定用「統計頁密碼＋IP」雜湊（沒有密碼就算不回 IP），KV 鍵 stats:lock:v1:<雜湊>，到期自動刪除。
+
+const RL_WAIT_MS = 300;                 // 問小 Worker 最多等多久，超過就放行
+const RL_RETRY_S = 10;                  // 被擋時告訴 App 幾秒後再試（跟限速的 10 秒一致）
+const LOCK_FAILS = 3;                   // 錯幾次就鎖（11/25 定：3 次）
+const LOCK_WINDOW_MS = 10 * 60000;      // 幾分鐘內的錯誤才算
+const LOCK_MS = 15 * 60000;             // 鎖多久
+const LOCK_KEY = tag => 'stats:lock:v1:' + tag;
+
+// IPv6 展開成 8 段、取前 4 段（/64）；IPv4 原樣；IPv4 對應的 IPv6（::ffff:1.2.3.4）當 IPv4
+function ipSource(ip) {
+  ip = String(ip || '').trim().toLowerCase();
+  if (!ip) return '';
+  if (ip.indexOf(':') < 0) return ip;
+  if (ip.indexOf('.') >= 0) return ip.slice(ip.lastIndexOf(':') + 1);
+  const halves = ip.split('::');
+  const left = halves[0] ? halves[0].split(':') : [], right = halves.length > 1 && halves[1] ? halves[1].split(':') : [];
+  const fill = halves.length > 1 ? Math.max(0, 8 - left.length - right.length) : 0;
+  const all = left.concat(Array(fill).fill('0'), right).slice(0, 8);
+  return all.slice(0, 4).map(x => (parseInt(x, 16) || 0).toString(16)).join(':') + '::/64';
+}
+async function sha(text) {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(d)].slice(0, 16).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+// 來源代號（32 個十六進位字）：salt 不同，同一個 IP 的代號就不同
+async function ipTag(req, salt) {
+  const src = ipSource(req.headers.get('CF-Connecting-IP')) || 'noip';
+  return sha('paoche|' + salt + '|' + src);
+}
+
+// ---------- 一、限速 ----------
+// 回 true＝放行、false＝擋（只有小 Worker 明確回 {ok:false} 才擋）
+async function rateOk(env, req, route) {
+  const svc = env && env.RATE_LIMITER;
+  if (!svc || typeof svc.fetch !== 'function') return true;
+  let timer;
+  try {
+    const k = route + ':' + await ipTag(req, 'rl');
+    const ask = svc.fetch('https://paoche-ratelimit/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ k }) })
+      .then(r => r.ok ? r.json() : null, () => null);
+    const late = new Promise(res => { timer = setTimeout(() => res(null), RL_WAIT_MS); });
+    const j = await Promise.race([ask, late]);
+    return !(j && j.ok === false);
+  } catch (e) { return true; } finally { clearTimeout(timer); }
+}
+const RATE_BODY = { ok: false, err: 'rate', msg: '請求太頻繁，請 10 秒後再試' };
+
+// ---------- 二、統計頁密碼鎖定 ----------
+// 讀這個來源的紀錄：{ f:[輸錯的時間], u:鎖到幾點（0＝沒鎖）}
+async function lockRead(kv, tag, now) {
+  let r = null;
+  try { r = await kv.get(LOCK_KEY(tag), 'json'); } catch (e) {}
+  if (!r || typeof r !== 'object') r = {};
+  const f = (Array.isArray(r.f) ? r.f : []).filter(t => typeof t === 'number' && now - t < LOCK_WINDOW_MS && t <= now);
+  return { f, u: typeof r.u === 'number' && r.u > now ? r.u : 0, had: !!(r.f && r.f.length) || !!r.u };
+}
+// 記一次輸錯；回傳鎖到幾點（0＝還沒鎖）
+async function lockFail(kv, tag, rec, now) {
+  const f = rec.f.concat(now);
+  const locked = f.length >= LOCK_FAILS;
+  const val = locked ? { f: [], u: now + LOCK_MS } : { f, u: 0 };
+  const ttl = Math.ceil((locked ? LOCK_MS : LOCK_WINDOW_MS) / 1000) + 60;   // KV 到期最少 60 秒；到期自動刪除
+  try { await kv.put(LOCK_KEY(tag), JSON.stringify(val), { expirationTtl: ttl }); } catch (e) {}
+  return val.u;
+}
+// 密碼對了：清掉之前輸錯的紀錄（有紀錄才動 KV）
+async function lockClear(kv, tag, rec) {
+  if (!rec.had) return;
+  try { if (typeof kv.delete === 'function') await kv.delete(LOCK_KEY(tag)); } catch (e) {}
+}
+const lockMinutes = (u, now) => Math.max(1, Math.ceil((u - now) / 60000));
+
 // ===== 主程式 =====
 const SRC_NAMES = { pbs: '警廣', Freeway: 'TDX 國道', Highway: 'TDX 省道', token: 'TDX 要 Token' };
 for (const k in CITIES) CITIES[k].tdx.forEach(e => { SRC_NAMES[e[0]] = 'TDX ' + (e[0] === 'City/ChiayiCounty' ? '嘉義縣' : e[0] === 'City/Chiayi' ? '嘉義市' : CITIES[k].names[0]); });
@@ -955,9 +1044,10 @@ function same(a, b) {   // 比對密碼：長度不同也照樣比完，不給�
   for (let i = 0; i < Math.max(a.length, b.length); i++) d |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
   return d === 0;
 }
+const hasBasic = req => /^Basic /i.test(req.headers.get('Authorization') || '');   // 有送密碼（第一次打開、還沒跳密碼框的那一下不算輸錯）
 function authed(req, key) {
   const h = req.headers.get('Authorization') || '';
-  if (!/^Basic /i.test(h)) return false;
+  if (!hasBasic(req)) return false;
   let raw = '';
   try { raw = atob(h.slice(6).trim()); } catch (e) { return false; }
   const i = raw.indexOf(':');
@@ -1055,7 +1145,18 @@ export async function onRequest(context) {
   if (req.method !== 'GET') return new Response('method', { status: 405, headers: HEAD });
   const key = env.ROADS_STATS_KEY ? String(env.ROADS_STATS_KEY).trim() : '';
   if (!key) return new Response('統計網址還沒設定密碼（Cloudflare Secret ROADS_STATS_KEY）', { status: 503, headers: Object.assign({ 'Content-Type': 'text/plain; charset=utf-8' }, HEAD) });
-  if (!authed(req, key)) return new Response('需要密碼', { status: 401, headers: Object.assign({ 'Content-Type': 'text/plain; charset=utf-8', 'WWW-Authenticate': 'Basic realm="roads-stats", charset="UTF-8"' }, HEAD) });
+  const text = (status, msg, extra) => new Response(msg, { status, headers: Object.assign({ 'Content-Type': 'text/plain; charset=utf-8' }, extra || {}, HEAD) });
+  if (!(await rateOk(env, req, 'stats'))) return text(429, '請求太頻繁，請 10 秒後再試', { 'Retry-After': String(RL_RETRY_S) });
+  // 密碼鎖定：先看這個來源有沒有被鎖（鎖定期間不比對密碼、也不再寫 KV）
+  const kv = env.ROADS_KV, t0 = Date.now();
+  const tag = kv ? await ipTag(req, 'lock|' + key) : '', rec = kv ? await lockRead(kv, tag, t0) : null;
+  const locked = u => text(429, '密碼錯太多次，請 ' + lockMinutes(u, t0) + ' 分鐘後再試', { 'Retry-After': String(Math.ceil((u - t0) / 1000)) });
+  if (rec && rec.u) return locked(rec.u);
+  if (!authed(req, key)) {
+    if (rec && hasBasic(req)) { const u = await lockFail(kv, tag, rec, t0); if (u) return locked(u); }
+    return text(401, '需要密碼', { 'WWW-Authenticate': 'Basic realm="roads-stats", charset="UTF-8"' });
+  }
+  if (rec) await lockClear(kv, tag, rec);
   if (!env.ROADS_KV) return new Response('還沒綁定 KV（ROADS_KV）', { status: 503, headers: Object.assign({ 'Content-Type': 'text/plain; charset=utf-8' }, HEAD) });
   // 2026-11-24 起讀新的狀態（全國）；新版 Worker 還沒部署時讀舊快照（雙北）
   let snap = null;

@@ -21,7 +21,8 @@ const PBS_URL = 'https://rtr.pbs.gov.tw/NMP103_PbsWS/resources/roadData/opendata
 const TDX_TOKEN_URL = 'https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token';
 const TDX_BASE = 'https://tdx.transportdata.tw/api/basic/v1/Traffic/RoadEvent/LiveEvent/';
 const TDX_SELECT = 'EventID,EventTitle,Description,EventType,EventSubType,Positions,Location,Impact,Source,PublishTime,LastUpdateTime,ExpireTime';
-const FAST = 180, SLOW = 3600, FAIL = 60, TOKEN_TTL = 23 * 3600;
+// FAST＝每 3 分鐘、MID＝每 15 分鐘（11/25 起省道、宜蘭）、SLOW＝每小時
+const FAST = 180, MID = 900, SLOW = 3600, FAIL = 60, TOKEN_TTL = 23 * 3600;
 const DAY = 86400000, MIN = 60000, HOUR = 3600000;
 const TIMEOUT_MS = 12000;
 
@@ -46,7 +47,7 @@ const CITIES = {
   ntpc: { names: ['新北市'], box: [24.67, 25.30, 121.28, 122.01], tdx: [['City/NewTaipei', SLOW]] },
   tyc:  { names: ['桃園市', '桃園縣'], box: [24.59, 25.12, 120.98, 121.48], tdx: [['City/Taoyuan', SLOW]] },
   kel:  { names: ['基隆市'], box: [25.04, 25.20, 121.62, 121.82], tdx: [] },
-  ila:  { names: ['宜蘭縣'], box: [24.30, 24.99, 121.30, 121.96], tdx: [['City/YilanCounty', FAST]] },
+  ila:  { names: ['宜蘭縣'], box: [24.30, 24.99, 121.30, 121.96], tdx: [['City/YilanCounty', MID]] },   // 11/25 改每 15 分鐘：只有零星施工；先觀察原始筆數一週
   hsz:  { names: ['新竹市', '新竹縣'], box: [24.43, 24.95, 120.88, 121.42], tdx: [] },
   mlc:  { names: ['苗栗縣'], box: [24.25, 24.75, 120.62, 121.27], tdx: [['City/MiaoliCounty', SLOW]] },
   txg:  { names: ['臺中市', '台中市'], box: [23.99, 24.45, 120.46, 121.45], tdx: [['City/Taichung', FAST]] },
@@ -56,11 +57,12 @@ const CITIES = {
   cyi:  { names: ['嘉義市', '嘉義縣'], box: [23.20, 23.65, 120.10, 120.90], tdx: [['City/ChiayiCounty', SLOW], ['City/Chiayi', SLOW]] },
   tnn:  { names: ['臺南市', '台南市'], box: [22.88, 23.42, 120.03, 120.66], tdx: [['City/Tainan', FAST]] },
   khh:  { names: ['高雄市'], box: [22.47, 23.47, 120.17, 121.05], tdx: [['City/Kaohsiung', FAST]] },
-  pif:  { names: ['屏東縣'], box: [21.89, 22.89, 120.40, 120.92], tdx: [['City/PingtungCounty', FAST]] },
+  pif:  { names: ['屏東縣'], box: [21.89, 22.89, 120.40, 120.92], tdx: [['City/PingtungCounty', SLOW]] },   // 11/25 改每小時：11/24 實測 733 筆全是道路施工
   hun:  { names: ['花蓮縣'], box: [23.10, 24.38, 121.00, 121.78], tdx: [] },   // 11/24 放大（原本 25%：秀林、卓溪、萬榮西邊山區在框外）
   ttt:  { names: ['臺東縣', '台東縣'], box: [22.00, 23.45, 120.74, 121.60], tdx: [] }   // 11/24 放大（原本 3%：蘭嶼、南端）
 };
-const TDX_ROADS = [['Freeway', FAST], ['Highway', FAST]];
+// 省道 11/25 改每 15 分鐘：留下來的都是 0 筆（大多是轉載警廣），但可能有公路局自己的通報（坍方、封路），先觀察原始筆數一週
+const TDX_ROADS = [['Freeway', FAST], ['Highway', MID]];
 const TDX_TYPE = { 1: '事故', 2: '道路施工', 3: '阻塞', 4: '交通管制', 5: '其他', 6: '災害', 7: '交通管制', 8: '交通障礙' };
 
 // ---------- 連外 ----------
@@ -416,16 +418,26 @@ async function fetchTdxToken(env) {
   if (!j.access_token) throw new Error('token none');
   return j.access_token;
 }
-// 回 { status, json, calls, bytes }；400 時改取全部欄位（欄位名稱不被接受時）
-// calls／bytes 給 TDX 點數估算用（bytes 是解壓後的大小，比 TDX 實際計的只多不少）
+// 回 { status, json, calls, bytes, est }；400 時改取全部欄位（欄位名稱不被接受時）
+// calls／bytes 給 TDX 點數估算用。TDX 計費用的是「傳輸（壓縮後）」大小（11/25 對過會員中心：平均每次 10～16 KB），
+// 不是解壓後的大小（台北約 276 KB、屏東約 390 KB，大 20～30 倍；11/24 以前這樣記，會在月中誤觸 85% 降頻）。
+//   有 content-length 標頭 → 用它（est＝false）；
+//   讀不到（分段傳送、或 Cloudflare 自動解壓時拿掉）→ 解壓後大小 × TDX_ZIP_RATIO（est＝true，統計頁標「估計」）。
+// Workers 的 fetch 會自動解壓，拿不到壓縮後的原始位元組，所以沒有「自己數壓縮後位元組」這一層。
+const TDX_ZIP_RATIO = 0.04;   // 11/25 實測：壓縮後約 10.8 KB ÷ 解壓後約 270 KB
+function wireBytes(res, rawLen) {
+  const cl = parseInt(res && res.headers && res.headers.get('content-length'), 10);
+  if (cl >= 0 && isFinite(cl) && (cl > 0 || !rawLen)) return { bytes: cl, est: false };
+  return { bytes: Math.round((rawLen || 0) * TDX_ZIP_RATIO), est: true };
+}
 async function fetchTdxRaw(ep, tk) {
   const head = { 'Authorization': 'Bearer ' + tk, 'Accept': 'application/json', 'Accept-Encoding': 'gzip' };
   let calls = 1;
   let res = await get(TDX_BASE + ep + '?%24select=' + encodeURIComponent(TDX_SELECT) + '&%24format=JSON', { headers: head });
   if (res.status === 400) { calls++; res = await get(TDX_BASE + ep + '?%24format=JSON', { headers: head }); }
-  if (!res.ok) return { status: res.status, json: null, calls, bytes: 0 };
-  const buf = await res.arrayBuffer();
-  return { status: res.status, json: JSON.parse(new TextDecoder().decode(buf)), calls, bytes: buf.byteLength };
+  if (!res.ok) return { status: res.status, json: null, calls, bytes: 0, est: false };
+  const buf = await res.arrayBuffer(), w = wireBytes(res, buf.byteLength);
+  return { status: res.status, json: JSON.parse(new TextDecoder().decode(buf)), calls, bytes: w.bytes, est: w.est };
 }
 function tdxArea(L) {
   L = L || {};
@@ -443,11 +455,15 @@ function tdxCity(L) {
   const rw = L.CityRoad && L.CityRoad.Roadways && L.CityRoad.Roadways[0];
   return cityOfName((rw && rw.City) || (L.Intersection && L.Intersection.City) || (L.Address && L.Address.City) || '');
 }
-function parseTdx(d, cityKey, now, pick) {
+// rc（可不給）：記原始筆數 n、其中轉載警廣 pbs、非轉載的來源名稱 so（最多 3 個），給統計頁看「是不是全是轉載」
+function parseTdx(d, cityKey, now, pick, rc) {
   const src = Array.isArray(d) ? d : ((d && (d.Items || d.LiveEvents || d.Events)) || []), list = [];
+  if (rc) rc.n = src.length;
   src.forEach(x => {
+    if (isPbsCopy(x)) { if (rc) rc.pbs++; return; }
+    if (rc) { const so = cleanText(x && x.Source).slice(0, 20); if (so && rc.so.indexOf(so) < 0 && rc.so.length < 3) rc.so.push(so); }
     const m = isoTime(x.LastUpdateTime) || isoTime(x.PublishTime);
-    if (!m || !x.EventID || isPbsCopy(x)) return;
+    if (!m || !x.EventID) return;
     const ll = lonLat(x.Positions);
     const imp = x.Impact || {}, dur = imp.Duration && [].concat(imp.Duration)[0];
     const end = isoTime(x.ExpireTime) || (dur && isoTime(dur.DurationEndTime)) || null;
@@ -478,9 +494,10 @@ function tdxWant(sel) {
 }
 
 // ---------- TDX 點數（銅級每月 200 點；預算預設 120 點；Worker 與統計頁共用）----------
-// 點數＝呼叫次數 ÷ 1,500 ＋ 資料量(MB) ÷ 150（11/23 對過會員中心的數字）
+// 點數＝呼叫次數 ÷ 1,500 ＋ 壓縮後資料量(MB) ÷ 150；MB＝KB ÷ 1,024＝位元組 ÷ 1,048,576
+// （11/25 用會員中心 11/20～11/24 五天逐日代入，全部吻合到小數第 3 位；例：11/24＝2,468÷1,500＋26,771÷1,024÷150＝1.819）
 const TDX_BUDGET_DEFAULT = 120;
-function tdxPoints(u) { return u ? u.calls / 1500 + u.bytes / 1e6 / 150 : 0; }
+function tdxPoints(u) { return u ? u.calls / 1500 + u.bytes / 1048576 / 150 : 0; }
 function tdxBudget(env) { const b = parseFloat(env && env.TDX_BUDGET); return b > 0 ? b : TDX_BUDGET_DEFAULT; }
 // 'off'＝手動停用（Cloudflare 變數 TDX_OFF=1）；'pause'＝本月已用 95%，暫停 TDX 只抓警廣；'slow'＝已用 85%，每 3 分鐘的改成每小時
 function tdxMode(env, u) {
@@ -558,7 +575,97 @@ function twDay(ms) { return new Date(ms + 8 * HOUR).toISOString().slice(0, 10); 
 function twHour(ms) { return new Date(ms + 8 * HOUR).getUTCHours(); }
 function twHm(ms) { return ms ? new Date(ms + 8 * HOUR).toISOString().slice(11, 16) : '—'; }
 
+// ===== 程式內限速＋統計頁密碼鎖定（relay/lib/ratelimit.js，2026-11-25）=====
+// 為什麼在程式裡做：realway.com.tw 的 DNS 在 GoDaddy，Cloudflare 帳號沒有 Zone，後台的速率限制規則設不了（決定不搬網域）。
+// 注意：被擋的請求還是算 1 次 Pages Functions 請求（程式已經被叫醒了）；這裡省的是後面的 KV 讀寫、熱區待查清單、OSM 每日額度。
+//
+// 一、限速（/api/roads、/api/geo、/api/roads-stats）：
+//   Pages Functions 不能直接用 Cloudflare 的「Rate Limiting」功能，所以透過 Service binding（變數名稱 RATE_LIMITER）
+//   去問另一支小 Worker paoche-ratelimit（relay/src/ratelimit.js），它用 Rate Limiting 計數：同一來源 10 秒超過 50 次 → 擋。
+//   每個網址各算各的；每個 Cloudflare 機房各自計算（官方說是近似值），擋「單一來源用程式狂打」夠用。
+//   一律「放行優先」：沒綁定、小 Worker 壞了、0.3 秒沒回 → 照常服務，路況不會因為限速停掉。
+//
+// 二、統計頁密碼鎖定（只有 /api/roads-stats）：同一來源 10 分鐘內密碼錯 3 次 → 鎖 15 分鐘（鎖定期間連正確密碼也回 429）。
+//   用 KV（ROADS_KV）記：只有「輸錯」才寫，鎖住後不再寫，所以一個來源每 15 分鐘最多寫 3 次。依來源分開算，別人亂試不會鎖到 Welson。
+//
+// 「來源」＝CF-Connecting-IP；IPv6 用前 64 位元（同一台手機會換後半段）。IP 不存原文：
+//   限速用一般雜湊；鎖定用「統計頁密碼＋IP」雜湊（沒有密碼就算不回 IP），KV 鍵 stats:lock:v1:<雜湊>，到期自動刪除。
+
+const RL_WAIT_MS = 300;                 // 問小 Worker 最多等多久，超過就放行
+const RL_RETRY_S = 10;                  // 被擋時告訴 App 幾秒後再試（跟限速的 10 秒一致）
+const LOCK_FAILS = 3;                   // 錯幾次就鎖（11/25 定：3 次）
+const LOCK_WINDOW_MS = 10 * 60000;      // 幾分鐘內的錯誤才算
+const LOCK_MS = 15 * 60000;             // 鎖多久
+const LOCK_KEY = tag => 'stats:lock:v1:' + tag;
+
+// IPv6 展開成 8 段、取前 4 段（/64）；IPv4 原樣；IPv4 對應的 IPv6（::ffff:1.2.3.4）當 IPv4
+function ipSource(ip) {
+  ip = String(ip || '').trim().toLowerCase();
+  if (!ip) return '';
+  if (ip.indexOf(':') < 0) return ip;
+  if (ip.indexOf('.') >= 0) return ip.slice(ip.lastIndexOf(':') + 1);
+  const halves = ip.split('::');
+  const left = halves[0] ? halves[0].split(':') : [], right = halves.length > 1 && halves[1] ? halves[1].split(':') : [];
+  const fill = halves.length > 1 ? Math.max(0, 8 - left.length - right.length) : 0;
+  const all = left.concat(Array(fill).fill('0'), right).slice(0, 8);
+  return all.slice(0, 4).map(x => (parseInt(x, 16) || 0).toString(16)).join(':') + '::/64';
+}
+async function sha(text) {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(d)].slice(0, 16).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+// 來源代號（32 個十六進位字）：salt 不同，同一個 IP 的代號就不同
+async function ipTag(req, salt) {
+  const src = ipSource(req.headers.get('CF-Connecting-IP')) || 'noip';
+  return sha('paoche|' + salt + '|' + src);
+}
+
+// ---------- 一、限速 ----------
+// 回 true＝放行、false＝擋（只有小 Worker 明確回 {ok:false} 才擋）
+async function rateOk(env, req, route) {
+  const svc = env && env.RATE_LIMITER;
+  if (!svc || typeof svc.fetch !== 'function') return true;
+  let timer;
+  try {
+    const k = route + ':' + await ipTag(req, 'rl');
+    const ask = svc.fetch('https://paoche-ratelimit/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ k }) })
+      .then(r => r.ok ? r.json() : null, () => null);
+    const late = new Promise(res => { timer = setTimeout(() => res(null), RL_WAIT_MS); });
+    const j = await Promise.race([ask, late]);
+    return !(j && j.ok === false);
+  } catch (e) { return true; } finally { clearTimeout(timer); }
+}
+const RATE_BODY = { ok: false, err: 'rate', msg: '請求太頻繁，請 10 秒後再試' };
+
+// ---------- 二、統計頁密碼鎖定 ----------
+// 讀這個來源的紀錄：{ f:[輸錯的時間], u:鎖到幾點（0＝沒鎖）}
+async function lockRead(kv, tag, now) {
+  let r = null;
+  try { r = await kv.get(LOCK_KEY(tag), 'json'); } catch (e) {}
+  if (!r || typeof r !== 'object') r = {};
+  const f = (Array.isArray(r.f) ? r.f : []).filter(t => typeof t === 'number' && now - t < LOCK_WINDOW_MS && t <= now);
+  return { f, u: typeof r.u === 'number' && r.u > now ? r.u : 0, had: !!(r.f && r.f.length) || !!r.u };
+}
+// 記一次輸錯；回傳鎖到幾點（0＝還沒鎖）
+async function lockFail(kv, tag, rec, now) {
+  const f = rec.f.concat(now);
+  const locked = f.length >= LOCK_FAILS;
+  const val = locked ? { f: [], u: now + LOCK_MS } : { f, u: 0 };
+  const ttl = Math.ceil((locked ? LOCK_MS : LOCK_WINDOW_MS) / 1000) + 60;   // KV 到期最少 60 秒；到期自動刪除
+  try { await kv.put(LOCK_KEY(tag), JSON.stringify(val), { expirationTtl: ttl }); } catch (e) {}
+  return val.u;
+}
+// 密碼對了：清掉之前輸錯的紀錄（有紀錄才動 KV）
+async function lockClear(kv, tag, rec) {
+  if (!rec.had) return;
+  try { if (typeof kv.delete === 'function') await kv.delete(LOCK_KEY(tag)); } catch (e) {}
+}
+const lockMinutes = (u, now) => Math.max(1, Math.ceil((u - now) / 60000));
+
 // ===== 主程式 =====
+// 限速（2026-11-25）：Service binding RATE_LIMITER（paoche-ratelimit）；同一來源 10 秒超過 50 次回 429，沒綁定就不限速（見 relay/lib/ratelimit.js）。
+// App 收到 429 會顯示「連不上」但保留已顯示的路況，不會清空。
+
 // 只接受這些來源的網頁讀取：網站、舊網址、App（Android／iOS 的內建網頁）
 const ORIGINS = ['https://app.realway.com.tw', 'https://welson0986.github.io', 'https://localhost', 'capacitor://localhost', 'http://localhost'];
 const REG_MAX_AGE = 12 * MIN;
@@ -618,11 +725,13 @@ function cors(req) {
   return h;
 }
 function reply(req, status, obj) { return new Response(JSON.stringify(obj), { status, headers: cors(req) }); }
+function tooMany(req) { const h = cors(req); h['Retry-After'] = String(RL_RETRY_S); return new Response(JSON.stringify(RATE_BODY), { status: 429, headers: h }); }
 
 export async function onRequest(context) {
   const req = context.request, env = context.env || {};
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(req) });
   if (req.method !== 'GET') return reply(req, 405, { ok: false, err: 'method' });
+  if (!(await rateOk(env, req, 'roads'))) return tooMany(req);   // 擋在讀 KV、備援抓警廣之前
   const url = new URL(req.url);
   const sel = [...new Set(String(url.searchParams.get('city') || '').split(',').map(s => s.trim()).filter(k => Object.prototype.hasOwnProperty.call(CITIES, k)))];
   if (!sel.length) return reply(req, 400, { ok: false, err: 'city' });

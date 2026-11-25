@@ -8,6 +8,7 @@
 // 回應：{ok:true, names:{key:地名}, none:[查過沒有名稱的 key], wait:[還在排隊的 key]}；遠端關閉時 {ok:true, off:true}。
 // App 只送格子 key（不是實際上車位置），不送帳本、不送任何裝置編號。遠端關閉：KV 鍵 geo:off 設成 1。
 // 需要的設定：KV 綁定 ROADS_KV（跟 /api/roads 同一個）。
+// 限速（2026-11-25）：Service binding RATE_LIMITER（paoche-ratelimit）；同一來源 10 秒超過 50 次回 429，沒綁定就不限速（見 relay/lib/ratelimit.js）。
 
 // ===== 熱區地名查詢（relay/lib/geo.js）=====
 // 手機只問自家 /api/geo（pages_geo.js），自己不連 OpenStreetMap。流程：
@@ -28,6 +29,7 @@ const GEO_NAME_KEY = k => 'geo:n:' + k;   // { n:地名（空字串＝OSM 查過
 const GEO_UA = 'paoche-ledger/1.0 (+https://app.realway.com.tw/privacy.html)';
 const GEO_MAX_ASK = 20;            // 手機一次最多問幾格
 const GEO_PEND_MAX = 400;          // 待查清單上限（滿了新的先不收，手機之後會再問）
+const GEO_NEW_MAX = 5;             // 每次請求最多新增幾格進待查（C3-06：有人用程式一直送新格子也灌不滿清單；其餘照樣回在 wait，手機約 90 秒後再問）
 const GEO_ROUND_MAX = 25;          // 排程每輪最多查幾筆
 const GEO_GAP_MS = 1150;           // 相鄰兩次對 OSM 的請求至少隔這麼久（官方上限 1 次／秒）
 const GEO_DAY_CAP = 1500;          // 一天最多對 OSM 查幾筆（也限制 KV 寫入）
@@ -90,8 +92,8 @@ async function geoAsk(kv, keys, now) {
     if (!pend || pend.v !== 1 || !pend.q) pend = { v: 1, q: {} };
     let added = 0;
     for (const k of miss) {
-      if (pend.q[k]) continue;
-      if (Object.keys(pend.q).length >= GEO_PEND_MAX) break;
+      if (pend.q[k]) continue;   // 已經在待查的不算在 GEO_NEW_MAX 裡
+      if (added >= GEO_NEW_MAX || Object.keys(pend.q).length >= GEO_PEND_MAX) break;
       pend.q[k] = { t: now, a: 0 }; added++;
     }
     if (added) { try { await kv.put(GEO_PEND_KEY, JSON.stringify(pend)); } catch (e) {} }   // 只有真的有新格子才寫
@@ -215,6 +217,93 @@ async function geoStats(kv, now) {
   };
 }
 
+// ===== 程式內限速＋統計頁密碼鎖定（relay/lib/ratelimit.js，2026-11-25）=====
+// 為什麼在程式裡做：realway.com.tw 的 DNS 在 GoDaddy，Cloudflare 帳號沒有 Zone，後台的速率限制規則設不了（決定不搬網域）。
+// 注意：被擋的請求還是算 1 次 Pages Functions 請求（程式已經被叫醒了）；這裡省的是後面的 KV 讀寫、熱區待查清單、OSM 每日額度。
+//
+// 一、限速（/api/roads、/api/geo、/api/roads-stats）：
+//   Pages Functions 不能直接用 Cloudflare 的「Rate Limiting」功能，所以透過 Service binding（變數名稱 RATE_LIMITER）
+//   去問另一支小 Worker paoche-ratelimit（relay/src/ratelimit.js），它用 Rate Limiting 計數：同一來源 10 秒超過 50 次 → 擋。
+//   每個網址各算各的；每個 Cloudflare 機房各自計算（官方說是近似值），擋「單一來源用程式狂打」夠用。
+//   一律「放行優先」：沒綁定、小 Worker 壞了、0.3 秒沒回 → 照常服務，路況不會因為限速停掉。
+//
+// 二、統計頁密碼鎖定（只有 /api/roads-stats）：同一來源 10 分鐘內密碼錯 3 次 → 鎖 15 分鐘（鎖定期間連正確密碼也回 429）。
+//   用 KV（ROADS_KV）記：只有「輸錯」才寫，鎖住後不再寫，所以一個來源每 15 分鐘最多寫 3 次。依來源分開算，別人亂試不會鎖到 Welson。
+//
+// 「來源」＝CF-Connecting-IP；IPv6 用前 64 位元（同一台手機會換後半段）。IP 不存原文：
+//   限速用一般雜湊；鎖定用「統計頁密碼＋IP」雜湊（沒有密碼就算不回 IP），KV 鍵 stats:lock:v1:<雜湊>，到期自動刪除。
+
+const RL_WAIT_MS = 300;                 // 問小 Worker 最多等多久，超過就放行
+const RL_RETRY_S = 10;                  // 被擋時告訴 App 幾秒後再試（跟限速的 10 秒一致）
+const LOCK_FAILS = 3;                   // 錯幾次就鎖（11/25 定：3 次）
+const LOCK_WINDOW_MS = 10 * 60000;      // 幾分鐘內的錯誤才算
+const LOCK_MS = 15 * 60000;             // 鎖多久
+const LOCK_KEY = tag => 'stats:lock:v1:' + tag;
+
+// IPv6 展開成 8 段、取前 4 段（/64）；IPv4 原樣；IPv4 對應的 IPv6（::ffff:1.2.3.4）當 IPv4
+function ipSource(ip) {
+  ip = String(ip || '').trim().toLowerCase();
+  if (!ip) return '';
+  if (ip.indexOf(':') < 0) return ip;
+  if (ip.indexOf('.') >= 0) return ip.slice(ip.lastIndexOf(':') + 1);
+  const halves = ip.split('::');
+  const left = halves[0] ? halves[0].split(':') : [], right = halves.length > 1 && halves[1] ? halves[1].split(':') : [];
+  const fill = halves.length > 1 ? Math.max(0, 8 - left.length - right.length) : 0;
+  const all = left.concat(Array(fill).fill('0'), right).slice(0, 8);
+  return all.slice(0, 4).map(x => (parseInt(x, 16) || 0).toString(16)).join(':') + '::/64';
+}
+async function sha(text) {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(d)].slice(0, 16).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+// 來源代號（32 個十六進位字）：salt 不同，同一個 IP 的代號就不同
+async function ipTag(req, salt) {
+  const src = ipSource(req.headers.get('CF-Connecting-IP')) || 'noip';
+  return sha('paoche|' + salt + '|' + src);
+}
+
+// ---------- 一、限速 ----------
+// 回 true＝放行、false＝擋（只有小 Worker 明確回 {ok:false} 才擋）
+async function rateOk(env, req, route) {
+  const svc = env && env.RATE_LIMITER;
+  if (!svc || typeof svc.fetch !== 'function') return true;
+  let timer;
+  try {
+    const k = route + ':' + await ipTag(req, 'rl');
+    const ask = svc.fetch('https://paoche-ratelimit/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ k }) })
+      .then(r => r.ok ? r.json() : null, () => null);
+    const late = new Promise(res => { timer = setTimeout(() => res(null), RL_WAIT_MS); });
+    const j = await Promise.race([ask, late]);
+    return !(j && j.ok === false);
+  } catch (e) { return true; } finally { clearTimeout(timer); }
+}
+const RATE_BODY = { ok: false, err: 'rate', msg: '請求太頻繁，請 10 秒後再試' };
+
+// ---------- 二、統計頁密碼鎖定 ----------
+// 讀這個來源的紀錄：{ f:[輸錯的時間], u:鎖到幾點（0＝沒鎖）}
+async function lockRead(kv, tag, now) {
+  let r = null;
+  try { r = await kv.get(LOCK_KEY(tag), 'json'); } catch (e) {}
+  if (!r || typeof r !== 'object') r = {};
+  const f = (Array.isArray(r.f) ? r.f : []).filter(t => typeof t === 'number' && now - t < LOCK_WINDOW_MS && t <= now);
+  return { f, u: typeof r.u === 'number' && r.u > now ? r.u : 0, had: !!(r.f && r.f.length) || !!r.u };
+}
+// 記一次輸錯；回傳鎖到幾點（0＝還沒鎖）
+async function lockFail(kv, tag, rec, now) {
+  const f = rec.f.concat(now);
+  const locked = f.length >= LOCK_FAILS;
+  const val = locked ? { f: [], u: now + LOCK_MS } : { f, u: 0 };
+  const ttl = Math.ceil((locked ? LOCK_MS : LOCK_WINDOW_MS) / 1000) + 60;   // KV 到期最少 60 秒；到期自動刪除
+  try { await kv.put(LOCK_KEY(tag), JSON.stringify(val), { expirationTtl: ttl }); } catch (e) {}
+  return val.u;
+}
+// 密碼對了：清掉之前輸錯的紀錄（有紀錄才動 KV）
+async function lockClear(kv, tag, rec) {
+  if (!rec.had) return;
+  try { if (typeof kv.delete === 'function') await kv.delete(LOCK_KEY(tag)); } catch (e) {}
+}
+const lockMinutes = (u, now) => Math.max(1, Math.ceil((u - now) / 60000));
+
 // ===== 主程式 =====
 const ORIGINS = ['https://app.realway.com.tw', 'https://welson0986.github.io', 'https://localhost', 'capacitor://localhost', 'http://localhost'];
 
@@ -225,11 +314,14 @@ function cors(req) {
   return h;
 }
 const reply = (req, status, obj) => new Response(JSON.stringify(obj), { status, headers: cors(req) });
+// 被限速：429＋Retry-After（App 收到非 200 會安靜略過，之後再問；已顯示的地名不動）
+function tooMany(req) { const h = cors(req); h['Retry-After'] = String(RL_RETRY_S); return new Response(JSON.stringify(RATE_BODY), { status: 429, headers: h }); }
 
 export async function onRequest(context) {
   const req = context.request, env = context.env || {};
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(req) });
   if (req.method !== 'GET') return reply(req, 405, { ok: false, err: 'method' });
+  if (!(await rateOk(env, req, 'geo'))) return tooMany(req);   // 擋在讀 KV、登記待查之前
   if (!env.ROADS_KV) return reply(req, 503, { ok: false, err: 'kv' });
   const keys = parseGeoKeys(new URL(req.url).searchParams.get('k'));
   if (!keys.length) return reply(req, 400, { ok: false, err: 'key' });
