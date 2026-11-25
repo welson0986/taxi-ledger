@@ -14,7 +14,8 @@ const PBS_URL = 'https://rtr.pbs.gov.tw/NMP103_PbsWS/resources/roadData/opendata
 const TDX_TOKEN_URL = 'https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token';
 const TDX_BASE = 'https://tdx.transportdata.tw/api/basic/v1/Traffic/RoadEvent/LiveEvent/';
 const TDX_SELECT = 'EventID,EventTitle,Description,EventType,EventSubType,Positions,Location,Impact,Source,PublishTime,LastUpdateTime,ExpireTime';
-const FAST = 180, SLOW = 3600, FAIL = 60, TOKEN_TTL = 23 * 3600;
+// FAST＝每 3 分鐘、MID＝每 15 分鐘（11/25 起省道、宜蘭）、SLOW＝每小時
+const FAST = 180, MID = 900, SLOW = 3600, FAIL = 60, TOKEN_TTL = 23 * 3600;
 const DAY = 86400000, MIN = 60000, HOUR = 3600000;
 const TIMEOUT_MS = 12000;
 
@@ -39,7 +40,7 @@ const CITIES = {
   ntpc: { names: ['新北市'], box: [24.67, 25.30, 121.28, 122.01], tdx: [['City/NewTaipei', SLOW]] },
   tyc:  { names: ['桃園市', '桃園縣'], box: [24.59, 25.12, 120.98, 121.48], tdx: [['City/Taoyuan', SLOW]] },
   kel:  { names: ['基隆市'], box: [25.04, 25.20, 121.62, 121.82], tdx: [] },
-  ila:  { names: ['宜蘭縣'], box: [24.30, 24.99, 121.30, 121.96], tdx: [['City/YilanCounty', FAST]] },
+  ila:  { names: ['宜蘭縣'], box: [24.30, 24.99, 121.30, 121.96], tdx: [['City/YilanCounty', MID]] },   // 11/25 改每 15 分鐘：只有零星施工；先觀察原始筆數一週
   hsz:  { names: ['新竹市', '新竹縣'], box: [24.43, 24.95, 120.88, 121.42], tdx: [] },
   mlc:  { names: ['苗栗縣'], box: [24.25, 24.75, 120.62, 121.27], tdx: [['City/MiaoliCounty', SLOW]] },
   txg:  { names: ['臺中市', '台中市'], box: [23.99, 24.45, 120.46, 121.45], tdx: [['City/Taichung', FAST]] },
@@ -49,11 +50,12 @@ const CITIES = {
   cyi:  { names: ['嘉義市', '嘉義縣'], box: [23.20, 23.65, 120.10, 120.90], tdx: [['City/ChiayiCounty', SLOW], ['City/Chiayi', SLOW]] },
   tnn:  { names: ['臺南市', '台南市'], box: [22.88, 23.42, 120.03, 120.66], tdx: [['City/Tainan', FAST]] },
   khh:  { names: ['高雄市'], box: [22.47, 23.47, 120.17, 121.05], tdx: [['City/Kaohsiung', FAST]] },
-  pif:  { names: ['屏東縣'], box: [21.89, 22.89, 120.40, 120.92], tdx: [['City/PingtungCounty', FAST]] },
+  pif:  { names: ['屏東縣'], box: [21.89, 22.89, 120.40, 120.92], tdx: [['City/PingtungCounty', SLOW]] },   // 11/25 改每小時：11/24 實測 733 筆全是道路施工
   hun:  { names: ['花蓮縣'], box: [23.10, 24.38, 121.00, 121.78], tdx: [] },   // 11/24 放大（原本 25%：秀林、卓溪、萬榮西邊山區在框外）
   ttt:  { names: ['臺東縣', '台東縣'], box: [22.00, 23.45, 120.74, 121.60], tdx: [] }   // 11/24 放大（原本 3%：蘭嶼、南端）
 };
-const TDX_ROADS = [['Freeway', FAST], ['Highway', FAST]];
+// 省道 11/25 改每 15 分鐘：留下來的都是 0 筆（大多是轉載警廣），但可能有公路局自己的通報（坍方、封路），先觀察原始筆數一週
+const TDX_ROADS = [['Freeway', FAST], ['Highway', MID]];
 const TDX_TYPE = { 1: '事故', 2: '道路施工', 3: '阻塞', 4: '交通管制', 5: '其他', 6: '災害', 7: '交通管制', 8: '交通障礙' };
 
 // ---------- 連外 ----------
@@ -409,16 +411,26 @@ async function fetchTdxToken(env) {
   if (!j.access_token) throw new Error('token none');
   return j.access_token;
 }
-// 回 { status, json, calls, bytes }；400 時改取全部欄位（欄位名稱不被接受時）
-// calls／bytes 給 TDX 點數估算用（bytes 是解壓後的大小，比 TDX 實際計的只多不少）
+// 回 { status, json, calls, bytes, est }；400 時改取全部欄位（欄位名稱不被接受時）
+// calls／bytes 給 TDX 點數估算用。TDX 計費用的是「傳輸（壓縮後）」大小（11/25 對過會員中心：平均每次 10～16 KB），
+// 不是解壓後的大小（台北約 276 KB、屏東約 390 KB，大 20～30 倍；11/24 以前這樣記，會在月中誤觸 85% 降頻）。
+//   有 content-length 標頭 → 用它（est＝false）；
+//   讀不到（分段傳送、或 Cloudflare 自動解壓時拿掉）→ 解壓後大小 × TDX_ZIP_RATIO（est＝true，統計頁標「估計」）。
+// Workers 的 fetch 會自動解壓，拿不到壓縮後的原始位元組，所以沒有「自己數壓縮後位元組」這一層。
+const TDX_ZIP_RATIO = 0.04;   // 11/25 實測：壓縮後約 10.8 KB ÷ 解壓後約 270 KB
+function wireBytes(res, rawLen) {
+  const cl = parseInt(res && res.headers && res.headers.get('content-length'), 10);
+  if (cl >= 0 && isFinite(cl) && (cl > 0 || !rawLen)) return { bytes: cl, est: false };
+  return { bytes: Math.round((rawLen || 0) * TDX_ZIP_RATIO), est: true };
+}
 async function fetchTdxRaw(ep, tk) {
   const head = { 'Authorization': 'Bearer ' + tk, 'Accept': 'application/json', 'Accept-Encoding': 'gzip' };
   let calls = 1;
   let res = await get(TDX_BASE + ep + '?%24select=' + encodeURIComponent(TDX_SELECT) + '&%24format=JSON', { headers: head });
   if (res.status === 400) { calls++; res = await get(TDX_BASE + ep + '?%24format=JSON', { headers: head }); }
-  if (!res.ok) return { status: res.status, json: null, calls, bytes: 0 };
-  const buf = await res.arrayBuffer();
-  return { status: res.status, json: JSON.parse(new TextDecoder().decode(buf)), calls, bytes: buf.byteLength };
+  if (!res.ok) return { status: res.status, json: null, calls, bytes: 0, est: false };
+  const buf = await res.arrayBuffer(), w = wireBytes(res, buf.byteLength);
+  return { status: res.status, json: JSON.parse(new TextDecoder().decode(buf)), calls, bytes: w.bytes, est: w.est };
 }
 function tdxArea(L) {
   L = L || {};
@@ -436,11 +448,15 @@ function tdxCity(L) {
   const rw = L.CityRoad && L.CityRoad.Roadways && L.CityRoad.Roadways[0];
   return cityOfName((rw && rw.City) || (L.Intersection && L.Intersection.City) || (L.Address && L.Address.City) || '');
 }
-function parseTdx(d, cityKey, now, pick) {
+// rc（可不給）：記原始筆數 n、其中轉載警廣 pbs、非轉載的來源名稱 so（最多 3 個），給統計頁看「是不是全是轉載」
+function parseTdx(d, cityKey, now, pick, rc) {
   const src = Array.isArray(d) ? d : ((d && (d.Items || d.LiveEvents || d.Events)) || []), list = [];
+  if (rc) rc.n = src.length;
   src.forEach(x => {
+    if (isPbsCopy(x)) { if (rc) rc.pbs++; return; }
+    if (rc) { const so = cleanText(x && x.Source).slice(0, 20); if (so && rc.so.indexOf(so) < 0 && rc.so.length < 3) rc.so.push(so); }
     const m = isoTime(x.LastUpdateTime) || isoTime(x.PublishTime);
-    if (!m || !x.EventID || isPbsCopy(x)) return;
+    if (!m || !x.EventID) return;
     const ll = lonLat(x.Positions);
     const imp = x.Impact || {}, dur = imp.Duration && [].concat(imp.Duration)[0];
     const end = isoTime(x.ExpireTime) || (dur && isoTime(dur.DurationEndTime)) || null;
@@ -471,9 +487,10 @@ function tdxWant(sel) {
 }
 
 // ---------- TDX 點數（銅級每月 200 點；預算預設 120 點；Worker 與統計頁共用）----------
-// 點數＝呼叫次數 ÷ 1,500 ＋ 資料量(MB) ÷ 150（11/23 對過會員中心的數字）
+// 點數＝呼叫次數 ÷ 1,500 ＋ 壓縮後資料量(MB) ÷ 150；MB＝KB ÷ 1,024＝位元組 ÷ 1,048,576
+// （11/25 用會員中心 11/20～11/24 五天逐日代入，全部吻合到小數第 3 位；例：11/24＝2,468÷1,500＋26,771÷1,024÷150＝1.819）
 const TDX_BUDGET_DEFAULT = 120;
-function tdxPoints(u) { return u ? u.calls / 1500 + u.bytes / 1e6 / 150 : 0; }
+function tdxPoints(u) { return u ? u.calls / 1500 + u.bytes / 1048576 / 150 : 0; }
 function tdxBudget(env) { const b = parseFloat(env && env.TDX_BUDGET); return b > 0 ? b : TDX_BUDGET_DEFAULT; }
 // 'off'＝手動停用（Cloudflare 變數 TDX_OFF=1）；'pause'＝本月已用 95%，暫停 TDX 只抓警廣；'slow'＝已用 85%，每 3 分鐘的改成每小時
 function tdxMode(env, u) {
@@ -673,6 +690,7 @@ const GEO_NAME_KEY = k => 'geo:n:' + k;   // { n:地名（空字串＝OSM 查過
 const GEO_UA = 'paoche-ledger/1.0 (+https://app.realway.com.tw/privacy.html)';
 const GEO_MAX_ASK = 20;            // 手機一次最多問幾格
 const GEO_PEND_MAX = 400;          // 待查清單上限（滿了新的先不收，手機之後會再問）
+const GEO_NEW_MAX = 5;             // 每次請求最多新增幾格進待查（C3-06：有人用程式一直送新格子也灌不滿清單；其餘照樣回在 wait，手機約 90 秒後再問）
 const GEO_ROUND_MAX = 25;          // 排程每輪最多查幾筆
 const GEO_GAP_MS = 1150;           // 相鄰兩次對 OSM 的請求至少隔這麼久（官方上限 1 次／秒）
 const GEO_DAY_CAP = 1500;          // 一天最多對 OSM 查幾筆（也限制 KV 寫入）
@@ -735,8 +753,8 @@ async function geoAsk(kv, keys, now) {
     if (!pend || pend.v !== 1 || !pend.q) pend = { v: 1, q: {} };
     let added = 0;
     for (const k of miss) {
-      if (pend.q[k]) continue;
-      if (Object.keys(pend.q).length >= GEO_PEND_MAX) break;
+      if (pend.q[k]) continue;   // 已經在待查的不算在 GEO_NEW_MAX 裡
+      if (added >= GEO_NEW_MAX || Object.keys(pend.q).length >= GEO_PEND_MAX) break;
       pend.q[k] = { t: now, a: 0 }; added++;
     }
     if (added) { try { await kv.put(GEO_PEND_KEY, JSON.stringify(pend)); } catch (e) {} }   // 只有真的有新格子才寫
@@ -867,21 +885,57 @@ const CITY_NAMES = {}; for (const k in CITIES) CITY_NAMES[k] = CITIES[k].names[0
 const MODE_NAMES = { normal: '<span class="ok">正常</span>', slow: '<span class="bad">降頻（本月已用 85%：每 3 分鐘的改成每小時）</span>', pause: '<span class="bad">暫停（本月已用 95%：只抓警廣）</span>', off: '<span class="bad">手動停用（Cloudflare 變數 TDX_OFF=1）</span>', nokey: '<span class="bad">Worker 沒有設定 TDX 金鑰，只抓警廣</span>' };
 const kb = b => Math.round((b || 0) / 1024).toLocaleString('en-US') + ' KB';
 const pt = u => tdxPoints(u).toFixed(1);
+const n0 = x => (x || 0).toLocaleString('en-US');
+// 跟 TDX 會員中心對照用：呼叫次數÷1,500＋壓縮後 MB÷150（MB＝KB÷1,024），小數 3 位（會員中心也是 3 位）
+function tdxFormula(u) {
+  if (!u) return '—';
+  // 兩項各取 3 位再相加，算式看起來才對得上（跟精確值最多差 0.001，會員中心的 KB 本來就四捨五入過）
+  const kbv = Math.round((u.bytes || 0) / 1024), a = +(u.calls / 1500).toFixed(3), b = +(kbv / 1024 / 150).toFixed(3);
+  return n0(u.calls) + '÷1,500＋' + n0(kbv) + ' KB÷1,024÷150＝' + a.toFixed(3) + '＋' + b.toFixed(3) + '＝<b>' + (a + b).toFixed(3) + ' 點</b>';
+}
+// 有幾次的資料量是估計的（讀不到 content-length）
+const estNote = u => u && u.est ? '（其中 ' + n0(u.est) + ' 次資料量是估計值＝解壓後×' + TDX_ZIP_RATIO + '）' : '';
 // TDX 點數：今天、本月、上個月；各來源呼叫數與資料量
 function tdxHtml(snap) {
   const u = snap.tdx;
   if (!u) return '';
   const b = snap.budget || tdxBudget({}), used = tdxPoints(u);
-  let h = '<h2>TDX 點數（估算）</h2><p>模式：' + (MODE_NAMES[snap.mode] || '—') + '<br>本月（' + esc(u.mon) + '）：<b>' + pt(u) + ' 點</b> ／ 預算 ' + b + ' 點（' + Math.round(used / b * 100) + '%）' +
-    '　呼叫 ' + u.calls.toLocaleString('en-US') + ' 次、' + kb(u.bytes) + '<br>今天：' + pt(u.day) + ' 點（呼叫 ' + u.day.calls + ' 次、' + kb(u.day.bytes) + '）' +
+  let h = '<h2>TDX 點數（估算）</h2><p>模式：' + (MODE_NAMES[snap.mode] || '—') + '<br>本月（' + esc(u.mon) + '）：<b>' + pt(u) + ' 點</b> ／ 預算 ' + b + ' 點（' + Math.round(used / b * 100) + '%；85% 降頻、95% 暫停）' +
+    '　呼叫 ' + n0(u.calls) + ' 次、' + kb(u.bytes) + '<br>今天：' + pt(u.day) + ' 點（呼叫 ' + n0(u.day.calls) + ' 次、' + kb(u.day.bytes) + '）' +
     (u.prev ? '<br>上個月（' + esc(u.prev.mon) + '）：' + pt(u.prev) + ' 點' : '') + '</p>';
-  h += '<table><tr><th>來源</th><th>本月呼叫</th><th>本月資料量</th><th>平均每次</th><th>本月點數</th></tr>';
+  h += '<p><b>依 TDX 計費公式的估算點數（呼叫次數÷1,500＋壓縮後 MB÷150）</b>，對照會員中心用：<br>今天（' + esc((u.day && u.day.d) || '') + '）：' + tdxFormula(u.day) + estNote(u.day) +
+    '<br>本月（' + esc(u.mon) + '）：' + tdxFormula(u) + estNote(u) + '</p>';
+  h += '<table><tr><th>來源</th><th>本月呼叫</th><th>本月資料量（壓縮後）</th><th>平均每次</th><th>本月點數</th></tr>';
   Object.keys(u.ep).sort((x, y) => tdxPoints(u.ep[y]) - tdxPoints(u.ep[x])).forEach(k => {
     const e = u.ep[k];
-    h += '<tr><td>' + esc(SRC_NAMES[k] || k) + '</td><td>' + e.calls.toLocaleString('en-US') + '</td><td>' + kb(e.bytes) + '</td><td>' + (e.calls ? kb(e.bytes / e.calls) : '—') + '</td><td>' + pt(e) + '</td></tr>';
+    h += '<tr><td>' + esc(SRC_NAMES[k] || k) + '</td><td>' + n0(e.calls) + '</td><td>' + kb(e.bytes) + (e.est ? '（估）' : '') + '</td><td>' + (e.calls ? kb(e.bytes / e.calls) : '—') + '</td><td>' + pt(e) + '</td></tr>';
   });
-  h += '</table><p class="muted">點數＝呼叫次數÷1,500＋資料量(MB)÷150。資料量用解壓後的大小，只會比 TDX 實際計的多。每月仍要對照 TDX 會員中心的實際用量。' +
+  h += '</table><p class="muted">資料量是 TDX 計費用的壓縮後（傳輸）大小：有 content-length 就用它，讀不到才用解壓後×' + TDX_ZIP_RATIO + ' 估計（標「估」）。11/25 以前記的是解壓後大小，已換算成壓縮後並算估計值。' +
+    '會員中心每天凌晨才結算前一天，所以對照「昨天」最準，差 0.001 點以內算吻合；每月對照一次會員中心的呼叫次數與 KB。' +
     '收到 TDX「已使用 80%」的信：先看上表哪個來源用最多，再到 Cloudflare 後台 paoche-roads-worker 設變數 TDX_OFF=1（停用）或調 TDX_BUDGET。</p>';
+  return h;
+}
+// TDX 原始筆數（11/25 起）：每次抓回來幾筆、其中幾筆是轉載警廣（不收）、幾筆因過期或不在任何縣市被丟掉、留下幾筆
+// 用來判斷省道、宜蘭是不是可以再拉長到每小時：非轉載一直是 0 才拉長
+function rawHtml(snap) {
+  const raw = snap.raw;
+  if (!raw || !Object.keys(raw).length) return '';
+  const days = Object.keys(raw).sort().reverse(), avg = (x, f) => f ? (x / f).toFixed(1) : '—';
+  const sum = {};
+  days.forEach(d => { for (const k in raw[d]) { const e = raw[d][k], t = sum[k] || (sum[k] = { f: 0, n: 0, pbs: 0, kept: 0, mx: 0, so: [] }); t.f += e.f; t.n += e.n; t.pbs += e.pbs; t.kept += e.kept; t.mx = Math.max(t.mx, e.mx); (e.so || []).forEach(x => { if (t.so.indexOf(x) < 0 && t.so.length < 5) t.so.push(x); }); } });
+  let h = '<h2>TDX 原始筆數（最近 ' + days.length + ' 天）</h2><p class="muted">每次抓回來的平均筆數。「轉載警廣」不收（我們直接讀警廣）；「其他丟掉」是過期、沒時間、或不在任何縣市範圍。<b>「非轉載最多一次」一直是 0 的來源，才考慮再拉長間隔。</b></p>';
+  h += '<table><tr><th>來源</th><th>抓幾次</th><th>原始</th><th>轉載警廣</th><th>其他丟掉</th><th>留下</th><th>非轉載最多一次</th><th>非轉載的來源</th></tr>';
+  Object.keys(sum).sort((a, b) => (a === 'Highway' || a === 'City/YilanCounty' ? 0 : 1) - (b === 'Highway' || b === 'City/YilanCounty' ? 0 : 1) || (a < b ? -1 : 1)).forEach(k => {
+    const t = sum[k];
+    h += '<tr><td>' + esc(SRC_NAMES[k] || k) + '</td><td>' + n0(t.f) + '</td><td>' + avg(t.n, t.f) + '</td><td>' + avg(t.pbs, t.f) + '</td><td>' + avg(t.n - t.pbs - t.kept, t.f) + '</td><td>' + avg(t.kept, t.f) + '</td><td>' + (t.mx ? '<b>' + t.mx + '</b>' : '0') + '</td><td>' + esc(t.so.join('、') || '—') + '</td></tr>';
+  });
+  h += '</table>';
+  // 省道、宜蘭逐日
+  ['Highway', 'City/YilanCounty'].forEach(k => {
+    const rows = days.filter(d => raw[d][k]);
+    if (!rows.length) return;
+    h += '<p><b>' + esc(SRC_NAMES[k] || k) + ' 逐日</b>：' + rows.map(d => { const e = raw[d][k]; return esc(d.slice(5)) + ' 抓 ' + e.f + ' 次、非轉載最多 ' + e.mx + ' 筆'; }).join('；') + '</p>';
+  });
   return h;
 }
 // 各縣市筆數（全國資料依縣市分桶的結果；國道、省道跨縣市的會算進每個縣市）
@@ -961,12 +1015,12 @@ function page(snap, now, geo) {
   h += '<table><tr><th>來源</th><th>多久抓一次</th><th>最後成功</th><th>這一輪</th><th>連續失敗</th><th>' + (snap.v === 2 ? '全國筆數' : '雙北筆數') + '</th></tr>';
   for (const k in snap.src) {
     const s = snap.src[k];
-    h += '<tr><td>' + esc(SRC_NAMES[k] || k) + '</td><td>' + (s.p ? (s.p <= FAST ? '3 分鐘' : '每小時') : '—') + '</td><td>' + twHm(s.okAt) + '（' + ago(s.okAt, now) + '）</td><td>' + (s.ok ? '<span class="ok">成功</span>' : '<span class="bad">失敗 ' + esc(s.err) + '</span>') + '</td><td>' + (s.fails || 0) + '</td><td>' + (s.items ? s.items.length : 0) + '</td></tr>';
+    h += '<tr><td>' + esc(SRC_NAMES[k] || k) + '</td><td>' + (s.p ? (s.p <= FAST ? '3 分鐘' : s.p < 3600 ? Math.round(s.p / 60) + ' 分鐘' : '每小時') : '—') + '</td><td>' + twHm(s.okAt) + '（' + ago(s.okAt, now) + '）</td><td>' + (s.ok ? '<span class="ok">成功</span>' : '<span class="bad">失敗 ' + esc(s.err) + '</span>') + '</td><td>' + (s.fails || 0) + '</td><td>' + (s.items ? s.items.length : 0) + '</td></tr>';
   }
   if (!snap.tdxOn) h += '<tr><td colspan="6" class="bad">' + (snap.mode && snap.mode !== 'nokey' ? 'TDX 目前沒抓：' + (MODE_NAMES[snap.mode] || '') : 'Worker 沒有設定 TDX 金鑰，只抓警廣') + '</td></tr>';
   h += '</table>';
   h += hxHtml(snap.hx, now) + fwHtml(snap.fw, now);
-  if (snap.v === 2) h += cityHtml(snap) + tdxHtml(snap);
+  if (snap.v === 2) h += cityHtml(snap) + tdxHtml(snap) + rawHtml(snap);
 
   h += '<h2>每天</h2><table><tr><th>日期</th><th>會推幾批</th><th>候選件數</th><th>最密集 10 分鐘</th><th>重複件（警廣＋TDX 同一件）</th><th>推了之後被排除（1 小時內）</th><th>來源失敗次數</th><th>排程／App 備援 跑幾輪</th></tr>';
   keys.forEach(k => {
@@ -1014,7 +1068,7 @@ export async function onRequest(context) {
   if (new URL(req.url).searchParams.get('format') === 'json') {
     const src = {};
     for (const k in snap.src) { const s = snap.src[k]; src[k] = { ok: s.ok, at: s.at, okAt: s.okAt, err: s.err, fails: s.fails, p: s.p || null, n: s.items ? s.items.length : 0 }; }
-    const tdx = snap.tdx ? { mon: snap.tdx.mon, points: +tdxPoints(snap.tdx).toFixed(2), today: +tdxPoints(snap.tdx.day).toFixed(2), calls: snap.tdx.calls, bytes: snap.tdx.bytes, ep: snap.tdx.ep, prev: snap.tdx.prev || null } : null;
+    const tdx = snap.tdx ? { mon: snap.tdx.mon, points: +tdxPoints(snap.tdx).toFixed(2), today: +tdxPoints(snap.tdx.day).toFixed(2), calls: snap.tdx.calls, bytes: snap.tdx.bytes, est: snap.tdx.est || 0, day: snap.tdx.day || null, ep: snap.tdx.ep, prev: snap.tdx.prev || null, raw: snap.raw || null } : null;
     return new Response(JSON.stringify({ v: snap.v, at: snap.at, last: snap.last || null, runs: snap.runs, writes: snap.w, tdxOn: snap.tdxOn, mode: snap.mode || null, budget: snap.budget || null, tdx, src, hx: snap.hx || null, fw: snap.fw ? { ok: snap.fw.ok, at: snap.fw.at, okAt: snap.fw.okAt, err: snap.fw.err, n: snap.fw.n, unk: snap.fw.unk, slow: ((snap.fw.d && snap.fw.d.items) || []).length } : null, days: (snap.sim && snap.sim.days) || {}, geo }), { status: 200, headers: Object.assign({ 'Content-Type': 'application/json; charset=utf-8' }, HEAD) });
   }
   return new Response(page(snap, now, geo), { status: 200, headers: Object.assign({ 'Content-Type': 'text/html; charset=utf-8' }, HEAD) });
