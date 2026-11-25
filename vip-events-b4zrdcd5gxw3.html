@@ -2189,6 +2189,191 @@ var footerFine=document.querySelector('.footer-fine');if(footerFine)footerFine.t
   }
   mergeNov24FollowupForDrivers();
 
+
+  // 2026/11/25 晚間三份補查交叉去重；只加入可核實差異，保留原有 UI、座標及跨午夜顯示規則。
+  function mergeNov25OfficialCrosscheck() {
+    var S={
+      music:'https://ticket.mna.com.tw/UTK0201_?PRODUCT_ID=P1GIAJDO',
+      billboard:'https://www.billboardlivetaipei.tw/tw/events/goodband163braces-2026',
+      sweep:'https://td.police.gov.taipei/News_Content.aspx?n=B19CFD7B4346611D&s=4642980EA8713B57&sms=72544237BBE4C5F6',
+      comedy:'https://comedyclub.kktix.cc/events/competition2026',
+      road65:'https://www.thb.gov.tw/News_Content_Table.aspx?n=7839&s=309499&sms=13275',
+      kay:'https://td.police.gov.taipei/News_Content.aspx?n=B19CFD7B4346611D&s=C1D0522AD153F3C6&sms=72544237BBE4C5F6',
+      cityhall:'https://dot.gov.taipei/News_Content.aspx?n=D739A9F6B5C0AB95&s=496AF0ED5E6DBBB3&sms=72544237BBE4C5F6',
+      child:'https://www.opentix.life/event/2091776562129170433',
+      shuxi:'https://www.songshanculturalpark.org/exhibition',
+      sowal:'https://www.songshanculturalpark.org/exhibition/activity/a1f605c6-8310-4a35-a36d-b44f4df631fc',
+      summer:'https://xinyaomade.kktix.cc/events/summerfinaletaipei',
+      temple:'https://dot.gov.taipei/News_Content.aspx?n=D739A9F6B5C0AB95&s=97BB51FD04E552C3&sms=72544237BBE4C5F6',
+      wanhua:'https://dot.gov.taipei/News_Content.aspx?n=D739A9F6B5C0AB95&s=2476612B9D0652B2&sms=72544237BBE4C5F6',
+      yonghe:'https://www.yonghe.police.ntpc.gov.tw/cp-401-144601-15.html'
+    };
+    function find(day,token){
+      return Array.prototype.find.call(document.querySelectorAll('#day-panel-'+day+' .event-card'),function(card){
+        var name=card.querySelector('.event-name');return !!(name && name.textContent.indexOf(token)>=0);
+      });
+    }
+    function a(foot,url,label,klass){
+      if(!foot||!url)return;
+      if(Array.prototype.some.call(foot.querySelectorAll('a'),function(el){return el.href===url;}))return;
+      var el=document.createElement('a');el.className=klass||'source-link';el.href=url;el.target='_blank';el.rel='noopener noreferrer';el.textContent=label||'官方公告 ↗';foot.appendChild(el);
+    }
+    function activity(d,key,time,name,place,region,venue,url,detail,grade,nav){
+      var stack=document.querySelector('#day-panel-'+d+' .event-stack');if(!stack)return;
+      if(document.getElementById('ev-1125late-'+d+'-'+key)||find(d,name))return;
+      var card=document.createElement('article');card.id='ev-1125late-'+d+'-'+key;
+      card.className='event-card event-'+(grade||'A').toLowerCase();card.dataset.grade=grade||'A';card.dataset.source='OFFICIAL_20261125';
+      if(venue && Object.prototype.hasOwnProperty.call(VENUE_COORDS,venue))card.dataset.venue=venue;
+      var top=document.createElement('div');top.className='event-top';
+      var t=document.createElement('span');t.className='time-text';t.textContent=time;top.appendChild(t);
+      var bg=document.createElement('span');bg.className='badge badge-'+(grade||'A').toLowerCase();bg.textContent=grade==='B'?'B 新聞資料':'A 官方／售票';top.appendChild(bg);
+      var n=document.createElement('div');n.className='event-name';n.textContent=name;
+      var p=document.createElement('div');p.className='event-place';var dot=document.createElement('span');dot.className='place-dot';dot.setAttribute('aria-hidden','true');p.appendChild(dot);p.appendChild(document.createTextNode(place));
+      var body=document.createElement('p');body.className='event-note';body.textContent=detail;
+      var foot=document.createElement('div');foot.className='event-footer';a(foot,url,'活動／官方公告 ↗');
+      if(nav!==false){var link=document.createElement('a');link.className='nav-link';link.textContent='📍 導航';link.href='https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(place)+'&travelmode=driving';link.target='_blank';link.rel='noopener noreferrer';foot.appendChild(link);}
+      card.appendChild(top);card.appendChild(n);card.appendChild(p);card.appendChild(body);card.appendChild(foot);stack.appendChild(card);
+      var rp=document.getElementById('region-panel-'+region);if(rp)rp.setAttribute('data-event-refs',((rp.getAttribute('data-event-refs')||'')+' '+card.id).trim());
+    }
+    function traffic(id,title,time,body,url,until,secondary){
+      if(document.getElementById(id))return;
+      var parent=document.querySelector('#traffic .traffic-list');if(!parent)return;
+      var card=document.createElement('article');card.className='traffic-card';card.id=id;card.dataset.source='OFFICIAL_20261125';card.dataset.visibleUntil=until;
+      var head=document.createElement('div');head.className='traffic-head';var ico=document.createElement('span');ico.className='traffic-icon';ico.textContent='!';ico.setAttribute('aria-hidden','true');var h=document.createElement('h3');h.textContent=title;head.appendChild(ico);head.appendChild(h);
+      var status=document.createElement('p');status.className='traffic-status';status.textContent='A 官方交通公告';
+      var tm=document.createElement('p');tm.className='traffic-time';tm.textContent=time;
+      var desc=document.createElement('p');desc.className='traffic-body';desc.textContent=body;
+      var foot=document.createElement('div');foot.className='event-footer';a(foot,url,'官方交通公告 ↗');if(secondary)a(foot,secondary,'補充官方公告 ↗');
+      card.appendChild(head);card.appendChild(status);card.appendChild(tm);card.appendChild(desc);card.appendChild(foot);parent.prepend(card);
+    }
+    function updateEvent(day,token,opt){
+      var card=find(day,token);if(!card)return;
+      var n=card.querySelector('.event-note');if(n && opt.note)n.textContent=opt.note;
+      var tm=card.querySelector('.time-text');if(tm && opt.time)tm.textContent=opt.time;
+      var h=card.querySelector('.event-name');if(h && opt.name)h.textContent=opt.name;
+      a(card.querySelector('.event-footer'),opt.url,opt.linkLabel);
+    }
+    function updateTraffic(id,text,url,replace){
+      var card=document.getElementById(id);if(!card)return;
+      var body=card.querySelector('.traffic-body');if(body){
+        if(replace)body.textContent=text;
+        else if(body.textContent.indexOf(text.slice(0,25))<0)body.textContent+=' '+text;
+      }
+      a(card.querySelector('.event-footer'),url,'11/25 最新交管公告 ↗');
+    }
+    function urgent(id,title,detail,href,until){
+      var parent=document.querySelector('#urgent-traffic .urgent-links');if(!parent||document.getElementById(id))return;
+      var card=document.createElement('a');card.id=id;card.className='urgent-link';card.href=href;card.dataset.visibleUntil=until;
+      var t=document.createElement('strong');t.textContent=title;var d=document.createElement('small');d.textContent=detail;card.appendChild(t);card.appendChild(d);parent.prepend(card);
+    }
+    // 11/25: 場館已公告而舊版漏列的兩場晚間演出。
+    activity(25,'utopia','19:45 開演・散場未公布','指揮巨星庫倫奇斯與烏托邦管弦樂團首度訪臺',
+      '國家音樂廳（中正區・中山南路21-1號）',5,'國家兩廳院',S.music,
+      '官方售票公告11/25 19:45開演，標示售罄；未公布正式散場時間，不能直接用演出時長代替。','A');
+    activity(25,'billboard','18:00入場／19:30開演・散場未公布','Billboard Live TAIPEI 一週年盛典｜好樂團 × 163braces',
+      'Billboard Live TAIPEI（信義區・松壽路12號 ATT 4 FUN 7樓）',0,'',S.billboard,
+      '場館官方確認11/25 19:30開演，節目宣傳約120分鐘，但不代表21:30確定散場；附近交通仍請依現場狀況。','A');
+    // 11/26: 車隊為動態行經道路，不標成所有行政區全面封路或固定散場點。
+    activity(26,'sweep-a','09:00～17:00（車隊掃街）','11/26 蔣萬安車隊掃街｜大安・文山・南港・內湖',
+      '大安、文山、南港、內湖主要道路（動態行經）',5,'',S.sweep,
+      '臺北市交通警察大隊公告移動式車隊掃街，依現場彈性調整號誌及交通疏導；不是全區道路封閉，亦無單一排班接送點。','A',false);
+    activity(26,'sweep-b','09:00～17:00（車隊掃街）','11/26 沈伯洋車隊掃街｜中山・大同・士林・北投',
+      '中山、大同、士林、北投主要道路（動態行經）',5,'',S.sweep,
+      '臺北市交通警察大隊公告移動式車隊掃街，依現場彈性調整號誌及交通疏導；不是全區道路封閉，亦無單一排班接送點。','A',false);
+    activity(26,'comedy','19:30 開演・散場未公布','2026台北喜劇節・卡米地站立喜劇爭霸賽 初賽A場',
+      'Comedy Plus 卡米地＋（中山區・復興北路480號B1）',4,'',S.comedy,
+      '主辦KKTIX公布11/26 19:30初賽A場；散場時間未公布。','A');
+    // 11/28、29：已有的市集、青山王祭演出沿用卡片；只有缺的場次才新增。
+    activity(28,'rabbit-afternoon','14:30 開演・散場未公布','愛樂劇工廠兒童歌舞劇《新龜兔賽跑》PLUS',
+      '臺北市政大樓親子劇場（信義區・市府路1號2樓）',0,'',S.child,
+      'OPENTIX官方11/28 14:30場；市府路同時有選舉相關交管，請勿誤認為本劇自行封路。','A');
+    activity(29,'rabbit-morning','10:30 開演・散場未公布','愛樂劇工廠兒童歌舞劇《新龜兔賽跑》PLUS（上午場）',
+      '臺北市政大樓親子劇場（信義區・市府路1號2樓）',0,'',S.child,
+      'OPENTIX官方11/29 10:30場。市府路交通管制預定凌晨04:00結束，實際通車依現場。','A');
+    activity(29,'rabbit-afternoon','14:30 開演・散場未公布','愛樂劇工廠兒童歌舞劇《新龜兔賽跑》PLUS（下午場）',
+      '臺北市政大樓親子劇場（信義區・市府路1號2樓）',0,'',S.child,
+      'OPENTIX官方11/29 14:30場；未公告實際散場。','A');
+    activity(28,'shuxi','13:00～19:00（市集時段）','舒喜市集・台灣故鄉祭',
+      '松山文創園區北向製菸工廠（信義區）',0,'松山文創園區',S.shuxi,
+      '松菸場館行事曆確認11/28～29展期，11/28市集活動分散進出；不代表19:00全員同時散場。','A');
+    activity(29,'sowal','10:30～16:00（主辦表定）','【Sowal 語你爭霸】115年原住民族語線上遊戲電競賽',
+      '松山文創園區多功能展演廳（信義區）',0,'松山文創園區',S.sowal,
+      '松山文創園區官方11/29單日活動，族語電競決賽；16:00為主辦列示活動結束，不是保證同時散場。','A');
+    activity(29,'summer','14:30 VIP入場／15:00一般入場／15:30開演','夏末限定 台北 Fan Concert（延期場）',
+      '凝聚力音樂娛樂 Cohesion Space（松山區・八德路三段106巷1號B1）',5,'',S.summer,
+      '主辦售票頁確認11/29 15:30開演，原9/12場次延期至本日；演後福利可能分批離場，實際散場未公布。','A');
+    // 精準更新原有活動，不把單獨交管當成第二場晚會。
+    updateEvent(27,'「光榮臺北・團結向前」',{url:S.kay,linkLabel:'中正一分局分階段封路 ↗',
+      note:'11/27 18:00入場、19:00開始；實際散場未公布。警方11/25公告：11/26 22:00起凱道中山南路至公園路（不含兩端路口）雙向全線封閉，11/27 10:00起仁愛路部分車道及景福門西側外環一車道管制，18:00後視人潮彈性擴大；預計11/28 08:00撤場後恢復，非晚會散場時間。中山南路指定停車格另有禁停。'});
+    updateEvent(27,'李四川選前之夜',{time:'19:30（媒體所列開場）・散場未公布',url:'https://news.tvbs.com.tw/politics/4055922',linkLabel:'活動時間報導 ↗'});
+    updateEvent(28,'蔣萬安市府前開票之夜',{url:S.cityhall,linkLabel:'15線公車／4站公告 ↗',
+      note:'開票活動實際開始與散場未公布。市府路（松高～松壽）11/27 22:00～11/29 04:00交管，南環幹線、承德幹線等15線公車改道、4站取消停靠；與仁愛路14線／9站公車措施（至11/28 14:00）是兩份不同公告。管制範圍內計程車招呼站及營業用共用臨停區停用。'});
+    updateEvent(28,'2026 艋舺青山王祭・南萬華暗訪',{url:S.wanhua,linkLabel:'11/28環河南路管制公告 ↗',
+      note:'尊王16:00起駕，實際回鑾未公布；11/28 15:00～24:00環河南路／和平西路北向實施交通管制，部分公車取消龍山國小（往北）、萬華分局（往東）站停靠。為指定方向及時段，不代表南萬華全部道路封閉。另西園路一段指定大型車格禁停至11/30。'});
+    updateEvent(29,'青山王祭市府藝文展演・西門六號出口',{url:S.wanhua,linkLabel:'成都路／漢中街交管公告 ↗',
+      note:'11/29 18:00藝文展演，散場未公布；成都路（中華路～西寧南路）18:30～22:00全線封閉，漢中街（長沙街二段～成都路）19:30～22:00北向管制；西門市場（成都往西）、西門市場（漢中往北）站位不停靠。此為道路管制時段，不是演出保證散場時間。'});
+    updateEvent(29,'2026 艋舺青山王祭・北萬華暗訪',{url:S.wanhua,linkLabel:'11/29萬華交通公告 ↗',
+      note:'北萬華暗訪沿主辦路關進行，實際回鑾未公布；11/29成都路18:30～22:00、漢中街北向19:30～22:00另有藝文展演交通管制，不能視為整條暗訪路線同時封閉。'});
+    // 獨立且有官方起訖的管制；站內分流與個別格位禁停仍保留原頁分類。
+    traffic('traffic-20261125-kay-closure','11/26 22:00起凱道封路｜11/27選前之夜分階段管制',
+      '第一階段11/26 22:00；第二階段11/27 10:00；第三階段11/27 18:00後視人潮啟動；預計11/28 08:00撤場後解除',
+      '凱道中山南路（不含）至公園路（不含）雙向全線封閉；11/27 10:00起增仁愛路中山南路～林森南路部分快車道／公車道及景福門西側外環外側1車道。18:00後可能依人潮擴至景福門、中山南路、信義路及常德街等，並非全部必然同時封閉；11/28 08:00是預計撤場解封，非活動散場。',S.kay,'2026-11-28T08:30');
+    traffic('traffic-20261125-cityhall-buses','11/27晚～29凌晨市府路封路｜15線公車改道、4站不停靠',
+      '11/27（五）22:00～11/29（日）04:00（視現場調整）',
+      '市府路（松高路至松壽路）配合集會進撤場管制，南環幹線、承德幹線等15條公車改道，市政府（市府）等4站取消停靠；管制區內計程車招呼站、營業用共用臨停區停用。注意：仁愛路14線改道、9站不停靠的公告至11/28 14:00，不能當作市府路全部解封時間。',S.cityhall,'2026-11-29T04:30');
+    traffic('traffic-20261125-wanhua-roads','11/28～29 青山王祭：環河南路、成都路、漢中街分時交通管制',
+      '11/28 15:00～24:00：環河南路／和平西路北向；11/29 18:30～22:00：成都路；19:30～22:00：漢中街北向',
+      '11/28配合暗訪環河南路／和平西路北向管制；11/29成都路（中華路～西寧南路）全線封閉、漢中街（長沙街二段～成都路）北向管制，取消部分公車站停靠。非萬華全區及全路關封路，請以現場警察指揮為準。',S.wanhua,'2026-11-30T00:30');
+    traffic('traffic-20261125-nangang-temple','11/28 南港成福路269巷廟會｜6線公車改道',
+      '11/28（六）16:30～19:30',
+      '成福路269巷臨1之10號至1-4號前道路交通管制；32、仁愛幹線、286（含副線）、藍10、藍22、88（含區間車）等6線公車改道，成福、成福宮、南港花園社區二等3站受影響。工務禁挖範圍不代表全線封路。',S.temple,'2026-11-28T20:00');
+    traffic('traffic-20261125-65-night','11/26深夜台65線板橋～新莊雙向分時施工封閉',
+      '11/26 23:00～11/27 02:00北上部分路段；11/27 02:00～06:00南下部分路段（遇雨順延）',
+      '公路局公告：北上4K+550～4K+000於23:00～02:00封閉；南下3K+330～7K+500於02:00～06:00管制，含新莊二4K南下匝道。勿把雙向時段合併成整夜全線同時封閉，路線以現場導引為準。',S.road65,'2026-11-27T06:30');
+    traffic('traffic-20261125-26-sweep','11/26 白天雙方臺北市長候選人車隊掃街｜彈性號誌',
+      '11/26（四）09:00～17:00（視車隊行經狀況調整）',
+      '蔣萬安車隊行經大安／文山／南港／內湖；沈伯洋車隊行經中山／大同／士林／北投。警方只公告移動式交通疏導，並非八區道路全線封閉，沿線逐路口時間未公布。',S.sweep,'2026-11-26T17:30');
+    traffic('traffic-20261125-yonghe-vote','11/28 永和區選舉當日｜部分道路彈性人車管制',
+      '11/28（六）依現場交通及人潮狀況機動調整，固定起訖時刻未公布',
+      '永和分局公告永平路、中山路二段2巷、中山路、環河西路圍合區域，及中正橋、新北環快、保生路匝道周邊必要時實施彈性人車管制；未公告整區全時封閉，請依員警現場指揮。',S.yonghe,'2026-11-29T00:00');
+    // 11/25 夜間即時路況由公路局及警廣核實：同日不同道路不混為一筆。
+    traffic('traffic-20261125-road3','11/25～29 台3線20～22K夜間分段銑鋪施工',
+      '11/25～29每日21:00～翌日06:00；已確認11/25 21:00～11/26 06:00北上21.846～20.96K封閉',
+      '公路局公告台3線20～22K將分段施工；僅11/25北上21.846～20.96K的具體封閉位置已核實。其他日期詳細區段依每日公告與現場導引，不代表雙向20～22K每晚全部封閉。',
+      'https://www.thb.gov.tw/News168_Content.aspx?n=5964&s=83630','2026-11-30T06:30');
+    traffic('traffic-20261125-road64','今晚台64線東向25K～28.4K夜間施工封閉',
+      '11/25（三）22:00～11/26（四）06:00（遇雨順延）',
+      '台64線往秀朗橋方向東行25K～28.4K夜間交通管制，公路局與警廣建議由中和區中正路、景平路接秀朗橋；回程及其他方向不應誤認全部同時封閉。',
+      'https://www.pbs.gov.tw/cht/index.php?code=list&gaa=&gcy=%E6%96%B0%E5%8C%97%E5%B8%82&ids=30','2026-11-26T06:30');
+    [28,29].forEach(function(d){
+      var dome=find(d,'F✦FOREVER');if(!dome)return;
+      var note=dome.querySelector('.event-note');
+      if(note && note.textContent.indexOf('加開2線接駁車')===-1)note.textContent+=' 臺北大巨蛋官方行事曆標示加開2線接駁車；實際站點、發車時間依官方最新公告，不能由此推估演唱會散場。';
+      a(dome.querySelector('.event-footer'),'https://www.taipeidome.com.tw/Web/Dome/Calendar/','場館接駁資訊 ↗');
+    });
+    urgent('urgent-1125-night64','今晚22:00起台64東行封閉','25K～28.4K施工至翌日06:00，遇雨順延','#traffic-20261125-road64','2026-11-26T06:30');
+    // 原有交通提醒與排行改成最新官方差異，但不重新虛構「前10名」名次或接單量。
+    updateTraffic('traffic-20261123-ximen-qingshan',
+      '11/29成都路（中華路～西寧南路）18:30～22:00全線封閉；漢中街（長沙街二段～成都路）19:30～22:00北向管制。西門市場兩方向站位不停靠。此為警方／公運處公告的逐段時程，並非藝文展演確切散場。',S.wanhua,true);
+    updateTraffic('traffic-1127-election-rallies',
+      '凱道11/26 22:00起雙向全線封閉（中山南路～公園路不含兩端路口）；11/27 10:00起仁愛路部分車道及景福門外環一車道管制，18:00後依人潮彈性擴大。預計11/28 08:00撤場後恢復，並非演出散場時間。板橋第一、第二運動場的選前集會另依當地警方交管，不應套用凱道管制時刻。',S.kay,true);
+    var oldRally=document.getElementById('traffic-1127-election-rallies');
+    if(oldRally){
+      var officialStatus=oldRally.querySelector('.traffic-status');if(officialStatus)officialStatus.textContent='A 中正一分局11/25凱道交管；板橋活動時間為B新聞';
+      var officialTime=oldRally.querySelector('.traffic-time');if(officialTime)officialTime.textContent='11/26 22:00起凱道；11/27 10:00起部分車道；18:00後視人潮擴大；預計11/28 08:00恢復';
+    }
+    updateTraffic('traffic-20261123-xinyi-4phase',
+      '道路依四階段管制仁愛路、逸仙路、新仁愛路與市府路，並非全部路段全時同時封閉。11/25 09:30～11/28 14:00仁愛路另有14條公車路線改道、9個站位不停靠；11/27 22:00～11/29 04:00市府路（松高～松壽）另有15線改道、4站不停靠。公車配套時間不可當作整體道路解封，計程車招呼站及共用臨停區停用。',S.cityhall,true);
+    urgent('urgent-1125-kay-full','11/26 22:00起凱道封路','11/27 10:00起增仁愛路部分車道，18:00後可能擴大','#traffic-20261125-kay-closure','2026-11-28T08:30');
+    urgent('urgent-1125-cityhall-bus','11/27 22:00起市府路管制','15線公車改道／4站不停靠；計程車招呼站停用','#traffic-20261125-cityhall-buses','2026-11-29T04:30');
+    urgent('urgent-1125-wanhua-road','青山王祭分日封路','11/28環河南路北向；11/29成都路、漢中街分時管制','#traffic-20261125-wanhua-roads','2026-11-30T00:30');
+    [25,26,27,28,29].forEach(function(d){var panel=document.getElementById('day-panel-'+d);if(!panel)return;var count=panel.querySelector('.panel-intro span');if(count)count.textContent='共 '+panel.querySelectorAll('.event-card').length+' 筆日期資訊';});
+    document.querySelectorAll('#areas .region-panels .tab-panel').forEach(function(panel){var target=panel.querySelector('.event-stack');if(target)target.replaceChildren();panel.removeAttribute('data-rendered');});
+    var stamp=document.querySelector('.update-stamp time');if(stamp){stamp.setAttribute('datetime','2026-11-25');stamp.textContent='最後更新 11/25｜當日官方交通公告與演出補查';}
+    var bottom=document.querySelector('.footer-fine');if(bottom)bottom.textContent='資訊更新：2026/11/25（臺灣時間）｜集會活動、道路封閉、公車改道與指定格位禁停分別列示；實際散場未公布時不自行斷定。依現場警方指揮。© 2026 跑車人生記帳本 · VIP 專屬';
+  }
+  mergeNov25OfficialCrosscheck();
+
   // 交通管制項目只在標題能確定單一場館時對應；跨區遊行不任意選擇其中一個座標。
   function venueForTrafficCard(card) {
     var heading=card.querySelector('h3');
