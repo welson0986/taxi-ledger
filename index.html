@@ -9414,6 +9414,168 @@ function yearReportCsv(year){
   }
   return '﻿'+lines.map(function(l){ return l.map(csvCell).join(','); }).join('\r\n');
 }
+/* ---------- 逐筆明細 CSV (G5, free: the driver's own records, no analysis) ----------
+   One row per entry: every income record (每趟、預約單、接電、活動獎勵、小費), every 取消費, every expense, and every
+   過路費退款 typed on the payout page for a whole batch. The money is counted as the analysis page counts it, so the
+   file adds up to the same numbers: 車資 = computeGrossRevenue, 實收 = computeNetRevenue + 小費, 平台手續費 = 車資 + 小費 −
+   實收 − 自己吸收的優惠券; 過路費退款 as tollRefundInRange (a trip's own toll unless its batch was typed in as a whole).
+   Locations and free text (備註、地名、活動) are only added when the driver ticks them; nothing here is kept in the
+   ledger. Text a spreadsheet would run as a formula gets a leading '; numbers stay numbers (a negative one too).
+   The file cannot be restored: the backup file is the way back. */
+var lcsvView = null;   // {from, to, loc, note} while the sheet is open
+var LCSV_COLS = [
+  ['date','營業日'],['actDate','實際日期'],['actTime','實際時間'],['pickTs','上車時間'],['dropTs','下車時間'],['recTs','記帳時間'],['late','補記'],
+  ['io','收支'],['kind','類型'],['fleet','車隊/平台'],['subtype','車種/屬性'],['fareType','計價方式'],['payment','付款方式'],['detail','細項'],
+  ['gross','車資/金額'],['tip','小費'],['fee','平台手續費'],['absorb','優惠券(自己吸收)'],['net','實收'],['toll','過路費退款'],
+  ['cat','支出類別'],['exp','支出金額'],['est','估算'],['km','這趟公里數'],['qty','加油公升/充電度數'],['id','識別碼'],
+  ['pickLat','上車緯度','loc'],['pickLng','上車經度','loc'],['dropLat','下車緯度','loc'],['dropLng','下車經度','loc'],['place','地名','loc'],
+  ['note','備註','note']];
+function lcsvCols(opt){ return LCSV_COLS.filter(function(c){ return !c[2] || (opt && opt[c[2]]); }); }
+// a text cell a spreadsheet would read as a formula (or a cell that starts with a tab / line break) gets a leading '
+function csvSafeText(v){ v = v==null ? '' : String(v); return /^[=+\-@\t\r\n]/.test(v) ? "'"+v : v; }
+function lcsvField(v){
+  if(typeof v==='number') return isFinite(v) ? String(v) : '';
+  v = csvSafeText(v);
+  return /[",\r\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v;
+}
+function lcsvMoney(x){ x = Math.round((+x||0)*100)/100; return x===0 ? 0 : x; }
+function lcsvTime(ts){ if(!ts) return ''; var d = new Date(ts); return pad(d.getHours())+':'+pad(d.getMinutes()); }
+var LCSV_CX_BY = {p:'乘客取消', d:'司機取消'};
+function lcsvIncomeRow(r, tollAll){
+  var def = platformDef(r.platform), cx = isCancelFeeRec(r) ? cancelOfFeeRec(r.id) : null;
+  var kind = isCancelFeeRec(r) ? '取消費' : r.platform==='bonus' ? '活動獎勵' : def.tipOnly ? '小費' : r.platform==='reservation' ? '預約單' : r.platform==='phonecall' ? '接電' : '每趟';
+  var fleet = bonusLike(r) ? (r.bonusPlatform ? platformDef(r.bonusPlatform).label : '') : r.platform==='reservation' ? (r.subPlatform||'') : def.tipOnly ? '' : def.label;
+  // 補記: entered on a later business day than its own (as 時段分析 counts it), or a 取消 added afterwards
+  var late = isCancelFeeRec(r) ? !!(cx && !cx.acceptId) : !!(r.ts && businessDayOf(r.ts)!==r.date);
+  var p = r.pickup||{}, d = r.dropoff||{};
+  // when it really happened: the pick-up, else the cancel time, else the moment it was written down (unknown for a 補記)
+  var at = p.ts || (isCancelFeeRec(r) ? r.ts : (late ? null : r.ts));
+  var g = computeGrossRevenue(r), tip = +r.tip||0, n = computeNetRevenue(r), ab = r.couponType==='absorb' ? (+r.coupon||0) : 0;
+  var toll = 0;
+  if(r.tollRefund>0){ var tb = payoutBatchOf(r); if(!(tb && tollAll[tb.id] && +tollAll[tb.id].amount>0)) toll = +r.tollRefund; }
+  return {date:r.date, at:at, sortTs:at||r.ts||0, actDate:at ? toDateStr(new Date(at)) : '', actTime:lcsvTime(at),
+    pickTs:p.ts ? fmtTs(p.ts) : '', dropTs:d.ts ? fmtTs(d.ts) : '', recTs:fmtTs(r.ts), late:late ? '補記' : '',
+    io:'收入', kind:kind, fleet:fleet, subtype:r.subtype||'', fareType:r.fareType||'', payment:r.payment||'',
+    detail:r.platform==='bonus' ? (r.bonusType||'') : isCancelFeeRec(r) ? (cx ? (LCSV_CX_BY[cx.by]||'未註明誰取消') : '') : (r.estimateType||''),
+    // 優惠券、過路費退款 only on the trips that have one (blank adds up as 0)
+    gross:lcsvMoney(g), tip:lcsvMoney(tip), fee:lcsvMoney(g-n-ab), absorb:ab ? lcsvMoney(ab) : '', net:lcsvMoney(n+tip), toll:toll ? lcsvMoney(toll) : '',
+    cat:'', exp:'', est:isNetEntryRec(r) ? '估' : '', km:tripKmOf(r)!=null ? tripKmOf(r) : '', qty:'', id:r.id||'',
+    pickLat:p.lat!=null ? +p.lat : '', pickLng:p.lng!=null ? +p.lng : '', dropLat:d.lat!=null ? +d.lat : '', dropLng:d.lng!=null ? +d.lng : '',
+    place:r.area||'', note:[r.event, r.note].filter(function(x){ return x; }).join(' · '),
+    _n:n+tip, _g:g, _tip:tip, _fee:g-n-ab, _toll:toll};
+}
+function lcsvExpenseRow(e){
+  var late = !!(e.ts && businessDayOf(e.ts)!==e.date), at = late ? null : (e.ts||null);
+  var qty = e.category==='fuel' && +e.liters>0 ? +e.liters : (+e.kwh>0 ? +e.kwh : '');
+  return {date:e.date, at:at, sortTs:e.ts||0, actDate:at ? toDateStr(new Date(at)) : '', actTime:lcsvTime(at), pickTs:'', dropTs:'', recTs:fmtTs(e.ts), late:late ? '補記' : '',
+    io:'支出', kind:'支出', fleet:'', subtype:'', fareType:'', payment:'', detail:e.sub||'',
+    gross:'', tip:'', fee:'', absorb:'', net:'', toll:'', cat:catInfo(e.category).label, exp:lcsvMoney(e.amount), est:'', km:'', qty:qty, id:e.id||'',
+    pickLat:'', pickLng:'', dropLat:'', dropLng:'', place:'', note:e.note||'', _exp:+e.amount||0};
+}
+function lcsvData(from, to){
+  var tollAll = state.tollRefunds || {}, rows = [];
+  recordsInRange(from, to).forEach(function(r){ rows.push(lcsvIncomeRow(r, tollAll)); });
+  expensesInRange(from, to).forEach(function(e){ rows.push(lcsvExpenseRow(e)); });
+  // a 過路費退款 typed on the payout page for a whole batch (it stands in for that batch's trips' own tolls)
+  Object.keys(tollAll).sort().forEach(function(k){
+    var x = tollAll[k]; if(!(x && +x.amount>0 && x.date && inRange(x.date, from, to))) return;
+    rows.push({date:x.date, at:null, sortTs:0, actDate:'', actTime:'', pickTs:'', dropTs:'', recTs:'', late:'', io:'退款', kind:'過路費退款',
+      fleet:x.platform ? platformDef(x.platform).label : '', subtype:'', fareType:'', payment:'', detail:'撥款頁填的整批退款',
+      gross:'', tip:'', fee:'', absorb:'', net:'', toll:lcsvMoney(x.amount), cat:'', exp:'', est:'', km:'', qty:'', id:'toll|'+k,
+      pickLat:'', pickLng:'', dropLat:'', dropLng:'', place:'', note:'', _toll:+x.amount});
+  });
+  rows.sort(function(a, b){ return a.date<b.date ? -1 : a.date>b.date ? 1 : (a.sortTs-b.sortTs); });
+  var s = {n:rows.length, inc:0, cx:0, exp:0, toll:0, gross:0, tip:0, fee:0, net:0, expAmt:0, tollAmt:0, est:0, late:0};
+  rows.forEach(function(r){
+    if(r.io==='收入'){ if(r.kind==='取消費') s.cx++; else s.inc++; s.gross += r._g; s.tip += r._tip; s.fee += r._fee; s.net += r._n; if(r.est) s.est++; }
+    else if(r.io==='支出'){ s.exp++; s.expAmt += r._exp; }
+    else s.toll++;
+    s.tollAmt += (r._toll||0);
+    if(r.late) s.late++;
+  });
+  return {rows:rows, sum:s};
+}
+function ledgerCsv(from, to, opt){
+  var cols = lcsvCols(opt), d = lcsvData(from, to);
+  var lines = [cols.map(function(c){ return c[1]; })].concat(d.rows.map(function(r){ return cols.map(function(c){ return r[c[0]]; }); }));
+  return '﻿'+lines.map(function(l){ return l.map(lcsvField).join(','); }).join('\r\n')+'\r\n';
+}
+function lcsvFileName(v){ return '跑車人生_逐筆明細_'+v.from+'_'+v.to+'.csv'; }
+function lcsvRangeOf(k){
+  var t = todayStr(), y = t.slice(0,4), m = new Date(+y, +t.slice(5,7)-1, 1);
+  if(k==='prev'){ var pm = new Date(m.getFullYear(), m.getMonth()-1, 1); return monthRange(pm); }
+  if(k==='year') return {from:y+'-01-01', to:t};
+  if(k==='all') return {from:dataFirstDate()||t, to:t};
+  return monthRange(m);
+}
+function lcsvPreviewHtml(){
+  var v = lcsvView, d = lcsvData(v.from, v.to), s = d.sum, cols = lcsvCols(v);
+  var h = '<div class="card" style="padding:12px 14px;margin-bottom:10px">';
+  h += '<div style="font-size:13px;font-weight:700;margin-bottom:8px">共 <span class="num" id="lcsv-n">'+s.n+'</span> 筆'+
+    (s.n ? '(收入 '+s.inc+(s.cx ? '、取消費 '+s.cx : '')+'、支出 '+s.exp+(s.toll ? '、過路費退款 '+s.toll : '')+')' : '')+'</div>';
+  h += '<div class="summary-row" style="grid-template-columns:1fr 1fr;margin-bottom:8px">'+
+    '<div class="stat-tile"><div class="lbl">收入(車資＋小費)</div><div class="val num">'+fmtMoney(s.gross+s.tip)+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">實收</div><div class="val income num" id="lcsv-net">'+fmtMoney(s.net)+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">平台手續費</div><div class="val expense num">'+fmtMoney(s.fee)+'</div></div>'+
+    '<div class="stat-tile"><div class="lbl">支出</div><div class="val expense num" id="lcsv-exp">'+fmtMoney(s.expAmt)+'</div></div></div>';
+  if(s.tollAmt>0) h += '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.5;margin-bottom:6px">過路費退款 '+fmtMoney2(s.tollAmt)+' 另列一欄(分析頁的總支出已扣掉它)。</div>';
+  if(s.est) h += '<div style="font-size:11.5px;color:var(--text-muted);line-height:1.5;margin-bottom:6px">有 '+s.est+' 筆記的是實收,車資和手續費是用你設定的 % 反推的,「估算」欄標「估」。</div>';
+  h += '<div style="font-size:12px;font-weight:700;margin:8px 0 4px">會匯出的欄位('+cols.length+' 欄)</div>'+
+    '<div id="lcsv-cols" style="font-size:11.5px;color:var(--text-muted);line-height:1.7">'+cols.map(function(c){ return esc(c[1]); }).join('、')+'</div>';
+  h += '</div>';
+  return h;
+}
+function openLedgerCsvModal(){
+  if(!lcsvView){ var r0 = lcsvRangeOf('month'); lcsvView = {from:r0.from, to:r0.to, loc:false, note:false}; }
+  var v = lcsvView, t = todayStr();
+  var h = '<div class="modal-title">📄 逐筆明細(CSV)<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;margin-bottom:10px">每一筆收入、取消費、支出各一列,給記帳士、報稅或自己用 Excel、Google 試算表算。免費。</div>';
+  h += '<div class="chip-row" style="margin-bottom:8px">'+[['month','本月'],['prev','上個月'],['year','今年'],['all','全部']].map(function(c){
+    var rg = lcsvRangeOf(c[0]), on = rg.from===v.from && rg.to===v.to;
+    return '<button type="button" class="chip-opt'+(on?' selected':'')+'" data-act="lcsv-range:'+c[0]+'">'+c[1]+'</button>';
+  }).join('')+'</div>';
+  h += '<div class="form-grid2" style="margin-bottom:8px"><div class="form-row"><label for="lcsv-from">起始日期</label><input type="date" id="lcsv-from" value="'+v.from+'" max="'+t+'"></div>'+
+    '<div class="form-row"><label for="lcsv-to">結束日期</label><input type="date" id="lcsv-to" value="'+v.to+'"></div></div>';
+  var ck = 'display:flex;align-items:flex-start;gap:8px;font-size:13px;font-weight:400;line-height:1.5;margin-bottom:6px';
+  h += '<div class="form-row" style="margin-bottom:6px"><label>要不要多加(預設不加)</label>'+
+    '<label style="'+ck+'"><input type="checkbox" id="lcsv-loc" style="width:18px;height:18px;flex:none;margin-top:1px"'+(v.loc?' checked':'')+'><span>上下車位置(座標、地名)</span></label>'+
+    '<label style="'+ck+'"><input type="checkbox" id="lcsv-note" style="width:18px;height:18px;flex:none;margin-top:1px"'+(v.note?' checked':'')+'><span>備註(你自己打的文字)</span></label></div>';
+  h += '<div id="lcsv-preview">'+lcsvPreviewHtml()+'</div>';
+  h += '<div id="lcsv-warn" style="font-size:12px;color:var(--expense);line-height:1.6;margin-bottom:8px">'+lcsvWarnText()+'</div>';
+  h += '<div class="btn-row"><button class="btn btn-primary" style="flex:1" data-act="lcsv-make">確認,產生 CSV 檔</button></div>';
+  h += '<div style="font-size:11.5px;color:var(--text-muted);margin-top:10px;line-height:1.6">CSV 不是備份,不能拿來還原帳本;要還原請用 💾 備份檔。固定成本(車貸、保險)是按月攤的,不在逐筆明細裡,要看請用 📊 年度報表。</div>';
+  openModal(h);
+}
+function lcsvWarnText(){
+  var v = lcsvView, extra = [];
+  if(v.loc) extra.push('上下車位置'); if(v.note) extra.push('備註');
+  return '⚠️ 檔案會含你的營業資料(日期、時間、車隊、金額'+(extra.length ? '、'+extra.join('、') : '')+'),傳給別人前請確認。';
+}
+// a tick changed: only the counts, the column list and the warning are drawn again (the sheet keeps its place);
+// a new date draws the sheet again, so the 本月／上個月 chips follow it
+function lcsvChange(el){
+  var v = lcsvView; if(!v) return;
+  if(el.id==='lcsv-loc' || el.id==='lcsv-note'){
+    v[el.id==='lcsv-loc' ? 'loc' : 'note'] = el.checked;
+    var pv = document.getElementById('lcsv-preview'), wn = document.getElementById('lcsv-warn');
+    if(pv) pv.innerHTML = lcsvPreviewHtml();
+    if(wn) wn.textContent = lcsvWarnText();
+    return;
+  }
+  if(!el.value) return;
+  v[el.id==='lcsv-from' ? 'from' : 'to'] = el.value;
+  if(v.from>v.to){ var x = v.from; v.from = v.to; v.to = x; }
+  openLedgerCsvModal();
+}
+function lcsvMake(){
+  var v = lcsvView; if(!v) return;
+  var d = lcsvData(v.from, v.to);
+  if(!d.rows.length){ showToast('這段期間沒有紀錄,換個日期試試'); return; }
+  return shareOrDownloadFile(lcsvFileName(v), ledgerCsv(v.from, v.to, v), 'text/csv;charset=utf-8').then(function(done){
+    if(done) showToast('✓ 已產生逐筆明細('+d.rows.length+' 筆)', 2500);
+    return done;
+  });
+}
 function openYearReportModal(year){
   var first = dataFirstDate(), cy = +todayStr().slice(0,4);
   var fy = first ? +first.slice(0,4) : cy;
@@ -9440,6 +9602,7 @@ function openYearReportModal(year){
     h += '<div style="font-size:11px;color:var(--text-muted);margin:-6px 0 12px;line-height:1.5">報稅季可以拿這份明細,對照財政部所得資料或平台給的扣繳憑單。要不要申報、怎麼申報,以國稅局資料為準。</div>';
   }
   h += '<div class="btn-row"><button class="btn btn-primary" data-act="year-report-csv:'+year+'">下載 / 分享報表檔(CSV)</button></div>';
+  h += '<div class="btn-row" style="margin-top:8px"><button class="btn btn-ghost" data-act="ledger-csv">📄 逐筆明細(CSV,每一筆一列)</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">表格有每個月的車資、手續費、實收、各類支出、固定成本、淨利、里程、工時,最後是各平台全年合計。可用 Excel、Numbers 或 Google 試算表打開。右邊數字是當月淨利。'+
     (first && first.slice(0,4)===String(year) && first.slice(5)!=='01-01' ? '固定成本從 '+mdStr(first)+' 開始記帳算起,之前的月份淨利留白。' : '')+'</div>';
   openModal(h);
@@ -10747,7 +10910,8 @@ var HELP = [
     ['💰 可支配所得', '分析頁選本週或本月:實收扣掉已記的支出、固定成本(依天數分攤)和你自己開啟的預留款(保養、稅金,預設都不扣),估計能留多少;本月還有「照目前速度」的月底預測(每月 4 號起)。都是估算,只在手機上算。', 'dispIncome', 'vip', 'launch'],
     ['🏁 我的車隊收益比較', '分析頁(功能開關打開後):「我的實際比較」列各車隊趟數、車資、手續費、實收、手續費率、每小時實收(估算:上一趟下車到這趟下車的時間算給這一趟的車隊,第一趟從上班打卡算起)、每公里實收(有填每趟公里數就用它,沒填用上下車直線距離)、活動獎勵,還有各時段哪家每小時實收最高、多久入帳、短中長程比例(分界可以自己改);「換車隊試算」把一家的單、車資不變,用另一家現在的手續費重算,看實收差多少、車資要差多少才打平。只比手續費算法,不含活動獎勵、派單量。只在手機上算。', 'fleetCmp', 'vip', 'launch'],
     ['每公里油錢、電費', '分析頁效率指標:記加油的金額算每公里油錢;電動車記充電時填度數,算每公里電費和每度電可跑幾公里。', 'efficiency'],
-    ['📊 年度報表', '⚙️「年度報表」,可以匯出 CSV 檔,用 Excel、Numbers 或 Google 試算表都能打開。']
+    ['📊 年度報表', '⚙️「年度報表」,可以匯出 CSV 檔,用 Excel、Numbers 或 Google 試算表都能打開。'],
+    ['📄 逐筆明細 CSV', '⚙️「雲端與備份」→「逐筆明細 CSV」(年度報表最下面也有):每一筆收入、取消費、支出各一列,給記帳士或自己用試算表算,免費。選好日期先看預覽(欄位、筆數、合計)再產生檔案;上下車位置和備註預設不匯出,要自己勾。CSV 不能拿來還原帳本,要還原請用 💾 備份檔。']
   ]],
   ['撥款', [
     ['撥款頁', '看各平台什麼時候匯多少錢給你;下面出現紅色數字 = 有還沒對帳的批次。', 'payoutTab'],
@@ -11175,14 +11339,19 @@ function dayTimelineEvents(T){
   function E(ts, w, txt, x){ var o = {ts:ts, w:w, txt:txt}; if(x) for(var k in x) o[k] = x[k]; ev.push(o); }
   var startW = {fix:'休息結束(補登)', brk:'休息結束', off:'上班', amb:'休息結束或再上班'};
   var endW = {fix:'休息開始(補登)', brk:'休息開始', off:'下班', amb:'休息開始或下班'};
+  // a break under a minute (休息 pressed twice by mistake) is not listed pair by pair: one muted line says how many
+  // (補登 ones always show, they carry their own 取消)
+  function tiny(g){ return g && !g.fix && g.b-g.a < 60000; }
+  var tinyGaps = T.gaps.filter(tiny);
   T.segs.forEach(function(s, k){
     if(k===0) E(s[0], 2, (s[0]===T.dS && T.m && (T.m.shiftFrom || T.m.carryAt)) ? '上班(前一天的班接過來)' : '上班');
-    else E(s[0], 2, startW[T.gaps[k-1].kind]);
+    else if(!tiny(T.gaps[k-1])) E(s[0], 2, startW[T.gaps[k-1].kind]);
     if(k===last){
       if(T.open) E(s[1], 1, T.m.onBreak ? '休息中' : '現在(還在上班)');
       else E(s[1], 1, (s[1]===T.dE && nx && Array.isArray(nx.punch) && nx.punch.some(function(p){ return Array.isArray(p) && p[1]==='i' && +p[0]===T.dE; })) ? '營業日分界(班接到隔天)' : '下班');
-    } else E(s[1], 1, endW[T.gaps[k].kind], T.gaps[k].fix ? {fix:T.gaps[k].fix} : null);
+    } else if(!tiny(T.gaps[k])) E(s[1], 1, endW[T.gaps[k].kind], T.gaps[k].fix ? {fix:T.gaps[k].fix} : null);
   });
+  if(tinyGaps.length) E(tinyGaps[0].a, 1, (tinyGaps.length>1 ? '這段時間按了 '+tinyGaps.length+' 次休息' : '按了 1 次休息')+',每次都不到 1 分鐘(可能是誤按),不一一列出', {gap:true});
   T.trips.forEach(function(t){
     var who = t.rec ? platformDef(t.rec.platform).label : '還沒記帳的行程';
     if(t.A) E(t.A, 4, t.seamless ? '接單 · '+who+'(載客中接的下一單)' : t.far ? '接單 · '+who+'(離上車 '+fmtHM((t.P-t.A)/3600000)+',可能是預約單)' : '接單 · '+who);
@@ -12078,6 +12247,7 @@ function openSettingsModal(){
   h += '<div style="height:8px"></div>';
   h += '<div class="form-row" style="margin-top:6px"><label>報表</label></div>';
   h += '<div class="btn-row"><button class="btn btn-ghost" data-act="year-report">📊 年度報表(可匯出,用 Excel 就能打開)</button></div>';
+  h += '<div class="btn-row" style="margin-top:8px"><button class="btn btn-ghost" data-act="ledger-csv">📄 逐筆明細 CSV(每一筆一列,給記帳士、Excel)</button></div>';
   h += '<div style="height:14px"></div>';
 
   var dsz = dataSizeChars(), dmb = dsz/1048576, bigStore = !!__BOOT.idb, dpct = bigStore ? 0 : Math.min(100, dsz/(2.5*1048576)*100);
@@ -12116,12 +12286,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.27.2';
+var APP_VERSION = '2026.11.27.3';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.27.3', '📄 新增「逐筆明細 CSV」(免費):每一筆收入、取消費、支出各一列,可以交給記帳士或用 Excel 自己算;匯出前會先讓你看欄位和合計,位置和備註預設不匯出。要還原帳本請用備份檔', '', {set:'cloud'}],
   ['2026.11.27.2', '🕒 歷史頁點某一天,多了「時間軸」:上班、接單、上車、下車、空檔、下班照時間排好。忘了按休息可以「補登休息時段」,只補確定沒接單、等單的時間(等單、空車照樣算工時),跟行程重疊會擋下;補錯了可以取消', '', {tab:'history', find:'時間軸', day:true}],
   ['2026.11.25.1', '📊 不具名使用人數統計改成「你同意才送」:打開時會問一次,選「不用了」就完全不送,之後可以在 ⚙️ 設定改'],
   ['2026.11.24.8', '🚐 YOXI 的預估車資、據點叫車,大都會的預估車資,記帳時要選付款方式(現金、信用卡…),刷卡的手續費才算得對;以前記的這些單照現金算,不會變。另外:這個月才開始記帳的,月底預測改從開始記帳那天起算;年度報表的手續費不再算進自己吸收的優惠券'],
@@ -12345,7 +12516,7 @@ var SETTINGS_SECS = [
   ['features', '📱 記帳首頁與功能', '首頁排列、功能開關、休息提醒時間'],
   ['platforms', '💰 平台與手續費', '手續費設定、平台管理、車種'],
   ['expenses', '🧾 支出項目', '支出項目、支出細項'],
-  ['cloud', '☁️ 雲端與備份', '試算表同步、備份還原、資料用量、年度報表'],
+  ['cloud', '☁️ 雲端與備份', '試算表同步、備份還原、資料用量、年度報表、逐筆明細'],
   ['privacy', '🔒 隱私與分享', '車友熱區、不具名統計、記錄接單時間'],
   ['about', 'ℹ️ 關於跑車人生', '版本、隱私權政策、聯絡我們']
 ];
@@ -13415,7 +13586,7 @@ document.addEventListener('keydown', function(e){
 // analysis periods, help, settings screens), closing, backup files and copying, sharing a day's picture, and the restore
 // screens (restoring an older backup is the way out). Everything else is turned away with a short notice.
 var READ_ONLY_ACTS = ['tab','noop','close-modal','discard-settings','jump-expenses','day','month','year','period','select-day','chart-mode','cal-show',
-  'sum-kind','sum-nav','open-summary','open-summary-home','open-report','rpt-kind','rpt-nav','rpt-close','rpt-print','rpt-make','hist-report','year-report','year-report-csv',
+  'sum-kind','sum-nav','open-summary','open-summary-home','open-report','rpt-kind','rpt-nav','rpt-close','rpt-print','rpt-make','hist-report','year-report','year-report-csv','ledger-csv','lcsv-range','lcsv-make',
   'open-help','open-settings','set-sec','ver-tap','hist-tl','dismiss-tab-warning','wn-go',
   'open-import','open-import-pick','do-import','open-restore','do-restore','undo-restore','move-from-web',
   'export-file','quick-backup','open-export','copy-export','copy-saved','backup-dest','backup-snooze','share-day','share-day-go','share-back','copy-vip-id','rn-copy-id',
@@ -13424,7 +13595,7 @@ var READ_ONLY_ACTS = ['tab','noop','close-modal','discard-settings','jump-expens
   'open-vip','pace-vip','disp-vip','fc-vip','rn-vip','vc-vip','ds-vip','rate-app'];
 // the same for a box that saves itself when changed (里程、工時、休息、上廁所 in 歷史) or a setting that applies at once:
 // only these change nothing in the ledger
-var READ_ONLY_CHANGES = ['rpt-from','rpt-to','fc-src','fc-dst','anf-from','anf-to','dayPicker','customFrom','customTo','importFile','f-cloud-key-show','f-rn-hx','f-rn-fw'];
+var READ_ONLY_CHANGES = ['rpt-from','rpt-to','lcsv-from','lcsv-to','lcsv-loc','lcsv-note','fc-src','fc-dst','anf-from','anf-to','dayPicker','customFrom','customTo','importFile','f-cloud-key-show','f-rn-hx','f-rn-fw'];
 document.addEventListener('click', function(e){
   var t = e.target.closest('[data-act]');
   if(!t) return;
@@ -13999,6 +14170,9 @@ document.addEventListener('click', function(e){
   }
   else if(cmd==='year-report'){ openYearReportModal(arg); }
   else if(cmd==='year-report-csv'){ shareOrDownloadFile('跑車人生_'+arg+'年度報表.csv', yearReportCsv(+arg), 'text/csv'); }
+  else if(cmd==='ledger-csv'){ lcsvView = null; openLedgerCsvModal(); }
+  else if(cmd==='lcsv-range'){ var lr = lcsvRangeOf(arg); if(lcsvView){ lcsvView.from = lr.from; lcsvView.to = lr.to; } openLedgerCsvModal(); }
+  else if(cmd==='lcsv-make'){ lcsvMake(); }
   else if(cmd==='open-import'){ openImportModal(); }
   // straight to the file picker (still inside the tap, which the picker requires); the restore sheet stays behind it
   else if(cmd==='open-import-pick'){ openImportModal(); var pickEl = document.getElementById('importFile'); if(pickEl) pickEl.click(); }
@@ -14185,6 +14359,7 @@ document.addEventListener('change', function(e){
     vipMockApply(e.target.value); showToast('🧪 情境:'+e.target.options[e.target.selectedIndex].text); return;
   }
   if(e.target.id==='f-vip-buy'){ VipMock.setBuy(e.target.value); return; }
+  if(e.target.id && e.target.id.indexOf('lcsv-')===0){ lcsvChange(e.target); return; }
   if(e.target.id==='rpt-from' || e.target.id==='rpt-to'){ if(e.target.value){ rptView[e.target.id==='rpt-from' ? 'from' : 'to'] = e.target.value; openReport(); } return; }
   if(e.target.id==='fc-src' || e.target.id==='fc-dst'){ if(e.target.id==='fc-src') fcSrc = e.target.value; else fcDst = e.target.value; renderAll(); return; }
   if(e.target.id==='anf-from' || e.target.id==='anf-to'){ anFilter[e.target.id==='anf-from' ? 'hFrom' : 'hTo'] = e.target.value==='' ? null : +e.target.value; anPresetId = null; renderAll(); return; }
