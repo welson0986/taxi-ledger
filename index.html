@@ -4827,8 +4827,10 @@ function renderHistory(){
     (uiShow('shift') ? '<div class="daily-row"><span class="l">'+selectedDay+' 工時(小時)'+((histMeta.workedMs||0)>0 ? '<div style="font-size:11.5px;color:var(--text-muted)">＝'+fmtHM(histMeta.workedMs/3600000)+'</div>' : '')+'</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.workedMs||0)/3600000).toFixed(2)+'" placeholder="0.00" aria-label="'+hmd+' 工時,小時" data-hours-input-date="'+selectedDay+'"></div>' : '')+
     (uiShow('shift') ? '<div class="daily-row"><span class="l">'+selectedDay+' 休息時間(小時)'+((histMeta.breakMs||0)>0 ? '<div style="font-size:11.5px;color:var(--text-muted)">＝'+fmtHM(histMeta.breakMs/3600000)+'</div>' : '')+'</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.breakMs||0)/3600000).toFixed(2)+'" placeholder="0.00" aria-label="'+hmd+' 休息時間,小時" data-break-input-date="'+selectedDay+'"></div>' : '')+
     (uiShow('toilet') ? '<div class="daily-row"><span class="l">'+selectedDay+' 🚻 上廁所(次)</span><input class="km-input" type="number" step="1" min="0" inputmode="numeric" value="'+(histMeta.toilet!=null?histMeta.toilet:'')+'" placeholder="0" aria-label="'+hmd+' 上廁所,次" data-toilet-input-date="'+selectedDay+'"></div>' : '')+
-    '<div style="font-size:11px;color:var(--text-muted);line-height:1.5">補記或修改過往的工時/休息時間/上廁所次數,直接改數字就會覆蓋掉原本的紀錄。</div>'+
+    '<div style="font-size:11px;color:var(--text-muted);line-height:1.5">補記或修改過往的工時/休息時間/上廁所次數,直接改數字就會覆蓋掉原本的紀錄。'+
+    (uiShow('shift') && punchSegs(selectedDay) && !histMeta.activeShiftStart ? '這天有打卡時間:忘了按的休息請用下面時間軸的「補登休息時段」,會自動從工時扣。' : '')+'</div>'+
     '</div></div>';
+  h += histTimelineHtml(selectedDay);
 
   h += '<div class="section"><div class="section-title">'+selectedDay+' 明細</div><div class="card">'+renderDayList(selectedDay)+'</div></div>';
 
@@ -10912,6 +10914,336 @@ function saveShiftFix(){
   }
   save(function(ok){ if(ok) showToast('已補登上班時間'); }); closeModal(); renderAll();
 }
+/* ---------- G1 補登休息時段（手動版）＋ G2 每日時間軸 ----------
+   A break the driver forgot to press is entered afterwards, on a business day whose shift is over and whose clock-in log
+   adds up to its hours (punchSegs). The driver picks the start and the end (date and time, so it may pass midnight);
+   nothing is filled in or suggested: 等單 and 空車 stay work time, and an empty stretch is never called a break.
+   Refused with the reason, never cut short or guessed: outside the day's work periods, no length, over a break or a 下班
+   the log already has, over any order from 接單 to 下車 (an accept more than EMPTY_GAP_CAP_MIN before its 上車, a 預約,
+   locks from 上車 only: making the booking is not driving to the pickup; one taken during a ride locks from its accept),
+   over a 取消單 from accept to cancel, or near a trip with its 上車 or 下車 missing or the wrong way round (when it ended
+   is not known). A break over the 營業日分界 becomes two pieces, each on its own day and checked there.
+   Saved only once the driver ticks that the time really was a break. It goes into the log as ['o', s] and ['i', e]
+   (placed so that the log's own ordering keeps a period starting or ending at the very same moment in one piece),
+   workedMs goes down and breakMs up by the same amount: every screen that counts hours or reads the log (報告、歷史、分析、
+   時薪走勢、車隊比較、空檔拆解、下車地統計) follows. m.brkFix keeps {s, e, at, grp} of each so it can be taken back
+   exactly from the history page. An older version reads the same workedMs, breakMs and log and leaves brkFix alone, so
+   the 資料等級 stays (LEDGER_LEVEL rule: nothing an older version would read or save wrongly).
+   A day with hours but no clock-in times (before the log began, or hours typed in) keeps only its 休息總數 box: no period
+   is made up for it, and a total and a period are never both taken off.
+   The time line (G2) lists 上班、接單、上車、下車、取消、休息開始／結束、下班 and the 空檔 N 分 between them inside work
+   time; a fare without times is listed as 時間未知. Worked out from the ledger when shown, nothing else is stored. */
+var BRK_FIX_MAX = 60;
+var BRK_TICK = '這段時間我沒有接單、等單,確實在休息';
+function brkFixList(m){
+  return (m && Array.isArray(m.brkFix)) ? m.brkFix.filter(function(f){ return f && isFinite(+f.s) && isFinite(+f.e) && +f.e > +f.s; }) : [];
+}
+// a moment on the time line of day d: 「23:50」, with the date in front when it is on another calendar date
+function tlTime(ts, d){ var cd = toDateStr(new Date(ts)); return (d && cd!==d ? mdOf(cd)+' ' : '')+hhmm(ts); }
+function tlSpan(a, b, d){ return tlTime(a, d)+'～'+tlTime(b, d); }
+function tlMin(ms){ return Math.max(1, Math.round(ms/60000)); }
+// everything the time line and the break check need of business day d
+function dayTimeline(d){
+  var m = (state.dailyMeta||{})[d] || null, R = punchSegsRaw(d);
+  var segs = R ? R.segs.map(function(s){ return [s[0], s[1]]; }) : [];
+  var ok = !!(R && Math.abs(R.tot-R.wm) <= 5*60000);
+  var dS = dayStartTs(d), dE = dayStartTs(addDays(d, 1));
+  var lo = segs.length ? Math.min(dS, segs[0][0]) : dS, hi = segs.length ? Math.max(dE, segs[segs.length-1][1]) : dE;
+  function inWin(ts){ return !!ts && ts >= lo && ts < hi; }
+  var cap = EMPTY_GAP_CAP_MIN*60000, trips = [], untimed = [], cxs = [];
+  function addTrip(o, rec, date){
+    var P = tripTs(o.pickup), D = tripTs(o.dropoff), A = o.accept ? tripTs(o.accept) : null;
+    if(!P && !D){ if(rec && date===d) untimed.push(rec); return; }
+    if(!(date===d || inWin(P) || inWin(D))) return;
+    trips.push({rec:rec, P:P, D:D, A:A, seamless:!!(o.accept && o.accept.seamless)});
+  }
+  (state.records||[]).forEach(function(r){ if(r && !platformDef(r.platform).tipOnly) addTrip(r, r, r.date); });
+  (state.pendingTrips||[]).forEach(function(t){ if(t) addTrip(t, null, null); });
+  if(state.activeTrip) addTrip(state.activeTrip, null, null);
+  cancelList().forEach(function(c){
+    if(!c) return;
+    var ca = +c.cancelAt>0 ? +c.cancelAt : null, aa = +c.acceptAt>0 ? +c.acceptAt : null;
+    if(c.date===d || inWin(ca) || inWin(aa)) cxs.push({c:c, A:aa, C:ca});
+  });
+  // the moments that are known: where a trip with a time missing may have begun or ended
+  var K = [];
+  segs.forEach(function(s){ K.push(s[0], s[1]); });
+  trips.forEach(function(t){ [t.A, t.P, t.D].forEach(function(x){ if(x) K.push(x); }); });
+  cxs.forEach(function(x){ if(x.A) K.push(x.A); if(x.C) K.push(x.C); });
+  K.sort(function(a, b){ return a-b; });
+  function nextK(ts){ for(var i=0;i<K.length;i++) if(K[i] > ts) return K[i]; return Math.max(ts, hi); }
+  function prevK(ts){ for(var i=K.length-1;i>=0;i--) if(K[i] < ts) return K[i]; return Math.min(ts, lo); }
+  var busy = [], unk = [];
+  trips.forEach(function(t){
+    if(t.P && t.D && t.D >= t.P){
+      t.from = t.P;
+      if(t.A && t.A <= t.P){ if(t.seamless || t.P - t.A <= cap) t.from = t.A; else t.far = true; }
+      busy.push({a:t.from, b:t.D, t:t});
+    } else if(t.P && t.D){ t.bad = 'back'; unk.push({a:Math.min(t.P, t.D), b:Math.max(t.P, t.D), t:t}); }
+    else if(t.P){ t.bad = 'nodrop'; unk.push({a:(t.A && t.A <= t.P && (t.seamless || t.P - t.A <= cap)) ? t.A : t.P, b:nextK(t.P), t:t}); }
+    else { t.bad = 'nopick'; unk.push({a:prevK(t.D), b:t.D, t:t}); }
+  });
+  cxs.forEach(function(x){ if(x.A && x.C && x.C >= x.A){ if(x.C - x.A <= cap) busy.push({a:x.A, b:x.C, cx:x}); else x.far = true; } });
+  // the stretches between work periods: a break entered here, a break pressed, or a 下班 and a later 上班 (the log does
+  // not say which: when they add up to the day's 休息總數 they are breaks, when there is no break at all they are not)
+  var fixes = brkFixList(m), gaps = [];
+  for(var k=0;k+1<segs.length;k++) gaps.push({a:segs[k][1], b:segs[k+1][0]});
+  var fixMs = 0, otherMs = 0, otherN = 0;
+  gaps.forEach(function(g){
+    for(var i=0;i<fixes.length;i++) if(+fixes[i].s===g.a && +fixes[i].e===g.b){ g.fix = fixes[i]; break; }
+    if(g.fix) fixMs += g.b-g.a; else { otherMs += g.b-g.a; otherN++; }
+  });
+  var realBrk = Math.max(0, (+(m && m.breakMs)||0) - fixMs), kind = 'amb';
+  if(otherN && Math.abs(otherMs - realBrk) <= 60000) kind = 'brk';
+  else if(otherN && realBrk <= 60000) kind = 'off';
+  gaps.forEach(function(g){ g.kind = g.fix ? 'fix' : kind; });
+  var free = ivMinus(segs, busy.concat(unk).map(function(b){ return [b.a, b.b]; })).filter(function(p){ return p[1]-p[0] >= 60000; });
+  return {d:d, m:m, R:R, segs:segs, ok:ok, open:!!(m && m.activeShiftStart), dS:dS, dE:dE, lo:lo, hi:hi,
+    trips:trips, cxs:cxs, untimed:untimed, busy:busy, unk:unk, gaps:gaps, fixes:fixes, free:free};
+}
+// why no break period can be entered on the day ('' when one can)
+function brkDayWhy(T){
+  var m = T.m;
+  if(!T.R){
+    if(m && dayHoursOf(m, T.d, todayStr()) > 0) return '這天沒有打卡時間,只能改休息總數。請直接改上面的數字(休息總數不會自動從工時扣,工時要一起改)。';
+    return '這天沒有上班打卡的時間,不能補登休息時段。';
+  }
+  if(T.open) return '這天的班還沒結束(還在上班,或休息、下班沒有按),下班打卡後才能補登休息時段。';
+  if(!T.ok) return '這天的工時改過,跟打卡時間對不上,只能改休息總數(直接改上面的數字)。';
+  return '';
+}
+function tlSegsTxt(T){ return T.segs.map(function(s){ return tlSpan(s[0], s[1], T.d); }).join('、'); }
+var TL_GAP_WORD = {fix:'補登的休息', brk:'休息', off:'下班', amb:'休息或下班'};
+// one piece of a break on its own day: {ok:true} or {ok:false, why}
+function brkCheck(d, s, e){
+  var T = dayTimeline(d), why = brkDayWhy(T), m = T.m;
+  if(why) return {ok:false, why:why};
+  if(!(isFinite(s) && isFinite(e) && s > 0 && e > 0)) return {ok:false, why:'請選休息開始和結束的日期、時間。'};
+  if(e <= s) return {ok:false, why:'休息結束要比開始晚。'};
+  if(e > Date.now()) return {ok:false, why:'不能補登還沒到的時間。'};
+  var seg = null;
+  T.segs.forEach(function(g){ if(g[0] <= s && e <= g[1]) seg = g; });
+  if(!seg){
+    var w0 = T.segs[0][0], w1 = T.segs[T.segs.length-1][1];
+    if(s < w0 || e > w1) return {ok:false, why:'這段不在這天的上班時段內。這天的上班時段:'+tlSegsTxt(T)+'。'};
+    var g = T.gaps.filter(function(x){ return s < x.b && e > x.a; })[0];
+    if(g && g.fix) return {ok:false, why:'和已經補登的休息 '+tlSpan(g.a, g.b, d)+' 重疊,同一段時間不能扣兩次。'};
+    return {ok:false, why:'和這天原本記的'+TL_GAP_WORD[g ? g.kind : 'amb']+'時間 '+(g ? tlSpan(g.a, g.b, d) : '')+' 重疊,同一段時間不能扣兩次。要補的是上班中的另一段,請分開補登。'};
+  }
+  if(seg[0]===s && seg[1]===e) return {ok:false, why:'這段就是整段上班時間('+tlSpan(s, e, d)+')。整段都沒有上班的話,請直接改上面的工時。'};
+  for(var i=0;i<T.busy.length;i++){
+    var b = T.busy[i];
+    if(s < b.b && e > b.a) return {ok:false, why:'和 '+tlSpan(b.a, b.b, d)+' 這'+(b.cx ? '張取消單(接單到取消)' : '趟(接單到下車)')+'重疊。休息不能和載客、前往接客的時間重疊;請改時間,或先到明細修正那一趟。'};
+  }
+  for(var j=0;j<T.unk.length;j++){
+    var u = T.unk[j], t = u.t;
+    if(s < u.b && e > u.a) return {ok:false, why:'這段時間附近有一趟'+(t.bad==='nodrop' ? '沒有下車時間('+tlTime(t.P, d)+' 上車)' : t.bad==='nopick' ? '沒有上車時間('+tlTime(t.D, d)+' 下車)' : '上下車時間前後顛倒')+',不知道那趟什麼時候結束,沒辦法確定這段沒有載客。請先到明細補正那一趟的時間,再補登休息。'};
+  }
+  if((Array.isArray(m.punch) ? m.punch.length : 0) + 2 > PUNCH_MAX || T.fixes.length >= BRK_FIX_MAX) return {ok:false, why:'這天的打卡紀錄太多了,不能再補登。'};
+  return {ok:true, untimed:T.untimed.length};
+}
+// a break from s to e entered from day d: over the 營業日分界 it becomes a piece on each day. {ok, pieces:[[day, s, e]], why}
+function brkPlan(d, s, e){
+  var dS = dayStartTs(d), dE = dayStartTs(addDays(d, 1)), pieces;
+  if(isFinite(s) && isFinite(e) && s < dE && e > dE) pieces = [[d, s, dE], [addDays(d, 1), dE, e]];
+  else if(isFinite(s) && isFinite(e) && s < dS && e > dS) pieces = [[addDays(d, -1), s, dS], [d, dS, e]];
+  else pieces = [[d, s, e]];
+  for(var i=0;i<pieces.length;i++){
+    var c = brkCheck(pieces[i][0], pieces[i][1], pieces[i][2]);
+    if(!c.ok) return {ok:false, why:(pieces.length>1 ? '這段跨過營業日分界('+hhmm(pieces[0][2])+'),'+mdOf(pieces[i][0])+' 那一段:' : '')+c.why};
+  }
+  return {ok:true, pieces:pieces};
+}
+// the piece goes into day d's log so the log's own sort (stable, by time) keeps a period that starts or ends at the very
+// same moment whole: the 'o' after anything at s (a clock-in), the 'i' before anything at e (a clock-out)
+function brkPut(d, s, e, at, grp){
+  var m = dm(d), P = Array.isArray(m.punch) ? m.punch : (m.punch = []), iO = -1, iI = -1;
+  P.forEach(function(p, i){ if(Array.isArray(p) && +p[0]===s) iO = i; });
+  P.splice(iO>=0 ? iO+1 : P.length, 0, [s, 'o']);
+  for(var j=0;j<P.length;j++){ if(Array.isArray(P[j]) && +P[j][0]===e){ iI = j; break; } }
+  P.splice(iI>=0 ? iI : P.length, 0, [e, 'i']);
+  m.workedMs = Math.max(0, (+m.workedMs||0) - (e-s)); m.breakMs = (+m.breakMs||0) + (e-s);
+  if(!Array.isArray(m.brkFix)) m.brkFix = [];
+  var f = {s:s, e:e, at:at}; if(grp) f.grp = grp;
+  m.brkFix.push(f);
+}
+// takes piece f out of day d's log and gives its time back to the hours
+function brkTake(d, f){
+  var m = state.dailyMeta[d], P = Array.isArray(m.punch) ? m.punch : [], s = +f.s, e = +f.e, iO = -1, iI = -1;
+  P.forEach(function(p, i){ if(Array.isArray(p) && +p[0]===s && p[1]==='o') iO = i; });
+  if(iO>=0) P.splice(iO, 1);
+  for(var j=0;j<P.length;j++){ if(Array.isArray(P[j]) && +P[j][0]===e && P[j][1]==='i'){ iI = j; break; } }
+  if(iI>=0) P.splice(iI, 1);
+  m.workedMs = (+m.workedMs||0) + (e-s); m.breakMs = Math.max(0, (+m.breakMs||0) - (e-s));
+  m.brkFix = (Array.isArray(m.brkFix) ? m.brkFix : []).filter(function(x){ return x!==f; });
+  if(!m.brkFix.length) delete m.brkFix;
+  return iO>=0 && iI>=0;
+}
+// every day's log must still add up afterwards; otherwise the days are put back as they were
+function brkGuard(days, fn){
+  var keep = {};
+  days.forEach(function(x){ keep[x] = state.dailyMeta[x] ? JSON.stringify(state.dailyMeta[x]) : null; });
+  var good = fn() !== false && days.every(function(x){ return !!punchSegs(x); });
+  if(!good) days.forEach(function(x){ if(keep[x]==null) delete state.dailyMeta[x]; else state.dailyMeta[x] = JSON.parse(keep[x]); });
+  dataGen++;
+  return good;
+}
+// saves the break s..e entered from day d (checked again here); true when it was saved
+function brkApply(d, s, e){
+  var P = brkPlan(d, s, e); if(!P.ok) return P;
+  var at = Date.now(), grp = P.pieces.length>1 ? uid() : null;
+  var ok = brkGuard(P.pieces.map(function(p){ return p[0]; }), function(){ P.pieces.forEach(function(p){ brkPut(p[0], p[1], p[2], at, grp); }); });
+  return ok ? {ok:true, pieces:P.pieces} : {ok:false, why:'這天的打卡紀錄對不上,沒有補登。'};
+}
+// the break entered at `at` on day d (both pieces of one over the day boundary) taken back
+function brkUndo(d, at){
+  var hits = [], m = state.dailyMeta[d], f = brkFixList(m).filter(function(x){ return +x.at===+at; })[0];
+  if(!f) return false;
+  if(f.grp) [addDays(d, -1), d, addDays(d, 1)].forEach(function(x){ brkFixList(state.dailyMeta[x]).forEach(function(y){ if(y.grp===f.grp) hits.push([x, y]); }); });
+  else hits.push([d, f]);
+  var days = hits.map(function(h){ return h[0]; }).filter(function(x, i, a){ return a.indexOf(x)===i; });
+  return brkGuard(days, function(){ return hits.every(function(h){ return brkTake(h[0], h[1]); }); }) ? hits : false;
+}
+var brkDay = null;
+// the calendar dates the day's work periods are on (a night shift: two)
+function brkDates(T){
+  var out = [], a = toDateStr(new Date(T.segs.length ? T.segs[0][0] : T.dS)), b = toDateStr(new Date((T.segs.length ? T.segs[T.segs.length-1][1] : T.dE) - 1));
+  for(var x=a, i=0; x<=b && i<4; x=addDays(x, 1), i++) out.push(x);
+  if(out.indexOf(b)<0) out.push(b);
+  return out;
+}
+function openBrkAdd(d){
+  var T = dayTimeline(d), why = brkDayWhy(T);
+  if(why){ alert(why); return; }
+  brkDay = d;
+  var opts = brkDates(T).map(function(x){ return '<option value="'+x+'">'+mdOf(x)+'('+DOW[(new Date(x+'T00:00:00').getDay()+6)%7]+')</option>'; }).join('');
+  var h = '<div class="modal-title">☕ 補登 '+mdOf(d)+' 的休息時段<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div style="font-size:12.5px;line-height:1.7;margin-bottom:10px">這天的上班時段:<b>'+esc(tlSegsTxt(T))+'</b><br><span style="color:var(--text-muted)">只補「確定沒有接單、等單」的休息(吃飯、午睡、去辦事)。等單、空車都算工時,這段如果是在等單,請不要補成休息。</span></div>';
+  ['s','e'].forEach(function(w){
+    h += '<div class="form-row"><label>休息'+(w==='s'?'開始':'結束')+'</label><div style="display:flex;gap:6px"><select id="f-brk-'+w+'d" style="width:auto;flex:none" aria-label="休息'+(w==='s'?'開始':'結束')+'的日期">'+opts+'</select><input id="f-brk-'+w+'t" type="time" style="flex:1;min-width:0" aria-label="休息'+(w==='s'?'開始':'結束')+'的時間"></div></div>';
+  });
+  if(T.untimed.length) h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:10px">ⓘ 這天有 '+T.untimed.length+' 筆收入沒有上下車時間,沒辦法幫你檢查有沒有重疊,請自己確定這段沒有載客。</div>';
+  h += '<div id="f-brk-msg" role="alert" style="font-size:13px;line-height:1.6;color:var(--expense);margin-bottom:10px" hidden></div>';
+  h += '<div id="f-brk-ok" hidden></div>';
+  h += '<div class="btn-row" id="f-brk-next"><button class="btn btn-primary" data-act="brk-check">下一步</button></div>';
+  openModal(h);
+}
+function brkFromForm(){
+  function at(w){
+    var dv = (document.getElementById('f-brk-'+w+'d')||{}).value, tv = (document.getElementById('f-brk-'+w+'t')||{}).value;
+    return (dv && tv) ? new Date(dv+'T'+tv+':00').getTime() : NaN;
+  }
+  return {s:at('s'), e:at('e')};
+}
+function brkMsg(t){ var el = document.getElementById('f-brk-msg'); if(el){ el.textContent = t||''; el.hidden = !t; } }
+// 下一步: checked, then what will change and the tick box (nothing is saved yet)
+function brkCheckForm(){
+  var d = brkDay; if(!d) return;
+  var F = brkFromForm(), P = brkPlan(d, F.s, F.e), box = document.getElementById('f-brk-ok');
+  if(!P.ok){ brkMsg(P.why); if(box) box.hidden = true; var nx = document.getElementById('f-brk-next'); if(nx) nx.style.display = ''; return; }
+  brkMsg('');
+  var len = F.e - F.s, worked = 0;
+  P.pieces.forEach(function(p){ worked += dayHoursOf(state.dailyMeta[p[0]], p[0], todayStr()); });
+  var h = '<div class="card" style="padding:12px;margin-bottom:10px;font-size:13px;line-height:1.7">要補登的休息:<b>'+esc(tlSpan(F.s, F.e, d))+'</b>,共 <b>'+fmtHM(len/3600000)+'</b>。';
+  if(P.pieces.length>1) h += '<br>跨過營業日分界,會分成 '+P.pieces.map(function(p){ return mdOf(p[0])+' '+fmtHM((p[2]-p[1])/3600000); }).join('、')+',各扣在那一天。';
+  h += '<br>'+(P.pieces.length>1 ? '這兩天' : '這天')+'的工時會從 '+fmtHM(worked)+' 變成 '+fmtHM(worked - len/3600000)+',收入不變;補錯了可以在歷史頁的時間軸取消。</div>';
+  h += '<label style="display:flex;gap:8px;align-items:flex-start;font-size:13.5px;line-height:1.5;margin:0 0 12px"><input type="checkbox" id="f-brk-tick" style="margin-top:3px;width:18px;height:18px;flex:none">'+BRK_TICK+'</label>';
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="brk-save">確認補登</button></div>';
+  if(box){ box.innerHTML = h; box.hidden = false; }
+  var nx2 = document.getElementById('f-brk-next'); if(nx2) nx2.style.display = 'none';
+}
+function brkSaveForm(){
+  var d = brkDay; if(!d) return;
+  var tick = document.getElementById('f-brk-tick');
+  if(!tick || !tick.checked){ brkMsg('請先勾選「'+BRK_TICK+'」。'); return; }
+  var F = brkFromForm(), R = brkApply(d, F.s, F.e);
+  if(!R.ok){ brkMsg(R.why); return; }
+  brkDay = null;
+  save(function(ok){ if(ok) showToast('已補登休息 '+fmtHM((F.e-F.s)/3600000)+',工時已重新計算'); }); closeModal(); renderAll();
+}
+function brkUndoAsk(arg){
+  var p = String(arg).split('_'), d = p[0], at = +p[1], f = brkFixList((state.dailyMeta||{})[d]).filter(function(x){ return +x.at===at; })[0];
+  if(!f) return;
+  var len = 0; [addDays(d, -1), d, addDays(d, 1)].forEach(function(x){ brkFixList(state.dailyMeta[x]).forEach(function(y){ if(y===f || (f.grp && y.grp===f.grp)) len += y.e - y.s; }); });
+  if(!confirm('取消這段補登的休息('+(f.grp ? '跨營業日分界的兩段一起' : tlSpan(f.s, f.e, d))+')?\n這 '+fmtHM(len/3600000)+' 會算回工時。')) return;
+  if(!brkUndo(d, at)){ alert('這天的打卡紀錄對不上,沒有取消。'); return; }
+  save(function(ok){ if(ok) showToast('已取消補登的休息,工時已算回去'); }); renderAll();
+}
+// G2: the day's events in time order. {ts, w (order at the same moment), txt, fix, gap}
+function dayTimelineEvents(T){
+  var ev = [], d = T.d, last = T.segs.length-1, nx = (state.dailyMeta||{})[addDays(d, 1)];
+  function E(ts, w, txt, x){ var o = {ts:ts, w:w, txt:txt}; if(x) for(var k in x) o[k] = x[k]; ev.push(o); }
+  var startW = {fix:'休息結束(補登)', brk:'休息結束', off:'上班', amb:'休息結束或再上班'};
+  var endW = {fix:'休息開始(補登)', brk:'休息開始', off:'下班', amb:'休息開始或下班'};
+  T.segs.forEach(function(s, k){
+    if(k===0) E(s[0], 2, (s[0]===T.dS && T.m && (T.m.shiftFrom || T.m.carryAt)) ? '上班(前一天的班接過來)' : '上班');
+    else E(s[0], 2, startW[T.gaps[k-1].kind]);
+    if(k===last){
+      if(T.open) E(s[1], 1, T.m.onBreak ? '休息中' : '現在(還在上班)');
+      else E(s[1], 1, (s[1]===T.dE && nx && Array.isArray(nx.punch) && nx.punch.some(function(p){ return Array.isArray(p) && p[1]==='i' && +p[0]===T.dE; })) ? '營業日分界(班接到隔天)' : '下班');
+    } else E(s[1], 1, endW[T.gaps[k].kind], T.gaps[k].fix ? {fix:T.gaps[k].fix} : null);
+  });
+  T.trips.forEach(function(t){
+    var who = t.rec ? platformDef(t.rec.platform).label : '還沒記帳的行程';
+    if(t.A) E(t.A, 4, t.seamless ? '接單 · '+who+'(載客中接的下一單)' : t.far ? '接單 · '+who+'(離上車 '+fmtHM((t.P-t.A)/3600000)+',可能是預約單)' : '接單 · '+who);
+    if(t.P) E(t.P, 5, '上車 · '+who);
+    if(t.D) E(t.D, 0, '下車 · '+who+(t.rec ? ' '+fmtMoneyFor(t.rec.platform, computeNetRevenue(t.rec)+(+t.rec.tip||0)) : ''));
+    if(t.bad==='nodrop') E(t.P, 6, '下車 · 時間未知(這趟沒有下車時間)', {warn:true});
+    if(t.bad==='nopick') E(t.D, -1, '上車 · 時間未知(這趟沒有上車時間)', {warn:true});
+    if(t.bad==='back') E(Math.max(t.P, t.D), 6, '這趟的下車時間比上車早,請到明細修正', {warn:true});
+  });
+  T.cxs.forEach(function(x){
+    var by = CANCEL_BY.filter(function(b){ return b[0]===x.c.by; })[0];
+    if(x.A) E(x.A, 4, '接單'+(x.far ? '(離取消超過 '+Math.round(EMPTY_GAP_CAP_MIN/60)+' 小時,可能是預約單)' : ''));
+    if(x.C) E(x.C, 0, '取消'+(by ? ' · '+by[2]+'取消' : ''));
+    else E(x.A || T.dS, 0, '取消 · 時間未知', {warn:true});
+  });
+  T.free.forEach(function(p){ E(p[0], 3, '空檔 '+tlMin(p[1]-p[0])+' 分', {gap:true, ms:p[1]-p[0]}); });
+  return ev.sort(function(a, b){ return (a.ts-b.ts) || (a.w-b.w); });
+}
+var histTlOpen = false;
+function histTimelineHtml(d){
+  if(!uiShow('shift')) return '';
+  var T = dayTimeline(d);
+  if(!T.R && !T.trips.length && !T.untimed.length && !T.cxs.length && !(T.m && dayHoursOf(T.m, d, todayStr()) > 0)) return '';
+  var why = brkDayWhy(T), ev = dayTimelineEvents(T), mute = 'color:var(--text-muted)';
+  var h = '<div class="section" id="histTimeline"><div class="section-title">'+d+' 時間軸</div><div class="card">';
+  var sum = [];
+  if(T.segs.length) sum.push('上班 '+tlTime(T.segs[0][0], d)+(T.open ? ' 起(還沒下班)' : ' → 下班 '+tlTime(T.segs[T.segs.length-1][1], d)));
+  else sum.push('沒有打卡時間');
+  var timedN = T.trips.filter(function(t){ return t.rec; }).length;
+  if(timedN) sum.push(timedN+' 趟有時間');
+  if(T.untimed.length) sum.push(T.untimed.length+' 筆時間未知');
+  if(T.free.length){ var mx = 0; T.free.forEach(function(p){ mx = Math.max(mx, p[1]-p[0]); }); sum.push('最長空檔 '+tlMin(mx)+' 分'); }
+  h += '<div style="display:flex;align-items:center;gap:8px"><div style="flex:1;font-size:13px;line-height:1.6">'+esc(sum.join(' · '))+'</div>'+
+    (ev.length || T.untimed.length ? '<button class="btn btn-ghost" style="flex:none;padding:6px 10px;font-size:12.5px" data-act="hist-tl" aria-expanded="'+(histTlOpen?'true':'false')+'">'+(histTlOpen ? '收起 ▴' : '展開 ▾')+'</button>' : '')+'</div>';
+  if(histTlOpen){
+    if(T.R && !T.ok) h += '<div style="font-size:11.5px;'+mute+';line-height:1.6;margin-top:8px">ⓘ 這天的工時改過,跟打卡時間對不上,下面的上下班時間只供參考。</div>';
+    h += '<div style="margin-top:8px">';
+    ev.forEach(function(x){
+      var txt = esc(x.txt);
+      if(x.fix) txt += ' <a data-act="brk-undo:'+d+'_'+(+x.fix.at)+'" style="cursor:pointer;color:var(--accent);font-weight:700;white-space:nowrap">↩️ 取消這段補登</a>';
+      h += '<div style="display:flex;gap:10px;padding:5px 0;border-top:1px dashed var(--border);font-size:13px;line-height:1.5'+(x.gap ? ';'+mute : '')+(x.warn ? ';color:var(--expense)' : '')+'"><span class="num" style="flex:none;min-width:54px;'+mute+'">'+tlTime(x.ts, d)+'</span><span style="flex:1">'+txt+'</span></div>';
+    });
+    if(T.untimed.length){
+      h += '<div style="padding:6px 0;border-top:1px dashed var(--border);font-size:13px;line-height:1.6"><span style="'+mute+'">時間未知</span>(沒有按上下車,只記了金額):'+
+        T.untimed.map(function(r){ return esc(platformDef(r.platform).label)+' '+fmtMoneyFor(r.platform, computeNetRevenue(r)+(+r.tip||0)); }).join('、')+'</div>';
+    }
+    if(T.free.length) h += '<div style="font-size:11.5px;'+mute+';line-height:1.6;padding-top:6px;border-top:1px dashed var(--border)">「空檔」是上班時間裡沒有接單、載客的時間,照樣算工時。</div>';
+    h += '</div>';
+  }
+  // G1: what was entered, each one can be taken back
+  var fixes = T.fixes.slice().sort(function(a, b){ return a.s-b.s; });
+  if(fixes.length){
+    h += '<div style="margin-top:10px;font-size:12.5px;line-height:1.7"><b>補登過的休息</b>';
+    fixes.forEach(function(f){ h += '<div>'+esc(tlSpan(f.s, f.e, d))+'('+fmtHM((f.e-f.s)/3600000)+(f.grp ? ',跨營業日分界' : '')+') <a data-act="brk-undo:'+d+'_'+(+f.at)+'" style="cursor:pointer;color:var(--accent);font-weight:700">↩️ 取消</a></div>'; });
+    h += '</div>';
+  }
+  if(!why) h += '<div class="btn-row" style="margin-top:10px"><button class="btn btn-ghost" data-act="brk-add:'+d+'">☕ 補登休息時段</button></div>'+
+    '<div style="font-size:11.5px;'+mute+';line-height:1.6;margin-top:4px">忘了按休息的話可以補登;只補確定沒有接單、等單的時間,等單、空車照樣算工時。</div>';
+  else h += '<div style="font-size:12px;'+mute+';line-height:1.6;margin-top:10px">'+esc(why)+'</div>';
+  return h + '</div></div>';
+}
 // 載客里程 (待辦 2-10): the km of each trip of day t (每趟公里數 when typed, else the straight line from 上車 to 下車, as
 // 🏁 車隊比較 does), against the day's 每日里程. Nothing without a 每日里程 or without one trip that has a distance.
 // dayLoadedKmInfo: the numbers ({dayKm, trips, kmN, real, sum}, null when there is nothing to say); the 2-12 share
@@ -11558,7 +11890,7 @@ function openOnboardCar(){
   var h = onboardStep(1, '你開的是哪種車?');
   h += '<button style="'+big+'" data-act="ob-car:multi"><b style="font-size:15px">多元計程車</b><br><span style="font-size:12px;color:var(--text-muted)">Uber、台灣大、大都會、YOXI、LINE GO…</span></button>';
   h += '<button style="'+big+'" data-act="ob-car:yellow"><b style="font-size:15px">小黃(一般計程車)</b><br><span style="font-size:12px;color:var(--text-muted)">跳表計費,也接 Uber 小黃、呼叫小黃、路招</span></button>';
-  h += '<button style="'+big+'" data-act="ob-car:rental"><b style="font-size:15px">R 牌租賃車</b><br><span style="font-size:12px;color:var(--text-muted)">靠行車行派單、平台接單</span></button>';
+  h += '<button style="'+big+'" data-act="ob-car:rental"><b style="font-size:15px">R 牌租賃車</b><br><span style="font-size:12px;color:var(--text-muted)">車行派單、平台訂單</span></button>';
   h += '<div style="font-size:11.5px;color:var(--text-muted)">之後可以在 ⚙️「我的車」改。</div>';
   h += onboardSkipHtml('ob-car-skip');
   openModal(h);
@@ -11784,12 +12116,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.27.1';
+var APP_VERSION = '2026.11.27.2';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.27.2', '🕒 歷史頁點某一天,多了「時間軸」:上班、接單、上車、下車、空檔、下班照時間排好。忘了按休息可以「補登休息時段」,只補確定沒接單、等單的時間(等單、空車照樣算工時),跟行程重疊會擋下;補錯了可以取消', '', {tab:'history', find:'時間軸', day:true}],
   ['2026.11.25.1', '📊 不具名使用人數統計改成「你同意才送」:打開時會問一次,選「不用了」就完全不送,之後可以在 ⚙️ 設定改'],
   ['2026.11.24.8', '🚐 YOXI 的預估車資、據點叫車,大都會的預估車資,記帳時要選付款方式(現金、信用卡…),刷卡的手續費才算得對;以前記的這些單照現金算,不會變。另外:這個月才開始記帳的,月底預測改從開始記帳那天起算;年度報表的手續費不再算進自己吸收的優惠券'],
   ['2026.11.24.7', '🔧 修正:截圖辨識遇到日期看不清楚時,不會再判成還沒到的那一週'],
@@ -13083,7 +13416,7 @@ document.addEventListener('keydown', function(e){
 // screens (restoring an older backup is the way out). Everything else is turned away with a short notice.
 var READ_ONLY_ACTS = ['tab','noop','close-modal','discard-settings','jump-expenses','day','month','year','period','select-day','chart-mode','cal-show',
   'sum-kind','sum-nav','open-summary','open-summary-home','open-report','rpt-kind','rpt-nav','rpt-close','rpt-print','rpt-make','hist-report','year-report','year-report-csv',
-  'open-help','open-settings','set-sec','ver-tap','dismiss-tab-warning','wn-go',
+  'open-help','open-settings','set-sec','ver-tap','hist-tl','dismiss-tab-warning','wn-go',
   'open-import','open-import-pick','do-import','open-restore','do-restore','undo-restore','move-from-web',
   'export-file','quick-backup','open-export','copy-export','copy-saved','backup-dest','backup-snooze','share-day','share-day-go','share-back','copy-vip-id','rn-copy-id',
   'open-crowd','crowd-close','crowd-reload','open-roadnews','rn-tab','rn-hx','rn-reload','traffic-show','open-fare-compare','cmp-pay','open-subbreakdown','exp-cat-detail','explain-net',
@@ -13138,6 +13471,11 @@ document.addEventListener('click', function(e){
   else if(cmd==='camp-del'){ var cdl = (state.campaigns||[]).filter(function(x){ return x.id===arg; })[0]; if(confirm('刪除這個活動?(已經記進帳裡的加給和獎勵不會被刪掉)'+(cdl&&cdl.repeat?'\n\n這是每週重複的原始活動卡,刪除後之後就不會再自動建立。':''))){ state.campaigns = (state.campaigns||[]).filter(function(x){ return x.id!==arg; }); save(); closeModal(); renderAll(); } }
   else if(cmd==='camp-settle'){ var cs = arg.split(':'); settleCampaign(cs[0], cs[1]==='yes'); }
   else if(cmd==='save-shift-fix'){ saveShiftFix(); }
+  else if(cmd==='brk-add'){ openBrkAdd(arg); }
+  else if(cmd==='brk-check'){ brkCheckForm(); }
+  else if(cmd==='brk-save'){ brkSaveForm(); }
+  else if(cmd==='brk-undo'){ brkUndoAsk(arg); }
+  else if(cmd==='hist-tl'){ histTlOpen = !histTlOpen; renderAll(); }
   else if(cmd==='clock-in'){
     rollShiftOver();
     if(((state.dailyMeta||{})[todayStr()]||{}).activeShiftStart){ renderAll(); return; }   // carried over meanwhile: already on
