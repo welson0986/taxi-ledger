@@ -1540,12 +1540,15 @@ function doClockOut(E){
   if(state.pendingAccept) state.pendingAccept = null;
   var t = todayStr(), m = (state.dailyMeta||{})[t];
   if(!m || !m.activeShiftStart){ if(document.getElementById('modalBody')) closeModal(); renderAll(); return; }
+  var from = shiftFromOf(t, m), op = odoOn() ? odoOpenFor(t) : null;
   var endDay = endShiftAt(t, E);
   noteCrossOut(t, endDay, E);
   save(); cloudSyncIfBehind(true);
   if(document.getElementById('modalBody')) closeModal();
   renderAll();
-  if(uiShow('dayReport') && openDayReport(endDay)) rvArm(endDay);
+  // 儀表板讀數: the 下班 reading first (the shift is already ended), then the day's report
+  if(odoOn() && !(op && op.p.skip)){ openOdoOut(op, from, E, endDay); return; }
+  odoReport(endDay);
 }
 function findMissingKmDate(){
   if(!uiOn('km')) return null;
@@ -1561,12 +1564,20 @@ function findMissingKmDate(){
 function openMissingKmModal(dateStr){
   var h = '<div class="modal-title">補填里程<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
   h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:14px;line-height:1.6"><b style="color:var(--text)">'+dateStr+'</b> 有出車,但還沒填里程。補上之後,每公里成本、每公里實收、油耗才算得出來。</div>';
+  if(odoOn()){
+    // 儀表板讀數: that day's readings (a 上班 one already taken is put in), or the km straight away
+    var mop = missingOdoOpen(dateStr);
+    h += '<div class="form-grid2"><div class="form-row"><label>上班讀數</label>'+odoNumIn('f-missing-os', mop ? mop.s : null, '')+'</div><div class="form-row"><label>下班讀數</label>'+odoNumIn('f-missing-oe', null, '')+'</div></div>';
+    h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-6px 0 8px">沒抄讀數的話,直接填下面的公里數。</div>';
+  }
   h += '<div class="form-row"><label>'+dateStr+' 里程 (km)</label><input class="num-input" type="number" step="0.1" min="0" inputmode="decimal" id="f-missing-km" placeholder="0.0"></div>';
   h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="skip-missing-km:'+dateStr+'">這天不記里程</button><button class="btn btn-primary" style="flex:1" data-act="save-missing-km:'+dateStr+'">儲存</button></div>';
   h += '<div style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.5">按右上角 ✕ 會先跳過,下次打開 App 會再提醒。</div>';
   openModal(h);
   focusField(['f-missing-km']);
 }
+// day d's shift with a 上班 reading and no 下班 one (a 下班打卡 filled in afterwards asks no reading)
+function missingOdoOpen(d){ return odoShifts(d).filter(function(p){ return !p.skip && p.s>0 && !(p.e>0); })[0] || null; }
 function openNextMissingKmOrClose(){
   var next = findMissingKmDate();
   if(next) openMissingKmModal(next); else closeModal();
@@ -2591,6 +2602,33 @@ function chargeStatsInRange(from,to){
   });
   return {kwh:kwh, cost:cost, costKwh:costKwh};
 }
+/* 每公升可跑, two ways (11/28):
+   加滿到加滿  two 加油 with 加滿 ticked and a 儀表板里程: the km between ÷ the litres put in after the first, up to and
+              with the second (a fill in between without its litres spoils that stretch). Counted in the period its
+              second 加滿 falls in; the odometer includes drives off duty, as the fuel does.
+   累積估計    otherwise the period's km ÷ the litres of its fills (better the more fills it covers), shown as 估計值.
+   Not worked out when the period has no fill, a fill without its litres (only the money: 每公里油錢 still is), or no km. */
+var FUEL_SPAN_MAX = 3000;   // km on one tank, at most
+function fuelEconomy(from, to){
+  var fs = state.expenses.filter(function(e){ return e.category==='fuel'; }).sort(function(a,b){ return a.date<b.date?-1:(a.date>b.date?1:(a.ts||0)-(b.ts||0)); });
+  var km = 0, L = 0, n = 0, prev = -1;
+  fs.forEach(function(e, i){
+    if(!(e.full && +e.odo>0)) return;
+    if(prev>=0 && inRange(e.date, from, to)){
+      var a = fs[prev], span = +e.odo - +a.odo, lit = 0, ok = span>0 && span<=FUEL_SPAN_MAX;
+      for(var j=prev+1; j<=i && ok; j++){ if(+fs[j].liters>0) lit += +fs[j].liters; else ok = false; }
+      if(ok && lit>0){ km += span; L += lit; n++; }
+    }
+    prev = i;
+  });
+  if(n) return {kmL:km/L, mode:'full', n:n};
+  var inR = fs.filter(function(e){ return inRange(e.date, from, to); }), miss = inR.filter(function(e){ return !(+e.liters>0); }).length;
+  if(!inR.length) return {kmL:null, why:'none'};
+  if(miss) return {kmL:null, why:'liters', miss:miss, n:inR.length};
+  var rk = totalKmInRange(from, to);
+  if(!(rk>0)) return {kmL:null, why:'km'};
+  return {kmL:rk/fuelStatsInRange(from, to).liters, mode:'sum', n:inR.length};
+}
 function fuelStatsInRange(from,to){
   var liters=0, cost=0;
   state.expenses.forEach(function(e){ if(e.category==='fuel' && inRange(e.date,from,to)){ liters+=(+e.liters||0); cost+=(+e.amount||0); } });
@@ -2669,6 +2707,216 @@ function vehSetOdo(km, date){
   if(cur && cur.baseDate && date < cur.baseDate) return false;
   v.odo = {base:Math.round(+km), baseDate:date, at:Date.now()};
   return true;
+}
+/* 儀表板讀數 (11/28, 預設關閉, 免費): 上班打卡、下班打卡 each ask the dashboard reading and the day's km is worked out
+   from them (含空車、等單, as 時薪 counts the empty time). No location, nothing sent. One entry per shift, on the
+   business day the shift began (a shift run past the day boundary keeps all its km there):
+     dailyMeta[d].odoSh = [{at, s, e, eAt, km, priv, skip}]
+       at   the 上班打卡 it belongs to (the shift's activeShiftStart; 補登上班時間 moves it along)
+       s/e  the readings at 上班 / 下班 (whole km); eAt when the 下班 reading was taken
+       km   a distance typed instead, for a shift with no 上班 reading
+       priv km driven since the last 下班 reading, seen at 上班 (私人用車: shown, never counted)
+       skip 這班不記里程
+     dailyMeta[d].kmOdo  the km the readings last wrote into .km
+   Every sum still reads .km alone, so reports, analysis, export, backup and older versions go on as before. Once .km is
+   not what the readings wrote (typed by hand, or changed on an older version) .km wins and the readings only show. */
+var ODO_MAX = 3000000, ODO_DAY_WARN = 600, DAY_KM_MAX = 2000;
+function odoOn(){ return uiOn('odoRead') && uiOn('km'); }
+function odoShifts(d){ var m = (state.dailyMeta||{})[d]; return m && Array.isArray(m.odoSh) ? m.odoSh : []; }
+// a typed reading: null when blank, NaN when not 1～ODO_MAX
+function odoInt(v){ v = String(v==null ? '' : v).replace(/[,\s]/g, ''); if(v==='') return null; var n = +v; return isFinite(n) && n>=1 && n<=ODO_MAX ? Math.round(n) : NaN; }
+function odoPairKm(p){ if(!p || p.skip) return null; if(p.s>0 && p.e>0) return p.e>=p.s ? p.e-p.s : null; return +p.km>0 ? +p.km : null; }
+function odoDayKm(d){ var t = null; odoShifts(d).forEach(function(p){ var k = odoPairKm(p); if(k!=null) t = (t||0) + k; }); return t==null ? null : Math.round(t*10)/10; }
+// 218 公里, 35.5 公里 (no 「.0」 on a whole km)
+function kmTxt(v){ v = Math.round((+v||0)*10)/10; return fmtNum(v, v%1 ? 1 : 0); }
+function odoKmAuto(m){ return m.km==null || (m.kmOdo!=null && +m.km===+m.kmOdo); }
+// a day's km typed by hand: 0～DAY_KM_MAX, asked once more above ODO_DAY_WARN (false: not taken)
+function dayKmOk(v){
+  if(v==null) return true;
+  if(!(isFinite(v) && v>=0 && v<=DAY_KM_MAX)){ alert('一天的里程請填 0～'+DAY_KM_MAX+' 公里。'); return false; }
+  if(v>ODO_DAY_WARN && !confirm('一天開了 '+kmTxt(v)+' 公里,超過 '+ODO_DAY_WARN+' 公里。\n確定沒有填錯嗎?')) return false;
+  return true;
+}
+// the readings' km into day d's .km while .km is still theirs; force: the driver changed the readings themself
+function odoApply(d, force){
+  var m = dm(d), k = odoDayKm(d);
+  if(k==null){ if(m.kmOdo!=null && odoKmAuto(m)) m.km = null; delete m.kmOdo; return {km:null}; }
+  if(!force && !odoKmAuto(m)) return {km:k, kept:+m.km};
+  m.km = k; m.kmOdo = k; delete m.kmSkipped;
+  return {km:k};
+}
+// the newest 下班 reading taken up to ts (put in at 上班: a car not driven since needs one tap)
+function odoLastEnd(ts){
+  var best = null;
+  Object.keys(state.dailyMeta||{}).forEach(function(d){ odoShifts(d).forEach(function(p){
+    var at = +p.eAt||0;
+    if(p.e>0 && at<=ts && (!best || at>best.at)) best = {v:+p.e, at:at, d:d};
+  }); });
+  return best;
+}
+// the entry of the shift open on day t (looked up by its 上班打卡, also on the day or two before for a carried shift)
+function odoOpenFor(t){
+  var from = shiftFromOf(t), hit = null;
+  if(!from) return null;
+  [t, addDays(t, -1), addDays(t, -2)].forEach(function(d){ odoShifts(d).forEach(function(p){ if(!hit && +p.at===from) hit = {d:d, p:p}; }); });
+  return hit;
+}
+var odoAsk = null;   // the 上班 / 下班 reading being asked: {kind, d, at, last | s, E, endDay}
+function odoNumIn(id, val, ph){ return '<input class="num-input" id="'+id+'" type="number" min="1" max="'+ODO_MAX+'" step="1" inputmode="numeric" placeholder="'+ph+'" value="'+(val!=null ? val : '')+'">'; }
+function openOdoIn(d, at){
+  var last = odoLastEnd(at);
+  odoAsk = {kind:'in', d:d, at:at, last:last ? last.v : null};
+  var h = '<div class="modal-title">🧭 上班:儀表板里程<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div class="form-row"><label>儀表板現在的里程(公里)</label>'+odoNumIn('f-odo-in', last ? last.v : null, '例如 125000')+'</div>';
+  h += '<div id="odoLive" style="font-size:12.5px;line-height:1.6;margin:-4px 0 12px;color:var(--text-muted)">'+odoInLive(last ? last.v : null)+'</div>';
+  h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="odo-in:skip">這班不記里程</button><button class="btn btn-primary" style="flex:1" data-act="odo-in:save">確定</button></div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.6">下班時再抄一次,App 幫你算這班開了幾公里(含空車、等單)。不用定位、不耗電。已經上班打卡了,按 ✕ 也不影響工時。</div>';
+  openModal(h);
+  focusField(['f-odo-in'], true);
+}
+function odoInLive(v){
+  var a = odoAsk; if(!a) return '';
+  if(a.last==null) return '第一次抄,之後上班會先幫你填上次下班的數字。';
+  if(v==null || isNaN(v)) return '上次下班是 '+fmtNum(a.last,0)+' 公里。';
+  if(v===a.last) return '跟上次下班一樣:下班後沒開過車,直接按確定。';
+  if(v>a.last) return '下班後開了 '+fmtNum(v-a.last,0)+' 公里(私人用車,不算在跑車里程)。';
+  return '<span style="color:var(--expense);font-weight:700">比上次下班的 '+fmtNum(a.last,0)+' 公里還少,里程表不會倒退,請再看一次。</span>';
+}
+function saveOdoIn(skip){
+  var a = odoAsk; if(!a || a.kind!=='in'){ closeModal(); return; }
+  var m = dm(a.d), list = (Array.isArray(m.odoSh) ? m.odoSh : []).filter(function(p){ return +p.at!==+a.at; });
+  if(skip) list.push({at:a.at, skip:true});
+  else {
+    var v = odoInt((document.getElementById('f-odo-in')||{}).value);
+    if(v==null){ alert('請填儀表板里程,或按「這班不記里程」。'); return; }
+    if(isNaN(v)){ alert('里程請填 1～'+fmtNum(ODO_MAX,0)+' 的整數。'); return; }
+    if(a.last!=null && v<a.last && !confirm('上次下班是 '+fmtNum(a.last,0)+' 公里,現在填的 '+fmtNum(v,0)+' 公里比較少。\n里程表不會倒退,確定要用這個數字嗎?')) return;
+    var p = {at:a.at, s:v}; if(a.last!=null && v>a.last) p.priv = v-a.last;
+    list.push(p);
+  }
+  m.odoSh = list; odoAsk = null;
+  save(); closeModal(); renderAll();
+}
+function openOdoOut(op, from, E, endDay){
+  var d = op ? op.d : (from ? businessDayOf(from) : endDay), s = op && op.p.s>0 ? +op.p.s : null;
+  odoAsk = {kind:'out', d:d, at:op ? +op.p.at : from, s:s, E:E, endDay:endDay};
+  var h = '<div class="modal-title">🧭 下班:儀表板里程<button class="close" data-act="odo-out:close">'+ICON_CLOSE+'</button></div>';
+  if(s!=null) h += '<div class="form-row"><label>儀表板現在的里程(上班時 '+fmtNum(s,0)+' 公里)</label>'+odoNumIn('f-odo-out', null, String(s))+'</div>';
+  else {
+    h += '<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;margin-bottom:10px">這班上班時沒有抄里程。填現在的讀數,下次上班會先幫你帶這個數字;知道這班開了幾公里,也可以直接填。</div>';
+    h += '<div class="form-row"><label>儀表板現在的里程(選填)</label>'+odoNumIn('f-odo-out', null, '例如 125000')+'</div>';
+    h += '<div class="form-row"><label>這班開了幾公里(選填,含空車)</label><input class="num-input" id="f-odo-km" type="number" min="0" max="'+DAY_KM_MAX+'" step="0.1" inputmode="decimal" placeholder="0.0"></div>';
+  }
+  h += '<div id="odoLive" style="font-size:12.5px;line-height:1.6;margin:-4px 0 12px;color:var(--text-muted)"></div>';
+  h += '<div class="btn-row" style="gap:8px"><button class="btn btn-ghost" style="flex:1" data-act="odo-out:skip">這班不記里程</button><button class="btn btn-primary" style="flex:1" data-act="odo-out:save">儲存</button></div>';
+  h += '<div style="font-size:11px;color:var(--text-muted);margin-top:10px;line-height:1.6">已經下班打卡了,這裡只記里程。'+(d!==endDay ? '這班跨過營業日分界,里程算在上班那天('+mdOf(d)+')。' : '')+'</div>';
+  openModal(h);
+  focusField(['f-odo-out']);
+}
+function odoOutLive(v){
+  var a = odoAsk; if(!a || a.s==null || v==null || isNaN(v)) return '';
+  if(v<a.s) return '<span style="color:var(--expense);font-weight:700">比上班時的 '+fmtNum(a.s,0)+' 公里還少,里程表不會倒退,請再看一次。</span>';
+  return '這班開了 <b style="color:var(--text)">'+fmtNum(v-a.s,0)+' 公里</b>(含空車、等單)'+(v-a.s>ODO_DAY_WARN ? ',超過 '+ODO_DAY_WARN+' 公里,儲存時會再問一次' : '')+'。';
+}
+function odoLiveUpdate(id){
+  var el = document.getElementById(id), box = document.getElementById('odoLive'); if(!el || !box) return;
+  var v = odoInt(el.value);
+  box.innerHTML = id==='f-odo-in' ? odoInLive(v) : odoOutLive(v);
+}
+function odoReport(endDay){ if(uiShow('dayReport') && openDayReport(endDay)) rvArm(endDay); }
+// mode: 'save', 'skip' (這班不記里程) or 'close' (✕: nothing written); the day's report follows in every case
+function saveOdoOut(mode){
+  var a = odoAsk; if(!a || a.kind!=='out'){ closeModal(); return; }
+  if(mode==='close'){ odoAsk = null; closeModal(); odoReport(a.endDay); return; }
+  var m = dm(a.d); if(!Array.isArray(m.odoSh)) m.odoSh = [];
+  var p = m.odoSh.filter(function(x){ return +x.at===+a.at; })[0], msg = '';
+  if(mode==='skip'){
+    if(!p){ p = {at:a.at}; m.odoSh.push(p); }
+    delete p.s; delete p.e; delete p.eAt; delete p.km; delete p.priv; p.skip = true;
+    odoApply(a.d);
+  } else {
+    var v = odoInt((document.getElementById('f-odo-out')||{}).value);
+    var kEl = document.getElementById('f-odo-km'), kT = kEl ? kEl.value.trim() : '', kV = kT==='' ? null : +kT;
+    if(isNaN(v)){ alert('里程請填 1～'+fmtNum(ODO_MAX,0)+' 的整數。'); return; }
+    if(a.s!=null){
+      if(v==null){ alert('請填儀表板里程,或按「這班不記里程」。'); return; }
+      if(v<a.s){ alert('下班的 '+fmtNum(v,0)+' 公里比上班時的 '+fmtNum(a.s,0)+' 公里還少,里程表不會倒退,請再看一次。'); return; }
+      if(v-a.s>ODO_DAY_WARN && !confirm('這班開了 '+fmtNum(v-a.s,0)+' 公里,超過 '+ODO_DAY_WARN+' 公里。\n確定沒有填錯嗎?')) return;
+    } else {
+      if(v==null && kV==null){ alert('請填里程或公里數,或按「這班不記里程」。'); return; }
+      if(kV!=null && !(kV>0 && kV<=DAY_KM_MAX)){ alert('公里數請填 0.1～'+DAY_KM_MAX+'。'); return; }
+      if(kV>ODO_DAY_WARN && !confirm('這班開了 '+kmTxt(kV)+' 公里,超過 '+ODO_DAY_WARN+' 公里。\n確定沒有填錯嗎?')) return;
+    }
+    if(!p){ p = {at:a.at}; m.odoSh.push(p); }
+    delete p.skip;
+    if(v!=null){ p.e = v; p.eAt = a.E; }
+    if(a.s==null && kV!=null) p.km = Math.round(kV*10)/10;
+    var r = odoApply(a.d);
+    // the reading also sets 車輛提醒's mileage (drives off duty included), for a driver who uses it
+    if(v!=null && vehOdoAsk()) vehSetOdo(v, a.endDay);
+    var dw = a.d===todayStr() ? '今日' : mdOf(a.d)+' ';
+    msg = r.kept!=null ? '✓ 已記讀數;'+dw+'里程是你自己填的 '+kmTxt(r.kept)+' 公里,沒有改' : r.km!=null ? '✓ '+dw+'里程 '+kmTxt(r.km)+' 公里' : '✓ 已記讀數';
+  }
+  odoAsk = null;
+  save(); closeModal(); renderAll();
+  if(msg) showToast(msg, 2600);
+  odoReport(a.endDay);
+}
+// the line under 今日里程 / a day's 里程 on 歷史: the readings, 私人用車, and the way to change them
+function odoLineHtml(d){
+  if(!odoOn()) return '';
+  var t = todayStr(), from = d===t ? shiftFromOf(t) : 0, parts = [], priv = 0;
+  odoShifts(d).forEach(function(p){
+    if(p.skip) return;
+    if(p.priv>0) priv += +p.priv;
+    if(p.s>0 && p.e>0) parts.push(fmtNum(p.s,0)+' → '+fmtNum(p.e,0)+(p.e>=p.s ? '('+fmtNum(p.e-p.s,0)+' 公里)' : '(讀數不對)'));
+    else if(p.s>0) parts.push('上班 '+fmtNum(p.s,0)+(from && +p.at===from ? ',下班時再抄一次' : ',沒有下班讀數'));
+    else if(p.km>0 || p.e>0) parts.push((p.km>0 ? '這班 '+kmTxt(p.km)+' 公里' : '')+(p.e>0 ? (p.km>0 ? ',' : '')+'下班 '+fmtNum(p.e,0) : ''));
+  });
+  // today's card also shows a shift begun the day before (its km goes to that day)
+  var op = d===t ? odoOpenFor(t) : null;
+  if(op && op.d!==t && op.p.s>0 && !op.p.skip) parts.push('上班 '+fmtNum(op.p.s,0)+'(這班算在 '+mdOf(op.d)+'),下班時再抄一次');
+  var m = (state.dailyMeta||{})[d] || {}, k = odoDayKm(d), h = parts.length ? '🧭 儀表板 '+parts.join('、') : '🧭 上班、下班打卡時會問儀表板里程';
+  if(k!=null && m.km!=null && !odoKmAuto(m)) h += '<br>'+(d===t ? '今日' : '這天')+'里程是你自己填的;讀數算的是 '+kmTxt(k)+' 公里';
+  if(priv>0) h += '<br>下班後開了 '+fmtNum(priv,0)+' 公里(私人用車,不算在跑車里程)';
+  return '<div class="odo-line" style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;font-size:11.5px;color:var(--text-muted);line-height:1.6;padding:0 0 6px"><span>'+h+'</span>'+
+    '<a data-act="odo-edit:'+d+'" role="button" tabindex="0" style="flex:none;color:var(--accent);cursor:pointer;font-weight:700">'+(parts.length ? '改讀數 ›' : '補抄 ›')+'</a></div>';
+}
+function openOdoEdit(d){
+  var rows = odoShifts(d).filter(function(p){ return !p.skip; });
+  var h = '<div class="modal-title">🧭 '+mdOf(d)+' 儀表板讀數<button class="close" data-act="close-modal">'+ICON_CLOSE+'</button></div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">一班一行。兩格都清空就是刪掉那一班的讀數;最下面空白的一行可以補一班。</div>';
+  for(var i=0; i<=rows.length; i++){
+    var p = rows[i] || {};
+    h += '<div style="font-size:12px;font-weight:700;color:var(--text-muted);margin:4px 0 2px">'+(i<rows.length ? '第 '+(i+1)+' 班' : '補一班')+'</div>';
+    h += '<div class="form-grid2"><div class="form-row"><label>上班讀數</label>'+odoNumIn('f-oe-s-'+i, p.s>0 ? p.s : null, '')+'</div><div class="form-row"><label>下班讀數</label>'+odoNumIn('f-oe-e-'+i, p.e>0 ? p.e : null, '')+'</div></div>';
+    if(p.km>0 && !(p.s>0)) h += '<div style="font-size:11.5px;color:var(--text-muted);margin:-6px 0 8px">這班直接填了 '+kmTxt(p.km)+' 公里;填上下班讀數會改用讀數算。</div>';
+  }
+  h += '<div class="btn-row"><button class="btn btn-primary" data-act="odo-edit-save:'+d+'">儲存</button></div>';
+  openModal(h);
+}
+function saveOdoEdit(d){
+  var m = dm(d), old = Array.isArray(m.odoSh) ? m.odoSh : [], rows = old.filter(function(p){ return !p.skip; });
+  var out = old.filter(function(p){ return p.skip; }), endTs = Math.min(Date.now(), dayStartTs(addDays(d, 1))-1);
+  for(var i=0; i<=rows.length; i++){
+    var sEl = document.getElementById('f-oe-s-'+i), eEl = document.getElementById('f-oe-e-'+i); if(!sEl || !eEl) continue;
+    var s = odoInt(sEl.value), e = odoInt(eEl.value), p = rows[i] ? Object.assign({}, rows[i]) : null, n = i+1;
+    if(isNaN(s) || isNaN(e)){ alert('第 '+n+' 行的里程請填 1～'+fmtNum(ODO_MAX,0)+' 的整數。'); return; }
+    if(s!=null && e!=null && e<s){ alert('第 '+n+' 行:下班的 '+fmtNum(e,0)+' 比上班的 '+fmtNum(s,0)+' 還少,里程表不會倒退,請再看一次。'); return; }
+    if(s!=null && e!=null && e-s>ODO_DAY_WARN && !confirm('第 '+n+' 行這班開了 '+fmtNum(e-s,0)+' 公里,超過 '+ODO_DAY_WARN+' 公里。\n確定沒有填錯嗎?')) return;
+    if(s==null && e==null){ if(p && p.km>0){ delete p.e; delete p.eAt; out.push(p); } continue; }
+    if(!p) p = {at:dayStartTs(d)+i};
+    if(s!=null) p.s = s; else delete p.s;
+    if(e!=null){ if(+p.e!==e || !p.eAt) p.eAt = endTs; p.e = e; } else { delete p.e; delete p.eAt; }
+    if(s!=null) delete p.km;
+    out.push(p);
+  }
+  m.odoSh = out;
+  var k = odoDayKm(d), force = true;
+  if(k!=null && m.km!=null && !odoKmAuto(m) && +m.km!==k) force = confirm('這天的里程是你自己填的 '+kmTxt(m.km)+' 公里。\n要改成讀數算的 '+kmTxt(k)+' 公里嗎?(按「取消」只存讀數,里程不改)');
+  var r = odoApply(d, force);
+  save(); closeModal(); renderAll();
+  showToast(r.kept!=null ? '✓ 已存讀數,里程沒有改' : r.km!=null ? '✓ 已存讀數,'+mdOf(d)+' 里程 '+kmTxt(r.km)+' 公里' : '✓ 已存讀數', 2400);
 }
 function addMonthsStr(ds, n){
   var d = new Date(ds+'T00:00:00'), day = d.getDate();
@@ -4568,7 +4816,7 @@ function renderEntry(){
   // 11/26: 打卡 stays low by default (it is not pressed often); a driver who wants it on top is told where to move it
   var dailyFirst = homeOrder().filter(function(k){ return !homeHidden(k); })[0]==='daily';
   if(showDaily) h += '<div class="section"><div class="section-title"><span>今日行車</span>'+(dailyFirst ? '' : '<a data-act="home-arrange" style="font-size:12px;font-weight:700;color:var(--accent);cursor:pointer">想放上面?調整位置 ›</a>')+'</div><div class="card daily-card">';
-  if(uiShow('km')) h += '<div class="daily-row"><span class="l">今日里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(meta.km!=null?meta.km:'')+'" placeholder="0.0" aria-label="今日里程,公里" data-km-input></div>';
+  if(uiShow('km')) h += '<div class="daily-row"><span class="l">今日里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(meta.km!=null?meta.km:'')+'" placeholder="0.0" aria-label="今日里程,公里" data-km-input></div>'+odoLineHtml(t);
   if(uiShow('shift')) h += '<div class="daily-row"><span class="l">工時(已扣休息)</span><div style="display:flex;align-items:center;gap:10px"><span class="hours-badge">'+hoursLabel+'</span>'+shiftBtn+'</div></div>';
   if(uiShow('shift') && carriedOpen(t, meta)){
     // a shift carried over the boundary: one line says where its first part went (11/22)
@@ -4823,7 +5071,7 @@ function renderHistory(){
 
   var histMeta = dm(selectedDay), hmd = (+selectedDay.slice(5,7))+'/'+(+selectedDay.slice(8,10));   // B3-15: names read out by a screen reader
   h += '<div class="section"><div class="card daily-card">'+
-    (uiShow('km') ? '<div class="daily-row"><span class="l">'+selectedDay+' 里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(histMeta.km!=null?histMeta.km:'')+'" placeholder="0.0" aria-label="'+hmd+' 里程,公里" data-km-input-date="'+selectedDay+'"></div>' : '')+
+    (uiShow('km') ? '<div class="daily-row"><span class="l">'+selectedDay+' 里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(histMeta.km!=null?histMeta.km:'')+'" placeholder="0.0" aria-label="'+hmd+' 里程,公里" data-km-input-date="'+selectedDay+'"></div>'+odoLineHtml(selectedDay) : '')+
     (uiShow('shift') ? '<div class="daily-row"><span class="l">'+selectedDay+' 工時(小時)'+((histMeta.workedMs||0)>0 ? '<div style="font-size:11.5px;color:var(--text-muted)">＝'+fmtHM(histMeta.workedMs/3600000)+'</div>' : '')+'</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.workedMs||0)/3600000).toFixed(2)+'" placeholder="0.00" aria-label="'+hmd+' 工時,小時" data-hours-input-date="'+selectedDay+'"></div>' : '')+
     (uiShow('shift') ? '<div class="daily-row"><span class="l">'+selectedDay+' 休息時間(小時)'+((histMeta.breakMs||0)>0 ? '<div style="font-size:11.5px;color:var(--text-muted)">＝'+fmtHM(histMeta.breakMs/3600000)+'</div>' : '')+'</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.breakMs||0)/3600000).toFixed(2)+'" placeholder="0.00" aria-label="'+hmd+' 休息時間,小時" data-break-input-date="'+selectedDay+'"></div>' : '')+
     (uiShow('toilet') ? '<div class="daily-row"><span class="l">'+selectedDay+' 🚻 上廁所(次)</span><input class="km-input" type="number" step="1" min="0" inputmode="numeric" value="'+(histMeta.toilet!=null?histMeta.toilet:'')+'" placeholder="0" aria-label="'+hmd+' 上廁所,次" data-toilet-input-date="'+selectedDay+'"></div>' : '')+
@@ -5869,10 +6117,14 @@ function renderAnalytics(){
   // per km: the same fixed costs as 淨利 (fixedSpan: kept and passed days only)
   var kmFixTo = fixedSpan(range.from, range.to).to, kmExp = varExp + fixExp;
   if(!F) h += '<div class="stat-tile"><div class="lbl">每公里花費(含固定成本)</div><div class="val expense num">'+(km>0?fmtMoney2(kmExp/km):'—')+'</div>'+(km>0 && kmFixTo<range.to && fixExp>0 ? '<div class="km-fix-note" style="font-size:10.5px;color:var(--text-muted);margin-top:2px">固定成本算到今天</div>' : '')+'</div>';
-  h += '<div class="stat-tile"><div class="lbl">每公里實收</div><div class="val income num">'+(km>0?fmtMoney2(net.total/km):'—')+'</div></div>';
+  h += '<div class="stat-tile"><div class="lbl">每公里實收</div><div class="val income num">'+(km>0?fmtMoney2(net.total/km):'—')+'</div>'+
+    (km>0 || odoOn() ? '' : '<div class="odo-hint" style="font-size:10.5px;line-height:1.5;margin-top:2px"><a data-act="open-odo-setting" role="button" tabindex="0" style="color:var(--accent);cursor:pointer">想自動算里程?到功能開關打開「儀表板讀數」</a></div>')+'</div>';
   h += '<div class="stat-tile"><div class="lbl">總里程</div><div class="val num"><span class="nw">'+fmtNum(km,1)+' km</span></div></div>';
   if(!F){
-  h += '<div class="stat-tile"><div class="lbl">每公升可跑</div><div class="val num">'+(fuel.liters>0?'<span class="nw">'+fmtNum(km/fuel.liters,2)+' km</span>':'—')+'</div></div>';
+  var fe = fuelEconomy(range.from, range.to), feNote = fe.mode==='full' ? '加滿到加滿('+fe.n+' 段)' : fe.mode==='sum' ? '估計值(期間里程 ÷ 加油公升)' :
+    fe.why==='liters' ? (uiOn('fuelQty') ? (fe.miss===fe.n ? '加油時填公升數才算得出來' : '有 '+fe.miss+' 次加油沒填公升數') : '到功能開關打開「公升數」') : fe.why==='km' ? '要有里程才算得出來' : '';
+  h += '<div class="stat-tile"><div class="lbl">每公升可跑</div><div class="val num">'+(fe.kmL!=null ? '<span class="nw">'+fmtNum(fe.kmL,2)+' km</span>' : fe.why==='liters' ? '資料不足' : '—')+'</div>'+
+    (feNote ? '<div class="fuel-note" style="font-size:10.5px;color:var(--text-muted);margin-top:2px">'+feNote+'</div>' : '')+'</div>';
   if(fuel.cost>0) h += '<div class="stat-tile"><div class="lbl">每公里油錢</div><div class="val expense num">'+(km>0?fmtMoney2(fuel.cost/km):'—')+'</div></div>';
   var chg = chargeStatsInRange(range.from, range.to);
   if(chg.cost>0) h += '<div class="stat-tile"><div class="lbl">每公里電費</div><div class="val expense num">'+(km>0?fmtMoney2(chg.cost/km):'—')+'</div></div>';
@@ -9427,7 +9679,7 @@ var LCSV_COLS = [
   ['date','營業日'],['actDate','實際日期'],['actTime','實際時間'],['pickTs','上車時間'],['dropTs','下車時間'],['recTs','記帳時間'],['late','補記'],
   ['io','收支'],['kind','類型'],['fleet','車隊/平台'],['subtype','車種/屬性'],['fareType','計價方式'],['payment','付款方式'],['detail','細項'],
   ['gross','車資/金額'],['tip','小費'],['fee','平台手續費'],['absorb','優惠券(自己吸收)'],['net','實收'],['toll','過路費退款'],
-  ['cat','支出類別'],['exp','支出金額'],['est','估算'],['km','這趟公里數'],['qty','加油公升/充電度數'],['id','識別碼'],
+  ['cat','支出類別'],['exp','支出金額'],['est','估算'],['km','這趟公里數'],['qty','加油公升/充電度數'],['odo','儀表板里程'],['full','加滿'],['id','識別碼'],
   ['pickLat','上車緯度','loc'],['pickLng','上車經度','loc'],['dropLat','下車緯度','loc'],['dropLng','下車經度','loc'],['place','地名','loc'],
   ['note','備註','note']];
 function lcsvCols(opt){ return LCSV_COLS.filter(function(c){ return !c[2] || (opt && opt[c[2]]); }); }
@@ -9459,7 +9711,7 @@ function lcsvIncomeRow(r, tollAll){
     detail:r.platform==='bonus' ? (r.bonusType||'') : isCancelFeeRec(r) ? (cx ? (LCSV_CX_BY[cx.by]||'未註明誰取消') : '') : (r.estimateType||''),
     // 優惠券、過路費退款 only on the trips that have one (blank adds up as 0)
     gross:lcsvMoney(g), tip:lcsvMoney(tip), fee:lcsvMoney(g-n-ab), absorb:ab ? lcsvMoney(ab) : '', net:lcsvMoney(n+tip), toll:toll ? lcsvMoney(toll) : '',
-    cat:'', exp:'', est:isNetEntryRec(r) ? '估' : '', km:tripKmOf(r)!=null ? tripKmOf(r) : '', qty:'', id:r.id||'',
+    cat:'', exp:'', est:isNetEntryRec(r) ? '估' : '', km:tripKmOf(r)!=null ? tripKmOf(r) : '', qty:'', odo:'', full:'', id:r.id||'',
     pickLat:p.lat!=null ? +p.lat : '', pickLng:p.lng!=null ? +p.lng : '', dropLat:d.lat!=null ? +d.lat : '', dropLng:d.lng!=null ? +d.lng : '',
     place:r.area||'', note:[r.event, r.note].filter(function(x){ return x; }).join(' · '),
     _n:n+tip, _g:g, _tip:tip, _fee:g-n-ab, _toll:toll};
@@ -9469,7 +9721,7 @@ function lcsvExpenseRow(e){
   var qty = e.category==='fuel' && +e.liters>0 ? +e.liters : (+e.kwh>0 ? +e.kwh : '');
   return {date:e.date, at:at, sortTs:e.ts||0, actDate:at ? toDateStr(new Date(at)) : '', actTime:lcsvTime(at), pickTs:'', dropTs:'', recTs:fmtTs(e.ts), late:late ? '補記' : '',
     io:'支出', kind:'支出', fleet:'', subtype:'', fareType:'', payment:'', detail:e.sub||'',
-    gross:'', tip:'', fee:'', absorb:'', net:'', toll:'', cat:catInfo(e.category).label, exp:lcsvMoney(e.amount), est:'', km:'', qty:qty, id:e.id||'',
+    gross:'', tip:'', fee:'', absorb:'', net:'', toll:'', cat:catInfo(e.category).label, exp:lcsvMoney(e.amount), est:'', km:'', qty:qty, odo:+e.odo>0 ? Math.round(+e.odo) : '', full:e.category==='fuel' && e.full ? '加滿' : '', id:e.id||'',
     pickLat:'', pickLng:'', dropLat:'', dropLng:'', place:'', note:e.note||'', _exp:+e.amount||0};
 }
 function lcsvData(from, to){
@@ -10118,10 +10370,13 @@ function openExpenseModal(catKey, editId){
   } else {
     h += '<div class="form-row"><label>金額</label><input class="num-input" id="f-amount" type="number" min="0" step="1" placeholder="0" inputmode="numeric" value="'+((existing&&existing.amount)||'')+'"></div>';
   }
-  if((catKey==='fuel' || catKey==='repair' || catKey==='charge') && vehOdoAsk()){
-    var estO = vehOdoEstimate();
-    h += '<div class="form-row"><label>儀表板里程(選填,校正保養提醒)</label><input class="num-input" id="f-exp-odo" type="number" min="0" step="1" inputmode="numeric" placeholder="'+(estO?('推估 '+estO.km):'例如 125000')+'" value="'+((existing&&existing.odo)||'')+'">'+
-      (catKey==='repair' ? '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">細項選「機油(小保養)」或「定期保養(大保養)」又填了里程,下次保養里程會自動往後算。</div>' : '')+'</div>';
+  // 儀表板讀數 on: every 加油／保養維修／充電 can take the reading (and 加滿, for 加滿到加滿 fuel use)
+  if((catKey==='fuel' || catKey==='repair' || catKey==='charge') && (vehOdoAsk() || odoOn())){
+    var estO = vehOdoEstimate(), lastO = estO ? null : odoLastEnd(Date.now());
+    h += '<div class="form-row"><label>儀表板里程(選填'+(vehOdoAsk() ? ',校正保養提醒' : '')+')</label><input class="num-input" id="f-exp-odo" type="number" min="0" step="1" inputmode="numeric" placeholder="'+(estO ? '推估 '+estO.km : lastO ? '上次下班 '+lastO.v : '例如 125000')+'" value="'+((existing&&existing.odo)||'')+'">'+
+      (catKey==='repair' && vehOdoAsk() ? '<div style="font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5">細項選「機油(小保養)」或「定期保養(大保養)」又填了里程,下次保養里程會自動往後算。</div>' : '')+'</div>';
+    if(catKey==='fuel') h += '<label style="display:flex;align-items:center;gap:8px;font-size:13.5px;margin:-4px 0 4px"><input type="checkbox" id="f-exp-full" style="width:18px;height:18px;flex:none"'+(existing&&existing.full?' checked':'')+'>這次有加滿</label>'+
+      '<div style="font-size:11.5px;color:var(--text-muted);margin:0 0 10px;line-height:1.5">加滿又填了里程,兩次加滿之間的油耗就用「加滿到加滿」算,比較準。習慣固定加多少錢、多少公升的不用勾,照樣用整段期間估算。</div>';
   }
   var subs = catSubs(catKey).slice(), curSub = existing && existing.sub;
   if(curSub && subs.indexOf(curSub)<0) subs.push(curSub);
@@ -10148,6 +10403,8 @@ function saveExpense(catKey, editId){
   var rec = existing || {id:uid(), date:currentEntryDate(), category:catKey, ts:Date.now()};
   rec.amount = amount; rec.note = note;
   if(liters!=null) rec.liters = liters;
+  var fullEl = document.getElementById('f-exp-full');
+  if(fullEl) rec.full = fullEl.checked ? true : undefined;
   var kwhEl = document.getElementById('f-kwh');
   if(kwhEl) rec.kwh = kwhEl.value!=='' ? +kwhEl.value : undefined;
   var subEl = document.getElementById('chip-expsub');
@@ -10155,7 +10412,7 @@ function saveExpense(catKey, editId){
   var odoEl = document.getElementById('f-exp-odo'), odoMsg = '';
   if(odoEl){
     var odoV = odoEl.value!=='' && +odoEl.value>0 ? Math.round(+odoEl.value) : undefined;
-    if(odoV && odoV!==rec.odo){
+    if(odoV && odoV!==rec.odo && vehOdoAsk()){   // 儀表板讀數 alone does not start 車輛提醒
       state.vehicle = Object.assign({}, veh());
       if(vehSetOdo(odoV, rec.date)){
         odoMsg = ' · 里程已校正';
@@ -10298,9 +10555,9 @@ function wireFeePlatToggle(){
 }
 /* ---------- 顯示模式與功能開關 ---------- */
 var UI_FIELDS = [['subtype','車種/屬性(Uber、BOLT、LINE GO)'],['fareType','計價方式(跳表/預估車資/據點叫車)'],['payment','付款方式(現金/信用卡/悠遊卡/愛心卡/企業簽單/好孕卷)'],['discount','優惠派別、企業簽單折數'],['paperSlip','紙本簽單(企業簽單是紙本,要拿回車隊換現金)'],['markup','加成(金額/倍率/%)'],['addOn','加價金額(乘客加價叫車)'],['coupon','優惠券折抵(Uber 小黃)'],['tip','小費'],['tripToll','過路費(Uber、BOLT 記車資時順手填)'],['tripKm','每趟公里數(車隊 App 上的里程,算每公里實收)','','launch'],['fxTip','外幣小費(美金、日圓…自動換算台幣)'],['note','備註'],['fuelQty','支出:加油公升數、充電度數'],['expSub','支出:細項(輪胎、機油…)']];
-var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日、本月目標進度(還差多少錢)'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['liveRate','今日行車顯示目前時薪'],['restRemind','休息提醒(連續開太久、今天上班太久)'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告'],['fareCompare','🧮 各車隊實收比較(輸入車資看各車隊實拿多少)'],['targetCalc','目標還要跑多久(依平均時薪算還要幾小時、幾趟)','vip'],['roadNews','🚦 官方路況快報(事故、壅塞、封路、施工)','vip','launch']];
+var UI_ENTRY = [['grossTile','今日車資(未扣手續費)'],['trips','上車/下車按鈕'],['traffic','看即時路況'],['cashFlow','今日現金收入/今日非現金單'],['todayTarget','今日、本月目標進度(還差多少錢)'],['shift','上下班打卡、休息(算時薪用)'],['km','每日里程(不填就不會再問你)'],['odoRead','🧭 儀表板讀數(上下班抄里程表,自動算每日里程;要開「每日里程」)'],['toilet','🚻 上廁所次數'],['recDesc','明細顯示車種、付款方式等說明'],['payoutTab','「撥款」頁'],['liveRate','今日行車顯示目前時薪'],['restRemind','休息提醒(連續開太久、今天上班太久)'],['shiftFix','補登上班時間(忘了打卡、中途才開始用時)'],['campaign','🎯 活動獎勵追蹤(趟趟加給、跑滿 N 趟獎金)'],['dayReport','下班打卡後顯示今日跑車報告'],['fareCompare','🧮 各車隊實收比較(輸入車資看各車隊實拿多少)'],['targetCalc','目標還要跑多久(依平均時薪算還要幾小時、幾趟)','vip'],['roadNews','🚦 官方路況快報(事故、壅塞、封路、施工)','vip','launch']];
 var UI_ANALYSIS = [['grossFees','總車資和平台手續費'],['compare','與上期比較'],['overview','本期概況'],['efficiency','效率指標(時薪、每公里)'],['health','健康(上廁所)'],['platShare','平台佔比圖'],['platEff','平台效率比較'],['tripEff','載客效率'],['hotspot','上車熱區'],['detail','細項分析'],['timeslot','時段'],['weekday','星期'],['dom','每月幾號'],['month','月份'],['target','目標進度'],['dispIncome','💰 可支配所得(本週、本月扣完成本能留多少)','vip','launch'],['vehCost','🚗 車輛成本(每公里成本、回本、保養預估)','vip','launch'],['fleetCmp','🏁 我的車隊收益比較(每小時、每公里實收,換車隊試算)','vip','launch'],['dropStat','📍 下車地統計(下車熱區、下車後空檔、死區)','vip','launch']];
-var UI_DEFAULT_OFF = ['shiftFix','campaign','restRemind','fxTip','fareCompare','targetCalc','fleetCmp','tripKm'];  // extras nobody sees unless they turn them on
+var UI_DEFAULT_OFF = ['shiftFix','campaign','restRemind','fxTip','fareCompare','targetCalc','fleetCmp','tripKm','odoRead'];  // extras nobody sees unless they turn them on
 var UI_SIMPLE_OFF = ['liveRate','subtype','fareType','payment','discount','markup','addOn','coupon','fuelQty','expSub','grossTile','trips','traffic','cashFlow','shift','km','toilet','recDesc','payoutTab','grossFees','compare','efficiency','health','platEff','tripEff','hotspot','detail','dom','month'];
 // x[2] 'vip': a VIP feature (👑 while VIP is sold); x[3] 'beta': only in 跑車人生 測試版 while it is tried out;
 // 'launch': 測試版 now, the normal app too from the day VIP_GATE is on (vipLaunched)
@@ -10557,6 +10814,7 @@ function subtypeOffFor(key){ return !!(state.subtypeOff && state.subtypeOff[key]
 function saveUiSettings(){
   var ui = {};
   UI_FIELDS.concat(UI_ENTRY, UI_ANALYSIS).forEach(function(x){ var el = document.getElementById('f-ui-'+x[0]); ui[x[0]] = el ? el.checked : uiOn(x[0]); });
+  if(ui.odoRead && ui.km===false) ui.km = true;   // 儀表板讀數 writes 每日里程, so that comes on with it
   state.ui = ui;
   state.uiMode = uiModeOf(ui);
   var stOff = {}; SUBTYPE_FLEETS.forEach(function(f){ var el = document.getElementById('f-subtype-on-'+f[0]); if(el ? !el.checked : subtypeOffFor(f[0])) stOff[f[0]] = true; });
@@ -10888,6 +11146,7 @@ var HELP = [
     ['休息提醒', '連續開車太久(預設 2 小時)、今天上班太久(預設 12 小時)時提醒你,只是提醒,不會幫你按休息。時間在功能開關下面改。記帳本要打開著才會跳出來。', 'restRemind'],
     ['補登上班時間', '忘了打卡、或中途才開始用:今日行車的「⏱️ 補登上班時間」,選幾點上班、幾點下班。前幾天的工時到「歷史」頁改。', 'shiftFix'],
     ['里程', '每天記里程,才能算每公里成本、每公里實收。', 'km'],
+    ['🧭 儀表板讀數', '上班打卡、下班打卡時各抄一次儀表板里程,App 幫你算今天開了幾公里(含空車、等單),不用自己相減;上班時會先填好上次下班的數字,沒開過車就直接按確定,比上次下班多的算私人用車,不算在跑車里程。每一步都能按「這班不記里程」略過。不用定位、不耗電。讀數記錯了,在今日里程或歷史頁那一天點「改讀數」。要先打開「里程」。預設關。', 'odoRead'],
     ['🚻 上廁所', '記帳頁按 + / −,分析頁統計多久上一次。', 'toilet']
   ]],
   ['載客與熱區', [
@@ -11067,6 +11326,7 @@ function saveShiftFix(){
         // the clock-in moves earlier: so does its entry in the log, if this run was clocked in with one
         var oldIn = m.activeShiftStart;
         (Array.isArray(m.punch) ? m.punch : []).forEach(function(p){ if(Array.isArray(p) && p[1]==='i' && +p[0]===oldIn) p[0] = start; });
+        odoShifts(t).forEach(function(p){ if(+p.at===oldIn) p.at = start; });   // 儀表板讀數 stays with its shift
         m.workedMs += oldIn - start; m.activeShiftStart = start;
       }
     } else {
@@ -12286,12 +12546,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.27.3';
+var APP_VERSION = '2026.11.27.4';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.27.4', '🧭 新增「儀表板讀數」(免費,預設關閉,到 ⚙️ 功能開關打開):上班、下班打卡時各抄一次儀表板里程,App 幫你算今天開了幾公里(含空車、等單),每公里實收就算得出來;上班會先填好上次下班的數字,沒開過車直接按確定。加油時勾「這次有加滿」並填里程,每公升可跑改用加滿到加滿算。不用定位、不耗電', '', {set:'features'}],
   ['2026.11.27.3', '📄 新增「逐筆明細 CSV」(免費):每一筆收入、取消費、支出各一列,可以交給記帳士或用 Excel 自己算;匯出前會先讓你看欄位和合計,位置和備註預設不匯出。要還原帳本請用備份檔', '', {set:'cloud'}],
   ['2026.11.27.2', '🕒 歷史頁點某一天,多了「時間軸」:上班、接單、上車、下車、空檔、下班照時間排好。忘了按休息可以「補登休息時段」,只補確定沒接單、等單的時間(等單、空車照樣算工時),跟行程重疊會擋下;補錯了可以取消', '', {tab:'history', find:'時間軸', day:true}],
   ['2026.11.25.1', '📊 不具名使用人數統計改成「你同意才送」:打開時會問一次,選「不用了」就完全不送,之後可以在 ⚙️ 設定改'],
@@ -13654,6 +13915,7 @@ document.addEventListener('click', function(e){
     if(staleDate1){ openStaleShiftModal(staleDate1); return; }
     var m1 = dm(todayStr()), now1 = Date.now(); m1.activeShiftStart=now1; m1.segmentStart=now1; m1.onBreak=false; punchLog(m1, 'i', now1); save(); renderAll();
     var gr1 = nickGreeting(now1); if(gr1) showToast(gr1);
+    if(odoOn()) openOdoIn(todayStr(), now1);
   }
   else if(cmd==='save-stale-shift'){
     var staleVal = document.getElementById('f-stale-endtime').value;
@@ -13673,8 +13935,24 @@ document.addEventListener('click', function(e){
     if(nextStale){ openStaleShiftModal(nextStale); } else { openNextMissingKmOrClose(); }
   }
   else if(cmd==='save-missing-km'){
+    if(odoOn() && document.getElementById('f-missing-os')){
+      var mos = odoInt(document.getElementById('f-missing-os').value), moe = odoInt(document.getElementById('f-missing-oe').value);
+      if(mos!=null || moe!=null){
+        if(isNaN(mos) || isNaN(moe)){ alert('里程請填 1～'+fmtNum(ODO_MAX,0)+' 的整數。'); return; }
+        if(mos==null || moe==null){ alert('上班、下班兩個讀數都要填;或清空,改填下面的公里數。'); return; }
+        if(moe<mos){ alert('下班的 '+fmtNum(moe,0)+' 比上班的 '+fmtNum(mos,0)+' 還少,里程表不會倒退,請再看一次。'); return; }
+        if(moe-mos>ODO_DAY_WARN && !confirm('這天開了 '+fmtNum(moe-mos,0)+' 公里,超過 '+ODO_DAY_WARN+' 公里。\n確定沒有填錯嗎?')) return;
+        var mom = dm(arg), mop = missingOdoOpen(arg), moEnd = Math.min(Date.now(), dayStartTs(addDays(arg, 1))-1);
+        if(!Array.isArray(mom.odoSh)) mom.odoSh = [];
+        if(!mop){ mop = {at:dayStartTs(arg)}; mom.odoSh.push(mop); }
+        mop.s = mos; mop.e = moe; mop.eAt = moEnd; delete mop.km; delete mop.skip;
+        odoApply(arg, true);
+        save(); openNextMissingKmOrClose(); return;
+      }
+    }
     var mkVal = document.getElementById('f-missing-km').value;
     if(mkVal==='' || isNaN(+mkVal) || +mkVal<0){ alert('請輸入里程數字。'); return; }
+    if(!dayKmOk(+mkVal)) return;
     dm(arg).km = +mkVal;
     save();
     openNextMissingKmOrClose();
@@ -13684,6 +13962,11 @@ document.addEventListener('click', function(e){
     save();
     openNextMissingKmOrClose();
   }
+  else if(cmd==='odo-in'){ saveOdoIn(arg==='skip'); }
+  else if(cmd==='odo-out'){ saveOdoOut(arg); }
+  else if(cmd==='odo-edit'){ openOdoEdit(arg); }
+  else if(cmd==='odo-edit-save'){ saveOdoEdit(arg); }
+  else if(cmd==='open-odo-setting'){ settingsOpenSec = 'features'; openSettingsModal(); var oset = document.getElementById('f-ui-odoRead'); if(oset){ try{ oset.scrollIntoView({block:'center'}); }catch(e){} } }
   else if(cmd==='clock-out'){
     rollShiftOver();
     if(!((state.dailyMeta||{})[todayStr()]||{}).activeShiftStart){ var coStale = findStaleOpenShiftDate(); if(coStale) openStaleShiftModal(coStale); else renderAll(); return; }
@@ -14330,6 +14613,7 @@ document.addEventListener('click', function(e){
 });
 document.addEventListener('input', function(e){
   if(e.target.id==='f-help-q'){ filterHelp(e.target.value); return; }
+  if(e.target.id==='f-odo-in' || e.target.id==='f-odo-out'){ odoLiveUpdate(e.target.id); return; }
   if(e.target.id==='f-cmp-fare'){ updateFareCompare(); return; }
   if(/^f-tj-/.test(e.target.id||'')){ updateTripJudge(); return; }
   if(e.target.id==='f-tip' || e.target.id==='f-tip-rate') tipFxUpdate();
@@ -14366,14 +14650,12 @@ document.addEventListener('change', function(e){
   if(e.target.id==='f-ocr-file'){ if(e.target.files && e.target.files[0]) ocrRun(e.target.files[0]); return; }
   if(e.target.id==='f-tip-cur'){ var re = document.getElementById('f-tip-rate'); if(re) re.value = fxRate(e.target.value)||''; tipFxUpdate(); if(currentIncomeModalKey) updateIncomePreview(); return; }
   if(e.target.id==='f-cloud-key-show'){ var ck=document.getElementById('f-cloud-key'); if(ck) ck.type = e.target.checked ? 'text' : 'password'; return; }
-  if(e.target.matches('[data-km-input]')){
-    dm(todayStr()).km = e.target.value===''? null : +e.target.value;
+  if(e.target.matches('[data-km-input],[data-km-input-date]')){
+    var kd = e.target.getAttribute('data-km-input-date') || todayStr(), kv = e.target.value==='' ? null : +e.target.value;
+    if(!dayKmOk(kv)){ renderAll(); return; }
+    dm(kd).km = kv;
     save();
-  }
-  else if(e.target.matches('[data-km-input-date]')){
-    var kd = e.target.getAttribute('data-km-input-date');
-    dm(kd).km = e.target.value===''? null : +e.target.value;
-    save();
+    if(odoOn()) renderAll();   // the line under it says whose km it is now
   }
   else if(e.target.matches('[data-hours-input-date]')){
     var hd = e.target.getAttribute('data-hours-input-date');
