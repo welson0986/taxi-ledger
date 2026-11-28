@@ -5072,8 +5072,8 @@ function renderHistory(){
   var histMeta = dm(selectedDay), hmd = (+selectedDay.slice(5,7))+'/'+(+selectedDay.slice(8,10));   // B3-15: names read out by a screen reader
   h += '<div class="section"><div class="card daily-card">'+
     (uiShow('km') ? '<div class="daily-row"><span class="l">'+selectedDay+' 里程 (km)</span><input class="km-input" type="number" step="0.1" min="0" value="'+(histMeta.km!=null?histMeta.km:'')+'" placeholder="0.0" aria-label="'+hmd+' 里程,公里" data-km-input-date="'+selectedDay+'"></div>'+odoLineHtml(selectedDay) : '')+
-    (uiShow('shift') ? '<div class="daily-row"><span class="l">'+selectedDay+' 工時(小時)'+((histMeta.workedMs||0)>0 ? '<div style="font-size:11.5px;color:var(--text-muted)">＝'+fmtHM(histMeta.workedMs/3600000)+'</div>' : '')+'</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.workedMs||0)/3600000).toFixed(2)+'" placeholder="0.00" aria-label="'+hmd+' 工時,小時" data-hours-input-date="'+selectedDay+'"></div>' : '')+
-    (uiShow('shift') ? '<div class="daily-row"><span class="l">'+selectedDay+' 休息時間(小時)'+((histMeta.breakMs||0)>0 ? '<div style="font-size:11.5px;color:var(--text-muted)">＝'+fmtHM(histMeta.breakMs/3600000)+'</div>' : '')+'</span><input class="km-input" type="number" step="0.01" min="0" value="'+((histMeta.breakMs||0)/3600000).toFixed(2)+'" placeholder="0.00" aria-label="'+hmd+' 休息時間,小時" data-break-input-date="'+selectedDay+'"></div>' : '')+
+    (uiShow('shift') ? histHMRow('work', selectedDay, histMeta.workedMs, hmd) : '')+
+    (uiShow('shift') ? histHMRow('break', selectedDay, histMeta.breakMs, hmd) : '')+
     (uiShow('toilet') ? '<div class="daily-row"><span class="l">'+selectedDay+' 🚻 上廁所(次)</span><input class="km-input" type="number" step="1" min="0" inputmode="numeric" value="'+(histMeta.toilet!=null?histMeta.toilet:'')+'" placeholder="0" aria-label="'+hmd+' 上廁所,次" data-toilet-input-date="'+selectedDay+'"></div>' : '')+
     '<div style="font-size:11px;color:var(--text-muted);line-height:1.5">補記或修改過往的工時/休息時間/上廁所次數,直接改數字就會覆蓋掉原本的紀錄。'+
     (uiShow('shift') && punchSegs(selectedDay) && !histMeta.activeShiftStart ? '這天有打卡時間:忘了按的休息請用下面時間軸的「補登休息時段」,會自動從工時扣。' : '')+'</div>'+
@@ -11287,6 +11287,43 @@ function tipFromForm(){
   var rate = +(document.getElementById('f-tip-rate')||{}).value||0;
   return {tip:Math.round(amt*rate), fx:{cur:c.value, amt:amt, rate:rate}};
 }
+/* 歷史頁 工時／休息時間 (11/28): 「幾小時」「幾分」 two boxes instead of hours with decimals (a driver does not turn
+   8 小時 20 分 into 8.33). Still kept as workedMs / breakMs: an old 8.5 shows as 8 小時 30 分. 分 over 59 is carried
+   into 小時 (90 分 → 1 小時 30 分), the 小時 box takes a decimal too (8.5 → 8 小時 30 分); blank is 0, below 0 is 0. */
+function hmParts(ms){ var m = Math.max(0, Math.round((+ms||0)/60000)); return {h:Math.floor(m/60), m:m%60}; }
+function histHMRow(kind, d, ms, md){
+  var P = hmParts(ms), attr = kind==='work' ? 'data-hours-input-date' : 'data-break-input-date', name = kind==='work' ? '工時' : '休息時間';
+  var box = 'width:58px;text-align:center;padding:7px 4px';
+  // the boxes go under the name when they do not fit beside it (超大字)
+  return '<div class="daily-row" style="flex-wrap:wrap;row-gap:6px"><span class="l">'+d+' '+name+'</span><span style="display:flex;align-items:center;gap:5px;flex:none;margin-left:auto">'+
+    '<input class="km-input hm-input" style="'+box+'" type="number" min="0" step="1" inputmode="numeric" value="'+((+ms||0)>0 ? P.h : '')+'" placeholder="0" aria-label="'+md+' '+name+',小時" '+attr+'="'+d+'" data-part="h">小時'+
+    '<input class="km-input hm-input" style="'+box+'" type="number" min="0" step="1" inputmode="numeric" value="'+((+ms||0)>0 ? P.m : '')+'" placeholder="0" aria-label="'+md+' '+name+',分鐘" '+attr+'="'+d+'" data-part="m">分</span></div>';
+}
+// the 小時 and 分 boxes of one row → ms (and the boxes show the carried figures); null: not a number
+function histHMRead(attr, d){
+  var hEl = document.querySelector('['+attr+'="'+d+'"][data-part="h"]'), mEl = document.querySelector('['+attr+'="'+d+'"][data-part="m"]');
+  var hv = hEl && hEl.value!=='' ? +hEl.value : 0, mv = mEl && mEl.value!=='' ? +mEl.value : 0;
+  if(!isFinite(hv) || !isFinite(mv)) return null;
+  var tot = Math.max(0, Math.round(Math.max(0, hv)*60 + Math.max(0, mv))), P = {h:Math.floor(tot/60), m:tot%60};
+  var carried = (mEl && mEl.value!=='' && +mEl.value!==P.m) || (hEl && hEl.value!=='' && +hEl.value!==P.h);
+  // only a carried figure is written back: the box the driver is about to type in keeps what it had (no stray 「0」)
+  if(carried){ if(hEl) hEl.value = P.h; if(mEl) mEl.value = P.m; }
+  return {ms:tot*60000, carried:carried, h:P.h, m:P.m};
+}
+// 歷史頁: the day's 摘要 above (工時、平均時薪) follows a changed 工時／休息時間 once the driver is done with the card's
+// boxes (not while going from 小時 to 分: a redraw there would close the keyboard); the page stays where it was
+var histDirty = false;
+function histRefreshSoon(){
+  histDirty = true;
+  setTimeout(function(){
+    var a = document.activeElement;
+    if(!histDirty || (a && a.matches && a.matches('.daily-card input'))) return;
+    if(currentTab!=='history' || document.getElementById('modalBody')){ histDirty = false; return; }
+    histDirty = false;
+    var y = window.scrollY; renderAll(); window.scrollTo(0, y);
+  }, 0);
+}
+document.addEventListener('focusout', function(e){ if(histDirty && e.target && e.target.matches && e.target.matches('.daily-card input')) histRefreshSoon(); });
 function openShiftFix(){
   rollShiftOver();
   var t = todayStr(), m = dm(t);
@@ -12546,12 +12583,13 @@ function openSettingsModal(){
   paintIconFields();
   settingsSnap = settingsSnapshot();
 }
-var APP_VERSION = '2026.11.27.4';
+var APP_VERSION = '2026.11.27.6';
 // what changed, newest first: [the version it arrived in, text, 'app' = only shown in the installed app].
 // A driver sees only the lines newer than the version they last saw. Fixes they would not notice one by one are
 // summed up in one short line, so drivers still see the app is looked after: 雲端同步更穩定 / 系統除錯優化 /
 // 備份功能優化 / 分析功能優化 / 記帳功能優化 / 設定功能優化 (add a few words on what got better when it helps).
 var WHATS_NEW = [
+  ['2026.11.27.5', '⏱️ 歷史頁補填工時、休息時間改成「幾小時」「幾分」兩格,不用再自己換算成小數:8 小時 20 分就填 8 和 20,分超過 59 會自動進位。以前填的照樣帶出來', '', {tab:'history', find:'休息時間', day:true}],
   ['2026.11.27.4', '🧭 新增「儀表板讀數」(免費,預設關閉,到 ⚙️ 功能開關打開):上班、下班打卡時各抄一次儀表板里程,App 幫你算今天開了幾公里(含空車、等單),每公里實收就算得出來;上班會先填好上次下班的數字,沒開過車直接按確定。加油時勾「這次有加滿」並填里程,每公升可跑改用加滿到加滿算。不用定位、不耗電', '', {set:'features'}],
   ['2026.11.27.3', '📄 新增「逐筆明細 CSV」(免費):每一筆收入、取消費、支出各一列,可以交給記帳士或用 Excel 自己算;匯出前會先讓你看欄位和合計,位置和備註預設不匯出。要還原帳本請用備份檔', '', {set:'cloud'}],
   ['2026.11.27.2', '🕒 歷史頁點某一天,多了「時間軸」:上班、接單、上車、下車、空檔、下班照時間排好。忘了按休息可以「補登休息時段」,只補確定沒接單、等單的時間(等單、空車照樣算工時),跟行程重疊會擋下;補錯了可以取消', '', {tab:'history', find:'時間軸', day:true}],
@@ -14657,17 +14695,14 @@ document.addEventListener('change', function(e){
     save();
     if(odoOn()) renderAll();   // the line under it says whose km it is now
   }
-  else if(e.target.matches('[data-hours-input-date]')){
-    var hd = e.target.getAttribute('data-hours-input-date');
-    var mh = dm(hd);
-    mh.workedMs = Math.max(0, (e.target.value===''?0:+e.target.value)*3600000);
+  else if(e.target.matches('[data-hours-input-date],[data-break-input-date]')){
+    var hwork = e.target.matches('[data-hours-input-date]'), hattr = hwork ? 'data-hours-input-date' : 'data-break-input-date';
+    var hd = e.target.getAttribute(hattr), hr = histHMRead(hattr, hd);
+    if(!hr){ showToast('請填數字'); renderAll(); return; }
+    dm(hd)[hwork ? 'workedMs' : 'breakMs'] = hr.ms;
     save();
-  }
-  else if(e.target.matches('[data-break-input-date]')){
-    var bd = e.target.getAttribute('data-break-input-date');
-    var mb = dm(bd);
-    mb.breakMs = Math.max(0, (e.target.value===''?0:+e.target.value)*3600000);
-    save();
+    if(hr.carried) showToast('已換算成 '+hr.h+' 小時 '+hr.m+' 分', 2200);
+    histRefreshSoon();
   }
   else if(e.target.id==='importFile'){
     var f = e.target.files && e.target.files[0]; if(!f) return;
