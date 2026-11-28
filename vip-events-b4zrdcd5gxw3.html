@@ -2894,6 +2894,12 @@ var footerFine=document.querySelector('.footer-fine');if(footerFine)footerFine.t
   }
   function syncVenueTrafficButtons() {
     document.querySelectorAll('.event-card, .traffic-card, #urgent-traffic .urgent-link').forEach(function(card){
+      // 已取消的實體活動只提供取消證據，不提供候客導航或路況按鈕。
+      if(card.classList.contains('is-cancelled')||card.getAttribute('data-cancelled')==='true'){
+        card.removeAttribute('data-venue');
+        card.querySelectorAll('.event-footer .nav-link,.event-footer .venue-traffic-link').forEach(function(a){a.remove();});
+        return;
+      }
       var current=card.getAttribute('data-venue');
       var venue=Object.prototype.hasOwnProperty.call(VENUE_COORDS,current)?current:'';
       if(!venue){
@@ -3051,6 +3057,129 @@ var footerFine=document.querySelector('.footer-fine');if(footerFine)footerFine.t
     });
   }
   mergeNextWeekNov29ToDec06();
+
+  // 2026/11/28 三份週末補查：同名活動去重、取消以藝人官網為準。
+  // 既有 11/30–12/6 卡片與本週末 Top10 範圍均保持不變。
+  function mergeNov28VerifiedFollowup(){
+    var S={
+      su:'https://udn.com/news/story/125077/9906434',
+      esg:'https://www.huashan1914.com/exhibition/%E7%AC%AC%E5%85%AB%E5%B1%86%20ESG%E6%8F%90%E6%A1%88%E5%AF%A6%E4%BD%9C%E8%A1%8C%E5%8B%95%20%E5%92%8C%E6%B3%B0%E5%85%AC%E7%9B%8A%E5%A4%A2%E6%83%B3%E5%AE%B6',
+      fun:'https://comedyclub.kktix.cc/events/fun26',
+      bus:'https://comedyclub.kktix.cc/events/comedybus',
+      nell:'https://unitystar.kktix.cc/events/9549c447',
+      jimmy:'https://comedyclub.kktix.cc/events/rulesofshangliu',
+      orchestra:'https://www.opentix.life/event/2077211561135824897',
+      akasaki:'https://akasaki.red/news/detail/86706',
+      yam:'https://www.cna.com.tw/news/ahel/202611270077.aspx',
+      garmin:'https://dot.gov.taipei/News_Content.aspx?n=C41A7FC0570A20B3&s=7E1EEA5952AD1DE1&sms=72544237BBE4C5F6',
+      xmas:'https://newtaipei.travel/zh-tw/calendar/detail/4129',
+      dome:'https://tixcraft.com/activity/detail/26_forever',
+      young:'https://www.livenation.com.tw/youngk-tpe26'
+    };
+    var appended=0,patched=0;
+    function find(day,word){return Array.prototype.find.call(document.querySelectorAll('#day-panel-'+day+' .event-card'),function(c){var h=c.querySelector('.event-name');return !!(h&&h.textContent.indexOf(word)!==-1);});}
+    function link(foot,url,label){if(!foot||!url)return;if(Array.prototype.some.call(foot.querySelectorAll('a'),function(a){return a.getAttribute('href')===url;}))return;var a=document.createElement('a');a.href=url;a.target='_blank';a.rel='noopener noreferrer';a.className='source-link';a.textContent=label||'活動／公告來源 ↗';foot.appendChild(a);}
+    function add(day,key,time,name,place,region,venue,note,url,grade,navAllowed){
+      var stack=document.querySelector('#day-panel-'+day+' .event-stack');
+      if(!stack||document.getElementById('ev-1128-'+day+'-'+key)||find(day,name))return null;
+      var c=document.createElement('article');c.id='ev-1128-'+day+'-'+key;c.className='event-card event-'+(grade==='B'?'b':'a');c.dataset.grade=grade;c.dataset.source='20261128_VERIFIED';
+      if(venue&&Object.prototype.hasOwnProperty.call(VENUE_COORDS,venue))c.dataset.venue=venue;
+      var top=document.createElement('div');top.className='event-top';var t=document.createElement('span');t.className='time-text';t.textContent=time;var badge=document.createElement('span');badge.className='badge badge-'+(grade==='B'?'b':'a');badge.textContent=grade==='B'?'B 媒體補充':'A 官方／主辦';top.append(t,badge);
+      var h=document.createElement('div');h.className='event-name';h.textContent=name;
+      var pl=document.createElement('div');pl.className='event-place';var dot=document.createElement('span');dot.className='place-dot';dot.setAttribute('aria-hidden','true');pl.appendChild(dot);pl.appendChild(document.createTextNode(place));
+      var p=document.createElement('p');p.className='event-note';p.textContent=note;
+      var foot=document.createElement('div');foot.className='event-footer';link(foot,url,'官方／主辦資訊 ↗');
+      if(navAllowed!==false){var nav=document.createElement('a');nav.className='nav-link';nav.textContent='📍 導航';nav.href='https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(place)+'&travelmode=driving';nav.target='_blank';nav.rel='noopener noreferrer';foot.appendChild(nav);}
+      c.append(top,h,pl,p,foot);stack.appendChild(c);var rp=document.getElementById('region-panel-'+region);if(rp)rp.setAttribute('data-event-refs',((rp.getAttribute('data-event-refs')||'')+' '+c.id).trim());appended++;return c;
+    }
+    function amend(day,part,time,note,url){
+      var card=find(day,part);if(!card)return false;
+      if(time){var t=card.querySelector('.time-text');if(t)t.textContent=time;}
+      var n=card.querySelector('.event-note');if(n&&note){n.textContent=note;patched++;}
+      link(card.querySelector('.event-footer'),url,'11/28 查核／官方公告 ↗');return true;
+    }
+    function traffic(id,title,time,desc,url,until){
+      var card=document.getElementById(id),list=document.querySelector('#traffic .traffic-list');if(!list)return;
+      if(!card){card=document.createElement('article');card.className='traffic-card';card.id=id;card.dataset.source='20261128_VERIFIED';list.prepend(card);}
+      card.setAttribute('data-visible-until',until);
+      card.replaceChildren();var head=document.createElement('div');head.className='traffic-head';var sign=document.createElement('span');sign.className='traffic-icon';sign.textContent='!';sign.setAttribute('aria-hidden','true');var h=document.createElement('h3');h.textContent=title;head.append(sign,h);
+      var label=document.createElement('p');label.className='traffic-status';label.textContent='A 政府／警方公告';var t=document.createElement('p');t.className='traffic-time';t.textContent=time;var body=document.createElement('p');body.className='traffic-body';body.textContent=desc;var foot=document.createElement('div');foot.className='event-footer';link(foot,url,'政府公告／警方查核 ↗');card.append(head,label,t,body,foot);
+    }
+    // 1. 板橋開票晚會有現場採訪確認，但尚無逐路段分局交管；不將前晚入場人數當作今日實到。
+    add(28,'su-ballot','16:00 開始・隨開票結果分散離場','蘇巧慧｜板橋第二運動場開票之夜',
+      '板橋第二運動場（板橋區・民權路117號）',3,'',
+      '前晚選前之夜的新聞證實11/28 16:00仍在板橋第二運動場舉辦實體開票活動。當晚實際到場人數、散場時間及警方逐路段封路未公布；勿用11/27前一場的2萬人直接當作本日人潮。',S.su,'B',true);
+    // 2. 原網頁已有 ZO&FRIENDS，毋須新增；藝人官方取消優先於尚未更新的售票聚合頁。
+    var cancelled=add(28,'akasaki-cancel','❌ 已取消・無演唱會散場','❌ AKASAKI 1st WORLD TOUR《ONIGIRI》台北場（取消）',
+      '原訂 Zepp New Taipei（新莊區）',3,'',
+      '藝人 AKASAKI 官方公告世界巡演全部取消，包含11/28 Zepp New Taipei台北場。舊演唱會列表仍顯示售票中不代表活動恢復；不要在此等該演出的散場。',S.akasaki,'A',false);
+    if(cancelled){cancelled.classList.add('is-cancelled');cancelled.setAttribute('data-cancelled','true');}
+    // 3. 直接官方／售票來源的漏列場次。分時／市集結束不視為集中散場。
+    add(28,'esg','10:00～18:00（展覽時段）','第八屆 ESG 提案實作行動｜和泰公益夢想家','華山1914 中4A紅酒作業場（中正區・八德路一段1號）',5,'華山1914','官方華山展覽頁確認；分散參觀，不把18:00展覽關閉當作人潮同時散場。',S.esg,'A');
+    add(29,'esg','15:00～18:00（展覽時段）','第八屆 ESG 提案實作行動｜和泰公益夢想家','華山1914 中4A紅酒作業場（中正區・八德路一段1號）',5,'華山1914','官方展覽頁明列11/29 15:00～18:00；與11/28時間不同，參觀人潮分散。',S.esg,'A');
+    [28,29].forEach(function(day){add(day,'fun','10:30 開演・散場未公告','2026台北喜劇節｜Fun星球即興兒童故事劇','西門紅樓（萬華區・成都路10號）',5,'西門紅樓','主辦 KKTIX 確認11/28與11/29各10:30一場，為親子小型表演，未公布正式散場／人數。',S.fun,'A');});
+    [28,29].forEach(function(day){['14:00','15:30'].forEach(function(t){add(day,'comedybus-'+t.replace(':',''),t+' 發車・集合點待核','2026台北喜劇節｜喜劇公車 '+t+' 場','Comedy Plus／喜劇公車（中山區）',4,'','售票頁確認本日期及場次，但「節目資訊」和路線欄的首站地址不一致，請向主辦確認實際上車點；不提供未核實導航或推估散場。',S.bus,'B',false);});});
+    add(28,'nell','17:30 入場／18:30 開演・散場未公告','ONLY ONE｜NELL LIVE IN TAIPEI','北流 SUB LIVE（南港區・市民大道八段99號）',1,'北流','KKTIX主辦場頁確認18:30開演；VIP演後可能另有合照，無正式散場時間。',S.nell,'A');
+    add(28,'jimmy','19:30 開演・散場未公告','Jimmy Stone 石峻旻《上流法則》最終加演','Comedy Plus 卡米地＋（中山區・復興北路480號）',4,'','KKTIX確認11/28 19:30；主辦限量席不等於實到觀眾數，屬順路觀察，不排大型候客前10。',S.jimmy,'A');
+    add(29,'orchestra','19:30 開演・散場未公告','北一女中校友交響管樂團25週年｜德奧風華Ⅲ','臺北市中山堂中正廳（中正區・延平南路98號）',5,'','OPENTIX確認19:30場；節目長度約120分鐘為預估，不是公告的實際散場時間。',S.orchestra,'A');
+    // 4. 異動既有卡，保留原來的場次／來源不重複計算。
+    [28,29].forEach(function(day){
+      amend(day,'2026 新北耶誕市集','11:00～21:00（市集；攤商可至22:00）',
+        '新北觀光旅遊網11/27公告市集11:00～21:00、攤商可彈性營業至22:00；13:30同場電競決賽，11/28為《特戰英豪》、11/29為《英雄聯盟》。這些是市集／比賽時段，並非確定集中散場。',S.xmas);
+      amend(day,'F✦FOREVER','19:00 開演・實際散場未公告',
+        '拓元正式售票確認11/28、11/29兩場均19:00開演；大型場館與外縣市返鄉專車、接駁車分流並存，無確定散場時刻，勿依第三方18:00資訊提前報散場。',S.dome);
+    });
+    amend(28,'Young K','18:00 一般入場／19:00 開演・散場未公告',
+      'Live Nation官方確認11/28一般入場18:00、正式開演19:00（非原部分排行卡寫的19:30）；演後VIP合照與兌換可能使分批離場，散場時刻未公布。',S.young);
+    amend(29,'Young K','17:00 一般入場／18:00 開演・散場未公告',
+      'Live Nation官方確認11/29一般入場17:00、18:00開演，演後VIP另有活動；未公布確定散場時刻。',S.young);
+    amend(29,'Garmin Run','21K 05:00／10K 05:30／5K 06:30；分批完賽',
+      '臺北公運處11/27公告11/29 06:40～10:30大佳河濱公園內車道交管、市民小巴9改道並取消大佳河濱公園、9號水門、8號水門三站；這不是全市一般道路封閉。官方接駁返程頁為07:30～09:30，規章另載至10:00，末班時間待主辦複核。',S.garmin);
+    // Garmin原交通卡：補明官方實際交管；原路線/起跑資料不刪除。
+    var gc=document.getElementById('traffic-garmin-1129');
+    if(gc){var st=gc.querySelector('.traffic-status');if(st)st.textContent='A 公運處11/27交管補正／Garmin主辦起跑';var t=gc.querySelector('.traffic-time');if(t)t.textContent='11/29（日）06:40～10:30園內車道交管・小巴9路改道；03:30～06:00去程接駁';var body=gc.querySelector('.traffic-body');if(body)body.textContent='大佳河濱公園內車道管制，市民小巴9改道且大佳河濱公園、9號水門、8號水門三站不靠。Garmin 21K 05:00、10K 05:30、5K 06:30分組起跑；返程接駁時間官方賽事頁09:30、規章10:00資料不同，未能判斷末班；切勿把園內管制當成整個濱江街封路。';link(gc.querySelector('.event-footer'),S.garmin,'11/27 公運處交管 ↗');}
+    // 11/28–29 青山王祭警方分時段路口管制，不替代既有成都路／漢中街公告。
+    traffic('traffic-20261128-qingshan-police','11/28 青山王祭南萬華暗訪｜警方路口、匝道分時管制',
+      '11/28（六）14:00～17:00、20:00～24:00部分路口／匝道；15:00～24:00部分幹道',
+      '中央社轉述萬華分局：環河南路與長沙街、貴陽街口、西園路部分路口及環河快速道路北向貴陽街出口視情況分時管制；環河南路／和平西路北向、廣州街昆明街至環河南路路段另有時段交通疏導，康定路指定紅黃線有禁停。屬路口／部分車道彈性管制，不是萬華全線封閉，實際依現場指揮。',S.yam,'2026-11-29T00:00');
+    traffic('traffic-20261129-qingshan-police','11/29 青山王祭北萬華暗訪｜西門町與環河快分時管制',
+      '11/29（日）15:00～17:00及20:00～24:00部分路口；17:00～22:00相關路段',
+      '中央社轉述萬華分局：環河南路與長沙街／貴陽街路口、環河快北向貴陽街匝道等時段管制；漢口街往東、成都路往西上中興橋及康定路部分路段視情況疏導。原公運處成都路18:30～22:00全線、漢中街北向19:30～22:00公告仍需並行留意。宗教路關不代表全線全天封路。',S.yam,'2026-11-30T00:00');
+    // 更新仍存在的跨日青山王祭總提醒，避免畫面顯示「沒有警方逐段公告」之舊說法。
+    var route=document.getElementById('traffic-qingshan-1128-1129');
+    if(route){var stat=route.querySelector('.traffic-status');if(stat)stat.textContent='A 青山宮路關＋11/27 萬華分局交通公告';var t=route.querySelector('.traffic-time');if(t)t.textContent='11/28 南萬華、11/29 北萬華；警方路口分時管制詳見新增兩則提醒';var bd=route.querySelector('.traffic-body');if(bd)bd.textContent='主辦路關供確認遶境方向；萬華分局已透過中央社公布11/28、11/29多處路口／匝道的分時管制，公運處另有成都路及漢中街規定。只按官方實際公告判斷，不把整個萬華區當成全天封路。';link(route.querySelector('.event-footer'),S.yam,'萬華分局交管報導 ↗');}
+    // 週末 Top10：新增確實已公告的11/28板二開票之夜，並調整Young K開始時刻。
+    var ranks=Array.prototype.slice.call(document.querySelectorAll('#top10 .rank-list > .rank-card'));
+    if(ranks.length===10){
+      ranks.forEach(function(c){var a=c.querySelector('.rank-time strong');if(a&&/11\/28/.test(a.textContent)&&/19:30/.test(a.textContent)){var loc=c.querySelector('.rank-location');if(loc&&/TICC/.test(loc.textContent)){a.textContent='11/28（六）19:00開演・散場待公告';var reason=c.querySelector('.rank-reason');if(reason)reason.textContent='Young K官方19:00開演、18:00入場；與大巨蛋週六夜疊加，散場依現場觀察，不設定確定21:30。';}}});
+      var list=document.querySelector('#top10 .rank-list');var template=ranks[0].cloneNode(true);
+      var number=template.querySelector('.rank-num');if(number)number.textContent='05';
+      var time=template.querySelector('.rank-time strong');if(time)time.textContent='11/28（六）16:00起・開票進度決定離場（觀察）';
+      var location=template.querySelector('.rank-location');if(location)location.textContent='板橋第二運動場（新北市板橋）';
+      var reason=template.querySelector('.rank-reason');if(reason)reason.textContent='蘇巧慧開票之夜於16:00登場；選前之夜較大規模不能直接當成今天實到人數。散場時間不定，建議板橋外圍合法上／下客並留意耶誕城車流。';
+      var nav=template.querySelector('.rank-navigation a');if(nav)nav.href='https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent('新北市板橋區民權路117號')+'&travelmode=driving';
+      var cred=template.querySelector('.rank-cred');if(cred)cred.textContent='11/27 新聞確認／散場未公布';
+      list.insertBefore(template,ranks[4]);ranks[ranks.length-1].remove();
+      Array.prototype.forEach.call(list.querySelectorAll('.rank-card .rank-num'),function(n,i){n.textContent=String(i+1).padStart(2,'0');});
+    }
+    // 去除前次增量程式在11/28、29重複建出的同一個爐主壇遊樂園卡片；只保留有市府時間公告的版本。
+    [[28,'ev-NEW-1123-28-6'],[29,'ev-NEW-1123-29-7']].forEach(function(entry){
+      var duplicate=document.getElementById(entry[1]);
+      var kept=document.getElementById('ev-1127-'+entry[0]+'-qingshan-fun');
+      if(!duplicate||!kept)return;
+      link(kept.querySelector('.event-footer'),'https://www.mjcsg.org.tw/?act=menuinfo&cmd=detail&mi_id=20261120001&ml_id=20250804008','青山宮主辦公告 ↗');
+      duplicate.remove();
+      document.querySelectorAll('#areas .region-panels .tab-panel').forEach(function(p){var refs=(p.getAttribute('data-event-refs')||'').split(/\s+/).filter(function(id){return id&&id!==entry[1];});p.setAttribute('data-event-refs',refs.join(' '));});
+    });
+    var festive=find(29,'青山宮171週年爐主壇遊樂園');
+    if(festive){var p=festive.querySelector('.event-note');if(p)p.textContent='市府交通局列每日16:00～21:00；媒體另列11/29親子遊樂設施14:00起，分項時間尚有差異，請依主辦現場公告。11/29晚間19:00～21:00另有舞台演出，非活動全員同時散場。';}
+    document.querySelectorAll('#areas .region-panels .tab-panel').forEach(function(p){var stack=p.querySelector('.event-stack');if(stack)stack.replaceChildren();p.removeAttribute('data-rendered');});
+    [28,29].forEach(function(day){var panel=document.getElementById('day-panel-'+day);var n=panel&&panel.querySelector('.panel-intro span');if(n)n.textContent='共 '+panel.querySelectorAll('.event-card').length+' 筆日期資訊（含取消警示）';});
+    var update=document.querySelector('.update-stamp time');if(update){update.setAttribute('datetime','2026-11-28');update.textContent='最後更新11/28｜本週末補查、下週活動先備查';}
+    var footer=document.querySelector('.footer-fine');if(footer)footer.textContent='資訊更新：2026/11/28（臺灣時間）｜11/28、11/29前10名限定本週末；取消演出、路口管制、活動散場與場館運輸配套分別標記。© 2026 跑車人生記帳本 · VIP 專屬';
+    var intro=document.querySelector('#top10 .section-intro');if(intro)intro.textContent='只依本週六11/28、週日11/29排行；11/30～12/6活動已先備查。開票結果、演唱會散場時間未公布者不當成保證尖峰；停用／管制區外合法接客。';
+  }
+  mergeNov28VerifiedFollowup();
 
   syncVenueTrafficButtons();
 
